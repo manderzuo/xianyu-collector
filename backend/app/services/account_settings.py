@@ -63,6 +63,20 @@ def _copy_settings(payload: dict[str, Any] | None) -> dict[str, Any]:
     settings = default_account_settings()
     if isinstance(payload, dict):
         settings.update(payload)
+    # 两种“确认顺序”本质上都是自动发货模式。旧版在开启其中任一项时，
+    # 会要求自动确认发货能力同时开启；重写版此前只保存顺序开关，导致
+    # “卡券发送成功再确认发货”被保存为 true，却在执行层被 auto_confirm
+    # 再次拦截。这里统一归一化读写结果，兼容已经存在的不一致旧数据。
+    if settings.get("only_send_card"):
+        settings.update(
+            auto_confirm=False,
+            confirm_before_send=False,
+            send_before_confirm=False,
+        )
+    elif settings.get("confirm_before_send"):
+        settings.update(auto_confirm=True, send_before_confirm=False)
+    elif settings.get("send_before_confirm"):
+        settings.update(auto_confirm=True, confirm_before_send=False)
     return settings
 
 
@@ -132,7 +146,7 @@ async def save_account_settings(
             note="账号列表配置",
         )
         db.add(row)
-    row.payload = {**_copy_settings(row.payload), **values}
+    row.payload = _copy_settings({**_copy_settings(row.payload), **values})
     await db.commit()
     await db.refresh(row)
     return _copy_settings(row.payload)

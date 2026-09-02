@@ -22,6 +22,13 @@ interface SyncedItemRow {
 
 function mapSyncedItem(row: SyncedItemRow): Item {
   const payload = row.payload || {}
+  const rawPolishStatus = typeof payload.polish_status === 'string' ? payload.polish_status : ''
+  const polishStatus: Item['polish_status'] = rawPolishStatus === 'submitted'
+    || rawPolishStatus === 'platform_already_polished'
+    || rawPolishStatus === 'verified'
+    || rawPolishStatus === 'failed'
+    ? rawPolishStatus
+    : payload.is_polished === true ? 'submitted' : 'unknown'
   return {
     id: row.id,
     cookie_id: String(row.account_id),
@@ -33,7 +40,10 @@ function mapSyncedItem(row: SyncedItemRow): Item {
     price: row.price === null || row.price === undefined ? undefined : String(row.price),
     item_price: row.price === null || row.price === undefined ? undefined : `¥${row.price}`,
     has_sku: Boolean(payload.has_sku),
-    is_polished: Boolean(payload.is_polished),
+    // 只有明确的读回核验才算“已擦亮”；接口 SUCCESS 仅展示为已提交。
+    is_polished: payload.polish_verified === true || polishStatus === 'verified',
+    polish_status: polishStatus,
+    polish_status_message: typeof payload.polish_status_message === 'string' ? payload.polish_status_message : undefined,
     is_multi_spec: Boolean(payload.is_multi_spec),
     multi_quantity_delivery: Boolean(payload.multi_quantity_delivery),
     has_default_reply: Boolean(payload.has_default_reply),

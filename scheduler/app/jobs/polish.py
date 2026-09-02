@@ -140,7 +140,7 @@ async def _polish_item(client: httpx.AsyncClient, cookie: str, item_id: str, ret
     if message == "SUCCESS::调用成功":
         return {
             "success": True,
-            "message": "擦亮成功",
+            "message": "闲鱼接口已接受擦亮请求，APP状态未核验",
             "cookie": updated_cookie,
         }
     if "宝贝已经擦亮过了" in message or "IDLEITEM_POLISH_AGAIN" in message:
@@ -193,23 +193,37 @@ async def execute_polish(account_id: int | None = None, *, force: bool = False) 
                         success_count += 1
                         payload["last_polished_date"] = started.date().isoformat()
                         payload["last_polished_at"] = started.isoformat()
-                        payload["is_polished"] = True
+                        # mtop 返回 SUCCESS 只代表请求被平台接受，当前项目没有
+                        # 可用的 APP 状态读回接口，不能把它冒充成手机端“已擦亮”。
+                        payload["is_polished"] = False
+                        payload["polish_verified"] = False
+                        payload["polish_status"] = "submitted"
+                        payload["polish_status_message"] = "闲鱼接口已接受擦亮请求，APP展示状态尚未读回核验"
                         item.payload = payload
                     elif is_already_polished:
                         already_polished_count += 1
-                        # 防止六小时内反复提交同一条被平台拒绝的请求，
-                        # 但不更新 is_polished / last_polished_date，避免把未执行伪装成已完成。
+                        # 防止六小时内反复提交同一条被平台拒绝的请求；
+                        # 明确记录平台回执，不更新“本次成功”时间。
                         payload["last_polish_attempt_date"] = started.date().isoformat()
                         payload["last_polish_attempt_at"] = started.isoformat()
+                        payload["is_polished"] = False
+                        payload["polish_verified"] = False
+                        payload["polish_status"] = "platform_already_polished"
+                        payload["polish_status_message"] = str(result.get("message") or "平台返回商品当天已擦亮")[:500]
                         item.payload = payload
                     else:
                         failed_count += 1
+                        payload["is_polished"] = False
+                        payload["polish_verified"] = False
+                        payload["polish_status"] = "failed"
+                        payload["polish_status_message"] = str(result.get("message") or "擦亮接口调用失败")[:500]
+                        item.payload = payload
                     db.add(PolishLog(
                         batch_id=batch_id,
                         account_id=str(account.id),
                         item_id=str(item.external_id),
                         status="success" if is_success else ("skipped" if is_already_polished else "failed"),
-                        error_message=None if is_success else str(result.get("message") or "未知错误"),
+                        error_message=str(result.get("message") or "闲鱼接口已接受擦亮请求，APP状态未核验") if is_success else str(result.get("message") or "未知错误"),
                     ))
                     if current_cookie != account.cookie:
                         account.cookie = current_cookie

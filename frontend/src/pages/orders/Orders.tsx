@@ -216,6 +216,14 @@ export function Orders() {
   }
 
   const visibleColumns = columns.filter(col => col.visible)
+  const accountOptions = [
+    { value: '', label: '请选择同步账号', key: 'all' },
+    ...accounts.map((account) => ({
+      value: account.id,
+      label: account.note ? `${account.note}（账号 ${account.id}）` : `账号 ${account.id}`,
+      key: account.pk?.toString() || account.id,
+    })),
+  ]
 
   // 首次挂载（登录态就绪后）加载账号与订单，各筛选条件改由「查询」按钮 / 回车触发
   useEffect(() => {
@@ -366,6 +374,16 @@ export function Orders() {
           <p className="page-description">查看和管理所有订单信息</p>
         </div>
         <div className="flex flex-col sm:flex-row gap-3 w-full sm:w-auto">
+          <div className="flex items-center gap-2 w-full sm:w-[240px]">
+            <span className="text-xs text-slate-500 dark:text-slate-400 whitespace-nowrap">同步账号</span>
+            <Select
+              value={selectedAccount}
+              onChange={setSelectedAccount}
+              options={accountOptions}
+              placeholder="请选择同步账号"
+              className="min-w-0 flex-1"
+            />
+          </div>
           <button onClick={handleFetchXianyuOrders} disabled={fetchingXianyuOrders} className="btn-ios-primary w-full sm:w-auto" title="只能获取近3个月内的订单">
             {fetchingXianyuOrders ? (
               <Loader2 className="w-4 h-4 animate-spin" />
@@ -459,14 +477,7 @@ export function Orders() {
                 <Select
                   value={selectedAccount}
                   onChange={setSelectedAccount}
-                  options={[
-                    { value: '', label: '所有账号', key: 'all' },
-                    ...accounts.map((account) => ({
-                      value: account.id,
-                      label: account.note ? `${account.id} (${account.note})` : account.id,
-                      key: account.pk?.toString() || account.id,
-                    })),
-                  ]}
+                  options={[{ value: '', label: '所有账号', key: 'all' }, ...accountOptions.slice(1)]}
                   placeholder="所有账号"
                 />
               </div>
@@ -617,6 +628,13 @@ export function Orders() {
               ) : (
                 orders.map((order) => {
                   const status = statusMap[order.status] || statusMap.unknown
+                  const canRetryPlatformDelivery = order.delivery_send_status === 'success'
+                    && order.status === 'pending_ship'
+                    && !order.card_only_delivered
+                  const deliveryCompleted = order.status === 'shipped'
+                    || order.status === 'completed'
+                    || order.card_only_delivered
+                    || (order.delivery_send_status === 'success' && !canRetryPlatformDelivery)
                   return (
                     <tr key={order.id} className={selectedOrderIds.has(order.id) ? 'bg-blue-50 dark:bg-blue-900/10' : ''}>
                       <td className="whitespace-nowrap">
@@ -849,13 +867,13 @@ export function Orders() {
                           </button>
                           <button
                             onClick={() => setDeliveryConfirm({ open: true, orderNo: order.order_id })}
-                            disabled={deliveringOrderId === order.order_id || order.status === 'shipped' || order.status === 'completed' || order.card_only_delivered || order.delivery_send_status === 'success' || order.delivery_send_status === 'sending'}
+                            disabled={deliveringOrderId === order.order_id || deliveryCompleted || order.delivery_send_status === 'sending'}
                             className={`p-2 rounded-lg transition-colors ${
-                              order.status === 'shipped' || order.status === 'completed' || order.card_only_delivered || order.delivery_send_status === 'success' || order.delivery_send_status === 'sending'
+                              deliveryCompleted || order.delivery_send_status === 'sending'
                                 ? 'opacity-50 cursor-not-allowed'
                                 : 'hover:bg-green-50 dark:hover:bg-green-900/20'
                             }`}
-                            title={order.delivery_send_status === 'sending' ? '卡券发送中' : (order.card_only_delivered || order.delivery_send_status === 'success' ? '卡券已发送' : (order.status === 'shipped' || order.status === 'completed' ? '已发货' : '手动发货'))}
+                            title={order.delivery_send_status === 'sending' ? '卡券发送中' : (canRetryPlatformDelivery ? '卡券已发送，重试确认发货' : (order.card_only_delivered || order.delivery_send_status === 'success' ? '卡券已发送' : (order.status === 'shipped' || order.status === 'completed' ? '已发货' : '手动发货')))}
                           >
                             {deliveringOrderId === order.order_id ? (
                               <Loader2 className="w-4 h-4 text-green-500 animate-spin" />

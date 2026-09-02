@@ -1256,8 +1256,8 @@ export function Items() {
                 className="input-ios"
               >
                 <option value="">全部</option>
-                <option value="true">已擦亮</option>
-                <option value="false">未擦亮</option>
+                <option value="true">已核验擦亮</option>
+                <option value="false">未核验擦亮</option>
               </select>
             </div>
             <div className="input-group min-w-[140px]">
@@ -1412,15 +1412,33 @@ export function Items() {
                       {item.item_price || (item.price ? `¥${item.price}` : '-')}
                     </td>
                     <td>
-                      <span
-                        className={`px-2 py-1 rounded text-xs font-medium ${
-                          item.is_polished
-                            ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
-                            : 'bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400'
-                        }`}
-                      >
-                        {item.is_polished ? '已擦亮' : '未擦亮'}
-                      </span>
+                      {(() => {
+                        const polishStatus = item.polish_status || (item.is_polished ? 'verified' : 'unknown')
+                        const statusText = polishStatus === 'verified'
+                          ? '已核验擦亮'
+                          : polishStatus === 'submitted'
+                          ? '接口已确认，APP待核验'
+                          : polishStatus === 'platform_already_polished'
+                          ? '平台返回当天已擦亮'
+                          : polishStatus === 'failed'
+                          ? '擦亮失败'
+                          : '未核验'
+                        const statusClass = polishStatus === 'verified'
+                          ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
+                          : polishStatus === 'failed'
+                          ? 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'
+                          : polishStatus === 'unknown'
+                          ? 'bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400'
+                          : 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400'
+                        return (
+                          <span
+                            className={`px-2 py-1 rounded text-xs font-medium ${statusClass}`}
+                            title={item.polish_status_message || statusText}
+                          >
+                            {statusText}
+                          </span>
+                        )
+                      })()}
                     </td>
                     <td>
                       <button

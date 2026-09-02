@@ -399,6 +399,45 @@ async def _confirm_platform_delivery(
     }
 
 
+async def _confirm_after_card_delivery(
+    db: AsyncSession,
+    account: Account,
+    order: Order,
+) -> dict[str, Any]:
+    """为已发卡但仍待发货的订单补做平台确认。
+
+    卡券发送成功和闲鱼订单发货是两个独立的外部动作。确认接口失败时，
+    订单必须保留“卡券已发送、平台待确认”的事实，并允许下一轮自动任务
+    重试确认，不能因为 ``delivery_send_status=success`` 就永久跳过。
+    """
+    platform_result = await _confirm_platform_delivery(db, account, order)
+    if platform_result.get("success"):
+        order.status = "shipped"
+        order.delivery_fail_reason = None
+        order.delivery_send_fail_reason = None
+        await db.commit()
+        return {
+            "status": "sent",
+            "order_no": order.order_no,
+            "platform_sync": "success",
+            "already_sent": True,
+            "message": "卡券已发送，闲鱼平台已确认发货",
+        }
+
+    message = str(platform_result.get("message") or "闲鱼平台确认发货失败")[:500]
+    order.delivery_fail_reason = message
+    order.delivery_send_fail_reason = message
+    await db.commit()
+    return {
+        "status": "failed",
+        "code": str(platform_result.get("code") or "platform_delivery_failed"),
+        "order_no": order.order_no,
+        "platform_sync": "failed",
+        "card_already_sent": True,
+        "message": f"卡券已发送，但平台确认发货失败：{message}",
+    }
+
+
 async def deliver_order(
     db: AsyncSession,
     order: Order,
@@ -418,6 +457,15 @@ async def deliver_order(
         raise CardDeliveryError("order_not_found", "订单不存在")
     order = locked_order
     if order.delivery_send_status == "success" or order.card_only_delivered:
+        account_settings = await load_account_settings(db, int(account.user_id), int(account.id))
+        if (
+            order.delivery_send_status == "success"
+            and not order.card_only_delivered
+            and order.status in ELIGIBLE_ORDER_STATUSES
+            and account_settings.get("send_before_confirm")
+            and account_settings.get("auto_confirm")
+        ):
+            return await _confirm_after_card_delivery(db, account, order)
         return {"status": "sent", "already_sent": True, "order_no": order.order_no, "message": "该订单卡券已经发送过"}
     if order.delivery_send_status == "sending":
         return {"status": "sending", "order_no": order.order_no, "message": "该订单正在发货，请勿重复点击"}
@@ -547,14 +595,19 @@ async def deliver_order(
             else:
                 platform_sync = "failed"
                 platform_error = str(platform_result.get("message") or "闲鱼平台确认发货失败")
+        if platform_sync == "failed":
+            # 卡券发送已经成功，但平台发货可能失败；保留失败原因，
+            # 让订单列表可见并让后续任务进入确认重试，而不是显示为全成功。
+            order.delivery_fail_reason = platform_error or "闲鱼平台确认发货失败"
+            order.delivery_send_fail_reason = order.delivery_fail_reason
         payload = dict(card.payload or {})
         payload["delivery_count"] = int(payload.get("delivery_count") or 0) + 1
         card.payload = payload
         record.status = "sent"
         record.message_ids = message_ids
         record.sent_at = datetime.utcnow()
-        record.error_code = None
-        record.error_message = None
+        record.error_code = "platform_delivery_failed" if platform_sync == "failed" else None
+        record.error_message = platform_error[:500] if platform_sync == "failed" and platform_error else None
         await db.commit()
         return {
             "status": "sent", "order_no": order.order_no, "card_id": card.id,
@@ -815,9 +868,19 @@ async def auto_deliver_orders(
         today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
         statement = statement.where(Order.placed_at.is_not(None), Order.placed_at >= today_start)
     rows = (await db.execute(statement.order_by(Order.placed_at.asc(), Order.id.asc()))).scalars().all()
+    account_settings = await load_account_settings(db, int(account.user_id), int(account.id))
+    retry_platform_confirmation = bool(
+        account_settings.get("send_before_confirm")
+        and account_settings.get("auto_confirm")
+        and not account_settings.get("only_send_card")
+    )
     results = []
     for order in rows:
-        if order.delivery_send_status == "success" or order.card_only_delivered:
+        if order.card_only_delivered:
+            continue
+        if order.delivery_send_status == "success":
+            if retry_platform_confirmation and order.status in ELIGIBLE_ORDER_STATUSES:
+                results.append(await _confirm_after_card_delivery(db, account, order))
             continue
         results.append(await deliver_order(db, order, account, source=source))
     return {

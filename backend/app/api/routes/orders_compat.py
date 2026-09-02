@@ -203,7 +203,9 @@ async def fetch_xianyu_orders(payload: dict[str, Any] | None = Body(default=None
     data = payload or {}
     cookie_id = data.get("cookie_id")
     statement = select(Account)
-    if cookie_id is not None and str(cookie_id).isdigit():
+    if cookie_id not in (None, "") and not str(cookie_id).strip().isdigit():
+        raise HTTPException(status_code=422, detail="同步账号无效，请重新选择账号")
+    if cookie_id not in (None, ""):
         statement = statement.where(Account.id == int(cookie_id))
     if not _is_admin(user):
         statement = statement.where(Account.user_id == _uid(user))
@@ -227,7 +229,7 @@ async def fetch_xianyu_orders(payload: dict[str, Any] | None = Body(default=None
         except Exception as exc:
             errors.append(f"{account.account_name}: {exc}")
     success = not errors
-    return ok({"total_fetched": total_fetched, "new_inserted": inserted, "updated": updated, "failed": len(errors), "accounts_processed": len(accounts), "errors": errors}, "订单同步完成" if success else "订单同步部分失败", code="ok" if success else "partial")
+    return ok({"total_fetched": total_fetched, "new_inserted": inserted, "updated": updated, "failed": len(errors), "accounts_processed": len(accounts), "selected_account_id": int(cookie_id) if cookie_id not in (None, "") else None, "errors": errors}, "订单同步完成" if success else "订单同步部分失败", code="ok" if success else "partial")
 
 
 @router.post("/cancel")

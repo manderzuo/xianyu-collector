@@ -1340,9 +1340,16 @@ export function Accounts() {
   const handleToggleConfirmBeforeSend = async (account: AccountWithKeywordCount) => {
     const newEnabled = !account.confirm_before_send
     try {
-      await updateAccountConfirmBeforeSend(account.id, newEnabled)
+      const result = await updateAccountConfirmBeforeSend(account.id, newEnabled)
+      const saved = (result.data || {}) as Partial<AccountWithKeywordCount>
       setAccounts(prev => prev.map(a =>
-        a.id === account.id ? { ...a, confirm_before_send: newEnabled, ...(newEnabled ? { send_before_confirm: false, only_send_card: false } : {}) } : a,
+        a.id === account.id ? {
+          ...a,
+          auto_confirm: saved.auto_confirm ?? (newEnabled ? true : a.auto_confirm),
+          confirm_before_send: saved.confirm_before_send ?? newEnabled,
+          send_before_confirm: saved.send_before_confirm ?? (newEnabled ? false : a.send_before_confirm),
+          only_send_card: saved.only_send_card ?? (newEnabled ? false : a.only_send_card),
+        } : a,
       ))
       addToast({ type: 'success', message: `发货成功再发卡券已${newEnabled ? '开启' : '关闭'}` })
     } catch {
@@ -1354,9 +1361,16 @@ export function Accounts() {
   const handleToggleSendBeforeConfirm = async (account: AccountWithKeywordCount) => {
     const newEnabled = !account.send_before_confirm
     try {
-      await updateAccountSendBeforeConfirm(account.id, newEnabled)
+      const result = await updateAccountSendBeforeConfirm(account.id, newEnabled)
+      const saved = (result.data || {}) as Partial<AccountWithKeywordCount>
       setAccounts(prev => prev.map(a =>
-        a.id === account.id ? { ...a, send_before_confirm: newEnabled, ...(newEnabled ? { confirm_before_send: false, only_send_card: false } : {}) } : a,
+        a.id === account.id ? {
+          ...a,
+          auto_confirm: saved.auto_confirm ?? (newEnabled ? true : a.auto_confirm),
+          confirm_before_send: saved.confirm_before_send ?? (newEnabled ? false : a.confirm_before_send),
+          send_before_confirm: saved.send_before_confirm ?? newEnabled,
+          only_send_card: saved.only_send_card ?? (newEnabled ? false : a.only_send_card),
+        } : a,
       ))
       addToast({ type: 'success', message: `卡券发送成功再确认发货已${newEnabled ? '开启' : '关闭'}` })
     } catch {
@@ -1420,9 +1434,16 @@ export function Accounts() {
   const handleToggleAutoConfirm = async (account: AccountWithKeywordCount) => {
     const newEnabled = !account.auto_confirm
     try {
-      await updateAccountAutoConfirm(account.id, newEnabled)
+      const result = await updateAccountAutoConfirm(account.id, newEnabled)
+      const saved = (result.data || {}) as Partial<AccountWithKeywordCount>
       setAccounts(prev => prev.map(a =>
-        a.id === account.id ? { ...a, auto_confirm: newEnabled, ...(newEnabled ? { only_send_card: false } : {}) } : a,
+        a.id === account.id ? {
+          ...a,
+          auto_confirm: saved.auto_confirm ?? newEnabled,
+          confirm_before_send: saved.confirm_before_send ?? a.confirm_before_send,
+          send_before_confirm: saved.send_before_confirm ?? a.send_before_confirm,
+          only_send_card: saved.only_send_card ?? (newEnabled ? false : a.only_send_card),
+        } : a,
       ))
       addToast({ type: 'success', message: `自动确认发货已${newEnabled ? '开启' : '关闭'}` })
     } catch {

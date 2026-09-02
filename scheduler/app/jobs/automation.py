@@ -59,8 +59,11 @@ async def execute_day_switch() -> dict[str, Any]:
             reset_count = 0
             for item in items:
                 payload = dict(item.payload or {})
-                if payload.get("is_polished") is not False:
+                if payload.get("is_polished") is not False or payload.get("polish_status") not in (None, "unknown"):
                     payload["is_polished"] = False
+                    payload["polish_verified"] = False
+                    payload["polish_status"] = "unknown"
+                    payload.pop("polish_status_message", None)
                     item.payload = payload
                     reset_count += 1
             await session.commit()

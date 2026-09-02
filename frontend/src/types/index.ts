@@ -115,6 +115,8 @@ export interface Item {
   item_price?: string
   has_sku?: boolean
   is_polished?: boolean            // 是否擦亮
+  polish_status?: 'submitted' | 'platform_already_polished' | 'verified' | 'failed' | 'unknown'
+  polish_status_message?: string
   is_multi_spec?: number | boolean
   multi_delivery?: boolean
   multi_quantity_delivery?: number | boolean
