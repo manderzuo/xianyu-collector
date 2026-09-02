@@ -199,6 +199,7 @@ async def _finish_worker(worker: SharedScanWorker, session: SharedScanSession, d
     cookie_value = str(cookies["cookies"])
     unb = str(cookies.get("unb") or "").strip() or None
     nickname = str(cookies.get("nickname") or "").strip() or extract_account_nickname(cookie_value)
+    login_expire_at = _now() + timedelta(days=30)
     account = None
     if unb:
         account = (await db.execute(select(Account).where(Account.user_id == session.owner_id, Account.goofish_id == unb))).scalar_one_or_none()
@@ -209,6 +210,7 @@ async def _finish_worker(worker: SharedScanWorker, session: SharedScanSession, d
             goofish_id=unb,
             cookie=cookie_value,
             status="active",
+            cookie_expire_at=login_expire_at,
         )
         db.add(account)
         await db.flush()
@@ -216,10 +218,11 @@ async def _finish_worker(worker: SharedScanWorker, session: SharedScanSession, d
     else:
         account.cookie = cookie_value
         account.status = "active"
+        account.cookie_expire_at = login_expire_at
         if nickname and is_generated_account_name(account.account_name, account.goofish_id):
             account.account_name = nickname
         is_new = False
-    db.add(AccountCookie(account_id=account.id, cookie_value=cookie_value, status="active"))
+    db.add(AccountCookie(account_id=account.id, cookie_value=cookie_value, status="active", expires_at=login_expire_at))
     worker.status = "success"
     worker.cookie_saved = True
     worker.account_id = str(account.id)

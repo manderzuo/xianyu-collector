@@ -150,6 +150,7 @@ async def get_qr_status(
                 cookie_value = cookies["cookies"]
                 unb = cookies.get("unb") or None
                 nickname = str(cookies.get("nickname") or "").strip() or extract_account_nickname(cookie_value)
+                login_expire_at = _now() + timedelta(days=30)
                 existing = None
                 if unb:
                     existing = (
@@ -169,6 +170,7 @@ async def get_qr_status(
                             goofish_id=unb,
                             cookie=cookie_value,
                             status="active",
+                            cookie_expire_at=login_expire_at,
                         )
                         db.add(account)
                         await db.flush()
@@ -176,9 +178,10 @@ async def get_qr_status(
                         account = existing
                         account.cookie = cookie_value
                         account.status = "active"
+                        account.cookie_expire_at = login_expire_at
                         if nickname and is_generated_account_name(account.account_name, account.goofish_id):
                             account.account_name = nickname
-                    db.add(AccountCookie(account_id=account.id, cookie_value=cookie_value, status="active"))
+                    db.add(AccountCookie(account_id=account.id, cookie_value=cookie_value, status="active", expires_at=login_expire_at))
                     item.cookie_value = cookie_value
                     item.account_id = account.id
                     item.is_new_account = is_new
