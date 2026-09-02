@@ -666,6 +666,7 @@ class AccountRuntimeManager:
                     source="runtime",
                     force=True,
                     notify_runtime=False,
+                    observed_session_expired=True,
                 )
                 if result.get("success") and account.cookie:
                     runtime.cookie_value = str(account.cookie)
@@ -673,6 +674,15 @@ class AccountRuntimeManager:
                     runtime.update("reconnecting", "登录态自动续期成功，正在重新连接")
                     logger.info("账号 %s 已自动续期并准备重连", runtime.account_id)
                     return True
+                logger.warning(
+                    "账号 %s 自动续期结果：success=%s status=%s method=%s needs_manual_login=%s message=%s",
+                    runtime.account_id,
+                    bool(result.get("success")),
+                    str(result.get("status") or "unknown")[:40],
+                    str(result.get("method") or "none")[:40],
+                    bool(result.get("needs_manual_login")),
+                    str(result.get("message") or reason)[:500],
+                )
                 runtime.update(
                     "expired" if result.get("needs_manual_login") else "reconnecting",
                     str(result.get("message") or reason)[:1000],

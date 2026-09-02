@@ -207,6 +207,7 @@ async def execute_polish(account_id: int | None = None, *, force: bool = False) 
                                 source="polish_session_expired",
                                 force=True,
                                 notify_runtime=True,
+                                observed_session_expired=True,
                             )
                         except Exception as exc:
                             renewal = {

@@ -51,6 +51,7 @@ async def renew_account_session(
     source: str = "scheduled_task",
     force: bool = False,
     notify_runtime: bool = True,
+    observed_session_expired: bool = False,
 ) -> dict[str, Any]:
     """续期一个账号并把结果写回数据库。
 
@@ -108,6 +109,12 @@ async def renew_account_session(
         if account.status == "expired":
             account.status = "active"
         account.cookie_expire_at = now + timedelta(days=30)
+    elif observed_session_expired:
+        # 运行时已经从闲鱼接口确认 Session 失效时，不能继续相信本地缓存的
+        # cookie_expire_at。将账号置为 expired，确保下一轮定时任务不会因本地
+        # 到期时间尚未到而跳过强制续期。
+        account.status = "expired"
+        account.cookie_expire_at = now
     elif result.needs_manual_login and (
         not old_cookie
         or is_session_expired_message(result.message)
