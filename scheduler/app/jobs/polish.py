@@ -20,6 +20,7 @@ from common.models import Account, AccountContent, FeatureRecord, PolishLog
 MTOP_APP_KEY = "34839810"
 MTOP_API = "mtop.taobao.idle.item.polish"
 LOG_RETENTION_DAYS = 10
+POLISH_INTERVAL = timedelta(hours=6)
 logger = logging.getLogger("xr.scheduler.polish")
 
 
@@ -48,6 +49,42 @@ def _merge_response_cookies(headers: httpx.Headers, original: str) -> str:
         if separator and key.strip():
             merged[key.strip()] = item.strip()
     return _cookie_string(merged)
+
+
+def _parse_local_timestamp(value: Any) -> datetime | None:
+    """解析商品上的擦亮时间标记；旧数据没有时间戳时返回 None。"""
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone().replace(tzinfo=None)
+    return parsed
+
+
+def _polish_recently_attempted(payload: dict[str, Any], now: datetime) -> bool:
+    """仅在最近六小时已成功或已向平台发起过请求时跳过。
+
+    旧实现按自然日拦截，导致 00:00 执行后 06:00、12:00、18:00 全部不再
+    调用闲鱼接口。保留日期字段供旧页面展示，但调度判断使用精确时间。
+    """
+    timestamps = (
+        _parse_local_timestamp(payload.get("last_polished_at")),
+        _parse_local_timestamp(payload.get("last_polish_attempt_at")),
+    )
+    for timestamp in timestamps:
+        if timestamp is None:
+            continue
+        elapsed = now - timestamp
+        if timedelta(0) <= elapsed < POLISH_INTERVAL:
+            return True
+        # 时间来自重启前/时区切换后的数据时，未来时间也应短暂防抖，
+        # 避免同一商品被重复提交。
+        if elapsed < timedelta(0) and abs(elapsed) < POLISH_INTERVAL:
+            return True
+    return False
 
 
 async def _polish_item(client: httpx.AsyncClient, cookie: str, item_id: str, retry: int = 0) -> dict[str, Any]:
@@ -145,10 +182,7 @@ async def execute_polish(account_id: int | None = None, *, force: bool = False) 
                 current_cookie = str(account.cookie or "")
                 for item in items:
                     payload = dict(item.payload or {})
-                    if not force and (
-                        payload.get("last_polished_date") == started.date().isoformat()
-                        or payload.get("last_polish_attempt_date") == started.date().isoformat()
-                    ):
+                    if not force and _polish_recently_attempted(payload, started):
                         continue
                     total_items += 1
                     result = await _polish_item(client, current_cookie, item.external_id)
@@ -158,14 +192,15 @@ async def execute_polish(account_id: int | None = None, *, force: bool = False) 
                     if is_success:
                         success_count += 1
                         payload["last_polished_date"] = started.date().isoformat()
-                        payload["last_polished_at"] = datetime.now().isoformat()
+                        payload["last_polished_at"] = started.isoformat()
                         payload["is_polished"] = True
                         item.payload = payload
                     elif is_already_polished:
                         already_polished_count += 1
-                        # 防止定时任务在同一天反复提交同一条被平台拒绝的请求，
+                        # 防止六小时内反复提交同一条被平台拒绝的请求，
                         # 但不更新 is_polished / last_polished_date，避免把未执行伪装成已完成。
                         payload["last_polish_attempt_date"] = started.date().isoformat()
+                        payload["last_polish_attempt_at"] = started.isoformat()
                         item.payload = payload
                     else:
                         failed_count += 1
