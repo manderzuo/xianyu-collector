@@ -31,7 +31,9 @@ async def trigger_task(task_name: str, payload: dict | None = Body(default=None)
         raise HTTPException(status_code=404, detail="任务不存在")
     try:
         # Cookie续期可能需要启动持久化浏览器并等待页面完成登录态同步。
-        request_timeout = 360 if canonical_task_name(task_name) in {"refresh_cookies", "refresh_tokens"} else 30
+        # 擦亮遇到 Session 过期时会先执行一次账号续期再重试，允许浏览器
+        # 续期链路有足够时间完成，避免后端在 30 秒时提前断开请求。
+        request_timeout = 360 if canonical_task_name(task_name) in {"refresh_cookies", "refresh_tokens", "refresh_listings"} else 30
         async with httpx.AsyncClient(timeout=request_timeout) as client:
             response = await client.post(
                 f"{settings.scheduler_service_url.rstrip('/')}/api/v1/scheduled-tasks/{task_name}/trigger",

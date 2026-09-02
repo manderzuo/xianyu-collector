@@ -16,6 +16,8 @@ from sqlalchemy import delete, select
 from common.config import settings
 from common.db.session import async_session_maker
 from common.models import Account, AccountContent, FeatureRecord, PolishLog
+from common.services.account_renewal import renew_account_session
+from common.services.cookie_renewal import is_session_expired_message
 
 MTOP_APP_KEY = "34839810"
 MTOP_API = "mtop.taobao.idle.item.polish"
@@ -143,6 +145,14 @@ async def _polish_item(client: httpx.AsyncClient, cookie: str, item_id: str, ret
             "message": "闲鱼接口已接受擦亮请求，APP状态未核验",
             "cookie": updated_cookie,
         }
+    if is_session_expired_message(message):
+        return {
+            "success": False,
+            "session_expired": True,
+            "message": "闲鱼登录态已过期，需要先续期或重新登录",
+            "platform_message": message[:500],
+            "cookie": updated_cookie,
+        }
     if "宝贝已经擦亮过了" in message or "IDLEITEM_POLISH_AGAIN" in message:
         # 这是平台明确拒绝重复操作，不能伪装成“本次擦亮成功”。
         return {
@@ -180,6 +190,7 @@ async def execute_polish(account_id: int | None = None, *, force: bool = False) 
                     continue
                 items = list((await db.execute(select(AccountContent).where(AccountContent.account_id == account.id, AccountContent.content_type == "product"))).scalars().all())
                 current_cookie = str(account.cookie or "")
+                session_recovery_attempted = False
                 for item in items:
                     payload = dict(item.payload or {})
                     if not force and _polish_recently_attempted(payload, started):
@@ -187,6 +198,32 @@ async def execute_polish(account_id: int | None = None, *, force: bool = False) 
                     total_items += 1
                     result = await _polish_item(client, current_cookie, item.external_id)
                     current_cookie = result.get("cookie") or current_cookie
+                    if result.get("session_expired") and not session_recovery_attempted:
+                        session_recovery_attempted = True
+                        try:
+                            renewal = await renew_account_session(
+                                db,
+                                account,
+                                source="polish_session_expired",
+                                force=True,
+                                notify_runtime=True,
+                            )
+                        except Exception as exc:
+                            renewal = {
+                                "success": False,
+                                "message": f"登录态续期执行异常：{str(exc)[:300]}",
+                                "needs_manual_login": False,
+                            }
+                        if renewal.get("success") and str(account.cookie or "").strip():
+                            current_cookie = str(account.cookie or "").strip()
+                            result = await _polish_item(client, current_cookie, item.external_id)
+                            current_cookie = result.get("cookie") or current_cookie
+                            if result.get("session_expired"):
+                                result["message"] = "闲鱼登录态续期后仍然过期，请重新扫码登录"
+                        else:
+                            result["message"] = str(
+                                renewal.get("message") or "闲鱼登录态已过期，请重新扫码登录"
+                            )[:500]
                     is_success = bool(result.get("success"))
                     is_already_polished = bool(result.get("already_polished"))
                     if is_success:
