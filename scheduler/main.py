@@ -23,24 +23,22 @@ scheduler = AsyncIOScheduler(timezone="Asia/Shanghai")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    try:
-        await init_db()
-        await sync_task_catalog()
-    except Exception as exc:
-        # 调度服务仍可提供健康检查，任务触发时会返回明确的数据库错误。
-        import logging
-        logging.getLogger("xr.scheduler").warning("database initialization skipped: %s", exc)
-    task_rows: dict[str, tuple[bool, int | None]] = {}
-    try:
-        async with async_session_maker() as session:
-            task_rows = {
-                item.task_name: (bool(item.enabled), int(item.interval_seconds) if item.interval_seconds else None)
-                for item in (await session.execute(select(ScheduledTask))).scalars().all()
-            }
-    except Exception as exc:
-        logging.getLogger("xr.scheduler").warning("task configuration load skipped: %s", exc)
+async def _task_rows() -> dict[str, tuple[bool, int | None]]:
+    """读取任务开关和自定义间隔。"""
+    rows: dict[str, tuple[bool, int | None]] = {}
+    async with async_session_maker() as session:
+        rows = {
+            item.task_name: (bool(item.enabled), int(item.interval_seconds) if item.interval_seconds else None)
+            for item in (await session.execute(select(ScheduledTask))).scalars().all()
+        }
+    return rows
+
+
+def _install_jobs(task_rows: dict[str, tuple[bool, int | None]]) -> None:
+    """按数据库配置重建 APScheduler 任务。可在进程内安全重复调用。"""
+    for job in scheduler.get_jobs():
+        scheduler.remove_job(job.id)
+
     for task in REGISTRY.values():
         run_immediately = task.name in {"refresh_cookies", "refresh_tokens"}
         job_kwargs = {
@@ -62,6 +60,30 @@ async def lifespan(app: FastAPI):
         )
         if not enabled:
             scheduler.pause_job(task.name)
+
+
+async def _reload_jobs() -> int:
+    """重新读取任务配置并重建调度任务，返回任务总数。"""
+    await sync_task_catalog()
+    _install_jobs(await _task_rows())
+    return len(REGISTRY)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    try:
+        await init_db()
+        await sync_task_catalog()
+    except Exception as exc:
+        # 调度服务仍可提供健康检查，任务触发时会返回明确的数据库错误。
+        import logging
+        logging.getLogger("xr.scheduler").warning("database initialization skipped: %s", exc)
+    task_rows: dict[str, tuple[bool, int | None]] = {}
+    try:
+        task_rows = await _task_rows()
+    except Exception as exc:
+        logging.getLogger("xr.scheduler").warning("task configuration load skipped: %s", exc)
+    _install_jobs(task_rows)
     scheduler.start()
     yield
     scheduler.shutdown(wait=False)
@@ -73,6 +95,29 @@ app = FastAPI(title=f"{settings.brand_name} Scheduler", version="1.0.0", lifespa
 @app.get("/health", tags=["系统"])
 async def health():
     return {"success": True, "code": "ok", "message": "操作成功", "data": {"service": "scheduler", "status": "running", "task_count": len(REGISTRY)}}
+
+
+@app.post("/internal/reload", tags=["系统"])
+async def reload_scheduler():
+    """在不依赖 Docker Socket 的情况下重新加载调度任务。"""
+    try:
+        if not scheduler.running:
+            scheduler.start()
+        task_count = await _reload_jobs()
+        return {
+            "success": True,
+            "code": "ok",
+            "message": "定时任务服务已重新加载",
+            "data": {"service": "scheduler", "status": "running", "mode": "in_process_reload", "task_count": task_count},
+        }
+    except Exception as exc:
+        logging.getLogger("xr.scheduler").exception("scheduler reload failed: %s", exc)
+        return {
+            "success": False,
+            "code": "reload_failed",
+            "message": f"定时任务服务重新加载失败：{str(exc)[:300]}",
+            "data": {"service": "scheduler", "status": "failed"},
+        }
 
 
 @app.get("/api/v1/scheduled-tasks", tags=["定时任务"])

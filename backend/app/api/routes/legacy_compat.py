@@ -398,6 +398,35 @@ async def system_status(user=Depends(get_current_user)):
 @router.post("/system-control/restart/{service_key}")
 async def restart_service(service_key: str, user=Depends(get_current_user)):
     if not is_admin(user): raise HTTPException(403, "仅管理员可以操作服务")
+    if service_key not in {"backend-web", "websocket", "scheduler"}:
+        raise HTTPException(404, "服务不存在")
+
+    # Compose 部署中 backend 容器通常没有 Docker Socket，不能从 API 控制
+    # 宿主机重启容器。调度器提供进程内 reload，可重新读取任务开关/间隔并
+    # 重建 APScheduler 任务，不需要提升容器权限，也不会影响数据库和消息服务。
+    if service_key == "scheduler":
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                response = await client.post(f"{settings.scheduler_service_url.rstrip('/')}/internal/reload")
+            response.raise_for_status()
+            payload = response.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            return error(
+                f"定时任务服务重新加载请求失败：{str(exc)[:300]}",
+                code="scheduler_reload_failed",
+                data={"service": service_key, "status": "unavailable"},
+            )
+        if not payload.get("success"):
+            return error(
+                str(payload.get("message") or "定时任务服务重新加载失败"),
+                code=str(payload.get("code") or "scheduler_reload_failed"),
+                data=payload.get("data"),
+            )
+        return ok(
+            payload.get("data") or {"service": service_key, "status": "running", "mode": "in_process_reload"},
+            payload.get("message") or "定时任务服务已重新加载",
+        )
+
     return error(
         "当前部署环境不支持由 API 重启服务，请通过 Docker Compose 或部署编排执行",
         code="restart_not_supported",

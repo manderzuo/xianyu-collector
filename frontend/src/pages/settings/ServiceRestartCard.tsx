@@ -3,7 +3,7 @@
  *
  * 功能：
  * 1. 展示后端服务 / 消息服务 / 定时任务服务 三个服务的在线状态
- * 2. 提供三个重启按钮：先杀掉对应端口进程再重新启动（后端自动适配运行环境）
+ * 2. 提供三个服务操作按钮：定时任务服务支持进程内重载，其他服务遵循部署编排
  * 3. 重启后端服务时，界面短暂不可用，自动轮询健康检查直到恢复
  *
  * 仅管理员可见（由父组件控制渲染）。
@@ -139,7 +139,7 @@ export function ServiceRestartCard() {
       </div>
       <div className="vben-card-body">
         <p className="text-sm text-slate-500 dark:text-slate-400 mb-4">
-          重启服务会先停止对应进程再重新启动，请在必要时操作。重启期间对应功能会短暂不可用。
+          定时任务服务会在当前进程内重新加载任务配置；后端服务和消息服务请通过 Docker Compose 或部署编排重启。
         </p>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           {SERVICE_CARDS.map(({ key, label, icon: Icon }) => {
