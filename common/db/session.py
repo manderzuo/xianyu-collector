@@ -1,0 +1,117 @@
+# -*- coding: utf-8 -*-
+"""异步数据库会话管理(SQLAlchemy 2.0 + asyncmy)。
+
+连接参数统一读取环境变量 MYSQL_HOST / MYSQL_PORT / MYSQL_USER /
+MYSQL_PASSWORD / MYSQL_DATABASE(经 common.config.Settings 汇总)。
+"""
+from __future__ import annotations
+
+from collections.abc import AsyncGenerator
+
+from sqlalchemy.ext.asyncio import (
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
+from sqlalchemy import inspect as sqlalchemy_inspect, text
+
+from common.config import settings
+from common.db.base import Base
+
+# 模块级异步引擎:进程内复用同一连接池
+async_engine = create_async_engine(
+    settings.mysql_dsn,
+    pool_pre_ping=True,
+    pool_recycle=3600,
+    echo=(settings.environment == "development"),
+)
+
+# 异步会话工厂:每个请求/任务创建短生命周期会话
+async_session_maker = async_sessionmaker(
+    async_engine,
+    class_=AsyncSession,
+    expire_on_commit=False,
+    autoflush=False,
+)
+
+
+async def get_session() -> AsyncGenerator[AsyncSession, None]:
+    """FastAPI 依赖项:为一次请求提供一个数据库会话,自动关闭。"""
+    async with async_session_maker() as session:
+        yield session
+
+
+async def init_db() -> None:
+    """首次启动创建表结构。
+
+    模型集中导入的副作用会把全部表注册到 ``Base.metadata``。生产环境后续
+    可替换为 Alembic；当前框架启动必须具备可重复的最小初始化能力。
+    """
+    import common.models  # noqa: F401
+
+    async with async_engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+        await connection.run_sync(_migrate_user_columns)
+        await connection.run_sync(_migrate_order_columns)
+        await connection.run_sync(_migrate_scheduled_task_columns)
+
+
+def _migrate_user_columns(connection) -> None:
+    """给 create_all 无法更新的旧用户表补齐新增字段。
+
+    项目当前没有运行时迁移框架，而用户管理接口需要这些字段承载账号
+    限额、余额和到期时间。只对缺失列执行一次 ALTER，不覆盖已有数据。
+    """
+    inspector = sqlalchemy_inspect(connection)
+    if "xr_users" not in inspector.get_table_names():
+        return
+    existing = {column["name"] for column in inspector.get_columns("xr_users")}
+    missing = {
+        "phone": "VARCHAR(32) NULL",
+        "account_limit": "INT NULL",
+        "balance": "DECIMAL(18, 2) NOT NULL DEFAULT 0",
+        "expire_at": "DATETIME NULL",
+    }
+    for name, definition in missing.items():
+        if name not in existing:
+            connection.execute(text(f"ALTER TABLE xr_users ADD COLUMN {name} {definition}"))
+
+
+def _migrate_order_columns(connection) -> None:
+    """给已有订单表补齐卡券发货和商品规格字段。"""
+    inspector = sqlalchemy_inspect(connection)
+    if "xr_orders" not in inspector.get_table_names():
+        return
+    existing = {column["name"] for column in inspector.get_columns("xr_orders")}
+    missing = {
+        "buyer_nick": "VARCHAR(255) NULL",
+        "item_external_id": "VARCHAR(128) NULL",
+        "item_title": "VARCHAR(255) NULL",
+        "quantity": "INT NOT NULL DEFAULT 1",
+        "spec_name": "VARCHAR(128) NULL",
+        "spec_value": "VARCHAR(255) NULL",
+        "payload": "JSON NULL",
+        "is_rated": "TINYINT(1) NOT NULL DEFAULT 0",
+        "is_red_flower": "TINYINT(1) NOT NULL DEFAULT 0",
+        "placed_at": "DATETIME NULL",
+        "delivery_method": "VARCHAR(16) NULL",
+        "delivery_content": "TEXT NULL",
+        "delivery_fail_reason": "TEXT NULL",
+        "delivery_send_status": "VARCHAR(16) NULL",
+        "delivery_send_fail_reason": "TEXT NULL",
+        "card_only_delivered": "TINYINT(1) NOT NULL DEFAULT 0",
+        "delivered_at": "DATETIME NULL",
+    }
+    for name, definition in missing.items():
+        if name not in existing:
+            connection.execute(text(f"ALTER TABLE xr_orders ADD COLUMN {name} {definition}"))
+
+
+def _migrate_scheduled_task_columns(connection) -> None:
+    """给已有调度任务表补齐页面可编辑的执行间隔字段。"""
+    inspector = sqlalchemy_inspect(connection)
+    if "xr_scheduled_tasks" not in inspector.get_table_names():
+        return
+    existing = {column["name"] for column in inspector.get_columns("xr_scheduled_tasks")}
+    if "interval_seconds" not in existing:
+        connection.execute(text("ALTER TABLE xr_scheduled_tasks ADD COLUMN interval_seconds INT NULL"))

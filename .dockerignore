@@ -1,0 +1,12 @@
+**/__pycache__/
+*.pyc
+.git/
+.env
+frontend/node_modules/
+frontend/dist/
+node_modules/
+dist/
+static/
+backups/
+browser_data/
+*.log

@@ -1,0 +1,34 @@
+# deps
+__pycache__/
+*.pyc
+*.pyo
+*.tsbuildinfo
+.venv/
+venv/
+node_modules/
+dist/
+build/
+
+# env
+.env
+.env.local
+.env.*.local
+
+# logs / runtime
+logs/
+*.log
+*.sqlite
+*.db
+static/
+backups/
+browser_data/
+
+# os / ide
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+
+# docker
+.docker/

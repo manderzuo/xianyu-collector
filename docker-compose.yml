@@ -1,0 +1,131 @@
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: xr-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-change-me-root-password}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-xianyu_rewrite}
+      MYSQL_USER: ${MYSQL_USER:-xianyu}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-change-me-mysql-password}
+      TZ: Asia/Shanghai
+    command: ["--character-set-server=utf8mb4","--collation-server=utf8mb4_unicode_ci","--max-connections=300","--max-allowed-packet=256M","--default-time-zone=+08:00"]
+    volumes: [mysql_data:/var/lib/mysql]
+    networks: [xr-net]
+    healthcheck: {test: ["CMD","mysqladmin","ping","-h","localhost","-u","root","-p${MYSQL_ROOT_PASSWORD:-change-me-root-password}"], interval: 10s, timeout: 5s, retries: 10, start_period: 30s}
+
+  redis:
+    image: redis:7-alpine
+    container_name: xr-redis
+    restart: unless-stopped
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:-change-me-redis-password}", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru", "--appendonly", "yes"]
+    environment: [TZ=Asia/Shanghai]
+    volumes: [redis_data:/data]
+    networks: [xr-net]
+    healthcheck: {test: ["CMD","redis-cli","-a","${REDIS_PASSWORD:-change-me-redis-password}","ping"], interval: 10s, timeout: 5s, retries: 5, start_period: 10s}
+
+  backend:
+    build: {context: ., dockerfile: backend/Dockerfile}
+    container_name: xr-backend
+    restart: unless-stopped
+    environment:
+      ENVIRONMENT: production
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+      MYSQL_USER: ${MYSQL_USER:-xianyu}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-change-me-mysql-password}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-xianyu_rewrite}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-change-me-redis-password}
+      REDIS_DB: 0
+      BACKEND_WEB_PORT: 8089
+      HOST: 0.0.0.0
+      CORS_ORIGINS: "*"
+      CARD_DOCK_BASE_URL: ${CARD_DOCK_BASE_URL:-}
+      EXTERNAL_API_KEY: ${EXTERNAL_API_KEY:-}
+      WEBSOCKET_SERVICE_URL: http://websocket:8090
+      SCHEDULER_SERVICE_URL: http://scheduler:8091
+      STATIC_DIR: /app/static
+      BACKUP_DIR: /app/backups
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      TZ: Asia/Shanghai
+    volumes: [static-files:/app/static, backup-files:/app/backups]
+    ports: ["${BACKEND_WEB_PORT:-8089}:8089"]
+    networks: [xr-net]
+    depends_on: {mysql: {condition: service_healthy}, redis: {condition: service_healthy}}
+    healthcheck: {test: ["CMD","curl","-f","http://localhost:8089/health"], interval: 30s, timeout: 10s, retries: 3, start_period: 60s}
+
+  websocket:
+    build: {context: ., dockerfile: websocket/Dockerfile}
+    container_name: xr-websocket
+    restart: unless-stopped
+    environment:
+      ENVIRONMENT: production
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+      MYSQL_USER: ${MYSQL_USER:-xianyu}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-change-me-mysql-password}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-xianyu_rewrite}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-change-me-redis-password}
+      REDIS_DB: 0
+      WEBSOCKET_PORT: 8090
+      HOST: 0.0.0.0
+      BACKEND_SERVICE_URL: http://backend:8089
+      STATIC_DIR: /app/static
+      BROWSER_DATA_DIR: /app/browser_data
+      BROWSER_HEADLESS: "true"
+      TZ: Asia/Shanghai
+    volumes: [static-files:/app/static, browser_data:/app/browser_data]
+    ports: ["${WEBSOCKET_PORT:-8090}:8090"]
+    networks: [xr-net]
+    depends_on: {mysql: {condition: service_healthy}, redis: {condition: service_healthy}, backend: {condition: service_healthy}}
+    healthcheck: {test: ["CMD","curl","-f","http://localhost:8090/health"], interval: 30s, timeout: 10s, retries: 3, start_period: 60s}
+
+  scheduler:
+    build: {context: ., dockerfile: scheduler/Dockerfile}
+    container_name: xr-scheduler
+    restart: unless-stopped
+    environment:
+      ENVIRONMENT: production
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+      MYSQL_USER: ${MYSQL_USER:-xianyu}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-change-me-mysql-password}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-xianyu_rewrite}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-change-me-redis-password}
+      REDIS_DB: 0
+      SCHEDULER_PORT: 8091
+      HOST: 0.0.0.0
+      BACKEND_SERVICE_URL: http://backend:8089
+      WEBSOCKET_SERVICE_URL: http://websocket:8090
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      STATIC_DIR: /app/static
+      BACKUP_DIR: /app/backups
+      TZ: Asia/Shanghai
+    volumes: [static-files:/app/static, backup-files:/app/backups]
+    ports: ["${SCHEDULER_PORT:-8091}:8091"]
+    networks: [xr-net]
+    depends_on: {mysql: {condition: service_healthy}, redis: {condition: service_healthy}, backend: {condition: service_healthy}, websocket: {condition: service_healthy}}
+    healthcheck: {test: ["CMD","curl","-f","http://localhost:8091/health"], interval: 30s, timeout: 10s, retries: 3, start_period: 60s}
+
+  frontend:
+    build: {context: ., dockerfile: deploy/frontend.Dockerfile}
+    container_name: xr-frontend
+    restart: unless-stopped
+    ports: ["${FRONTEND_PORT:-9000}:80"]
+    networks: [xr-net]
+    depends_on: {backend: {condition: service_healthy}}
+
+networks:
+  xr-net: {driver: bridge}
+volumes:
+  mysql_data:
+  redis_data:
+  static-files:
+  backup-files:
+  browser_data:
