@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.core.dependencies import get_current_user
 from backend.app.core.response import ok
 from backend.app.services.card_delivery import auto_deliver_orders, deliver_order
+from backend.app.services.order_status import reconcile_cached_chat_orders
 from common.db.session import get_session
 from common.models import Account, AccountCookie, CardDeliveryRecord, Order
 from common.services.account_sync import sync_account_orders
@@ -88,6 +89,14 @@ async def list_orders(
     user=Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ):
+    # 订单列表权限受闲鱼账号类型影响，部分账号无法访问 merchant.sold.get。
+    # 先用已落库的聊天系统消息收敛状态，避免平台拉单失败时本地订单长期
+    # 停留在待发货；此操作只读本地缓存，不会触发发货或其他外部动作。
+    account_scope = _account_scope(select(Account.id), user)
+    if cookie_id and cookie_id.isdigit():
+        account_scope = account_scope.where(Account.id == int(cookie_id))
+    for account_id in (await db.execute(account_scope)).scalars().all():
+        await reconcile_cached_chat_orders(db, int(account_id))
     statement = _account_scope(select(Order).join(Account, Account.id == Order.account_id), user)
     if cookie_id and cookie_id.isdigit():
         statement = statement.where(Order.account_id == int(cookie_id))
@@ -216,7 +225,10 @@ async def fetch_xianyu_orders(payload: dict[str, Any] | None = Body(default=None
     inserted = 0
     updated = 0
     errors: list[str] = []
+    permission_limited_accounts: list[int] = []
     for account in accounts:
+        account_id = int(account.id)
+        account_name = str(account.account_name)
         try:
             if not account.cookie:
                 raise ValueError("账号 Cookie 不可用，请先扫码登录")
@@ -227,9 +239,19 @@ async def fetch_xianyu_orders(payload: dict[str, Any] | None = Body(default=None
             inserted += int(result.get("inserted_count", 0) or 0)
             updated += int(result.get("updated_count", 0) or 0)
         except Exception as exc:
-            errors.append(f"{account.account_name}: {exc}")
+            await db.rollback()
+            error_text = str(exc)
+            if "PERMISSION_EXCEPTION" in error_text or "无权限访问" in error_text:
+                permission_limited_accounts.append(account_id)
+                recovered = await reconcile_cached_chat_orders(db, account_id)
+                errors.append(
+                    f"{account_name}: 闲鱼订单列表接口无权限，已保留实时/聊天订单"
+                    + (f"，并更新 {recovered} 条本地状态" if recovered else "")
+                )
+            else:
+                errors.append(f"{account.account_name}: {error_text}")
     success = not errors
-    return ok({"total_fetched": total_fetched, "new_inserted": inserted, "updated": updated, "failed": len(errors), "accounts_processed": len(accounts), "selected_account_id": int(cookie_id) if cookie_id not in (None, "") else None, "errors": errors}, "订单同步完成" if success else "订单同步部分失败", code="ok" if success else "partial")
+    return ok({"total_fetched": total_fetched, "new_inserted": inserted, "updated": updated, "failed": len(errors), "accounts_processed": len(accounts), "selected_account_id": int(cookie_id) if cookie_id not in (None, "") else None, "errors": errors, "permission_limited_accounts": permission_limited_accounts}, "订单同步完成" if success else "订单同步部分失败", code="ok" if success else "partial")
 
 
 @router.post("/cancel")

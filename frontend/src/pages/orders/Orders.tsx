@@ -298,19 +298,25 @@ export function Orders() {
     setFetchingXianyuOrders(true)
     try {
       const result = await fetchXianyuOrders(selectedAccount || undefined)
-      if (result.success) {
-        const syncData = result.data
+      const syncData = result.data
+      const syncErrors = syncData?.errors || []
+      const permissionLimited = Boolean(syncData?.permission_limited_accounts?.length)
+      if (result.success && !syncErrors.length) {
         addToast({
           type: 'success',
           message: result.message || `同步完成：获取${syncData?.total_fetched || 0}条，新增${syncData?.new_inserted || 0}条，更新${syncData?.updated || 0}条`,
         })
-        if (syncData?.errors?.length) {
-          addToast({ type: 'error', message: `部分账号同步失败：${syncData.errors.slice(0, 2).join('；')}` })
-        }
-        loadOrders(1, pageSize, filters)
       } else {
-        addToast({ type: 'error', message: result.message || '获取闲鱼订单失败' })
+        addToast({
+          type: permissionLimited ? 'warning' : 'error',
+          message: syncErrors.length
+            ? `${result.message || '订单同步部分失败'}：${syncErrors.slice(0, 2).join('；')}`
+            : (result.message || '获取闲鱼订单失败'),
+        })
       }
+      // 即使卖家订单列表接口无权限，也要刷新本地实时/聊天订单，
+      // 让已完成状态和可用的自动发货记录立即显示。
+      loadOrders(1, pageSize, filters)
     } catch (error: unknown) {
       const axiosError = error as { response?: { data?: { detail?: string } } }
       const errorMessage = axiosError.response?.data?.detail || '获取闲鱼订单失败'

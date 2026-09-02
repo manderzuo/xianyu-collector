@@ -29,6 +29,7 @@ from common.models.users import User
 from common.services.account_sync import sync_account_products
 from common.services.xianyu_platform import XianyuPlatformError, delete_items, offline_items
 from backend.app.services.card_delivery import auto_deliver_orders
+from backend.app.services.order_status import reconcile_cached_chat_orders
 
 router = APIRouter(prefix="/api/v1", tags=["账号内容同步"])
 
@@ -53,6 +54,31 @@ def _account_scope(statement, user: dict[str, Any]):
     if not _is_admin(user):
         statement = statement.where(Account.user_id == _uid(user))
     return statement
+
+
+async def _recover_cached_orders_after_permission_error(
+    db: AsyncSession,
+    account: Account,
+    result: dict[str, Any],
+) -> dict[str, Any]:
+    """订单列表权限不足时，收敛已有聊天订单并保留明确警告。"""
+    orders = result.get("orders") if isinstance(result.get("orders"), dict) else {}
+    error = str(orders.get("error") or "")
+    if orders.get("status") != "failed" or not (
+        "PERMISSION_EXCEPTION" in error or "无权限访问" in error
+    ):
+        return result
+    account_id = int(account.id)
+    await db.rollback()
+    recovered = await reconcile_cached_chat_orders(db, account_id)
+    orders["fallback"] = "cached_chat"
+    orders["recovered_count"] = recovered
+    result["orders"] = orders
+    result["message"] = (
+        "商品同步完成；闲鱼账号没有卖家订单列表权限，已保留实时/聊天订单"
+        + (f"并更新 {recovered} 条本地状态" if recovered else "")
+    )
+    return result
 
 
 def _value(value: Any) -> Any:
@@ -359,6 +385,7 @@ async def sync_account(
             page_size=page_size,
             max_pages=max_pages,
         )
+        result = await _recover_cached_orders_after_permission_error(db, account, result)
         # 商品同步同时会更新订单；只有本次真正取得同步租约后才触发
         # 卡券发货检查，避免并发同步重复扫描同一批订单。
         result["delivery"] = (
@@ -403,6 +430,7 @@ async def internal_sync_account(
             sync_products=mode in {"all", "products"},
             sync_orders=mode in {"all", "orders"},
         )
+        result = await _recover_cached_orders_after_permission_error(db, account, result)
         if mode in {"all", "orders"}:
             result["delivery"] = (
                 await auto_deliver_orders(db, account)

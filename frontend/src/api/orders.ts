@@ -116,6 +116,7 @@ export interface FetchXianyuOrdersResponse {
     failed: number
     accounts_processed: number
     errors: string[]
+    permission_limited_accounts?: number[]
   }
 }
 

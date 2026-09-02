@@ -32,6 +32,8 @@ from common.utils.xianyu_push import extract_item_id, extract_order_id
 from backend.app.api.routes.notifications import send_channel
 from backend.app.services.auto_reply_service import dispatch_auto_reply
 from backend.app.services.card_delivery import PAYMENT_EVENT_PARTS, auto_deliver_live_event
+from backend.app.services.order_status import apply_live_order_status
+from common.services.order_status import merge_order_status, status_from_chat_text
 from common.services.xianyu_platform import XianyuPlatformError, official_blacklist
 from common.services.goofish_mtop import mtop_call
 from common.services.account_identity import display_account_name, extract_account_nickname, is_generated_account_name
@@ -333,9 +335,11 @@ async def _reconcile_history_orders(account: Account, messages: list[dict], db: 
             buyer_names.setdefault(sender_id, name)
 
     grouped: dict[str, dict[str, Any]] = {}
+    unbound_messages: list[dict[str, Any]] = []
     for message in messages:
         order_no = str(message.get("orderId") or message.get("order_id") or "").strip()
         if not order_no:
+            unbound_messages.append(message)
             continue
         bucket = grouped.setdefault(order_no, {"messages": [], "status": "unknown", "item_id": "", "buyer_id": "", "buyer_nick": ""})
         bucket["messages"].append(message)
@@ -344,13 +348,26 @@ async def _reconcile_history_orders(account: Account, messages: list[dict], db: 
             sender_id = str(message.get("senderId") or "").strip()
             bucket["buyer_id"] = bucket["buyer_id"] or sender_id
             bucket["buyer_nick"] = bucket["buyer_nick"] or valid_buyer_name(message.get("senderName")) or buyer_names.get(sender_id, "")
-        text = str(message.get("text") or "")
-        if "退款成功" in text or "钱款已原路退返" in text or "已退款" in text:
-            bucket["status"] = "refunded"
-        elif bucket["status"] != "refunded" and ("退款申请" in text or "申请退款" in text):
-            bucket["status"] = "refunding"
-        elif bucket["status"] == "unknown" and any(part in text for part in PAYMENT_EVENT_PARTS):
-            bucket["status"] = "pending_ship"
+        bucket["status"] = merge_order_status(bucket["status"], status_from_chat_text(message.get("text")))
+
+    # 闲鱼的“你已发货”和“交易成功”卡片经常不携带订单号，但通常会
+    # 保留商品 ID/买家 ID。只有能唯一对应到当前会话订单时才归属，
+    # 避免多订单会话把状态误写到其他订单。
+    for message in unbound_messages:
+        status = status_from_chat_text(message.get("text"))
+        if status == "unknown":
+            continue
+        item_id = str(message.get("itemId") or message.get("item_id") or "").strip()
+        buyer_id = str(message.get("senderId") or message.get("sender_id") or "").strip()
+        candidates = list(grouped.values())
+        if item_id:
+            candidates = [row for row in candidates if row["item_id"] == item_id]
+        if buyer_id:
+            buyer_candidates = [row for row in candidates if row["buyer_id"] == buyer_id]
+            if buyer_candidates:
+                candidates = buyer_candidates
+        if len(candidates) == 1:
+            candidates[0]["status"] = merge_order_status(candidates[0]["status"], status)
 
     changed = False
     for order_no, bucket in grouped.items():
@@ -389,8 +406,9 @@ async def _reconcile_history_orders(account: Account, messages: list[dict], db: 
             continue
         if order.account_id != account.id:
             continue
-        if order.status != bucket["status"]:
-            order.status = bucket["status"]
+        merged_status = merge_order_status(order.status, bucket["status"])
+        if order.status != merged_status:
+            order.status = merged_status
             changed = True
         if order.buyer_nick and not valid_buyer_name(order.buyer_nick):
             order.buyer_nick = None
@@ -404,24 +422,6 @@ async def _reconcile_history_orders(account: Account, messages: list[dict], db: 
         if order.payload != payload:
             order.payload = payload
             changed = True
-    # 闲鱼部分“退款成功”系统卡片不重复携带订单号。仅当当前会话只
-    # 对应一笔已识别订单时，才把无订单号的退款成功消息归属给它，避免
-    # 多订单会话发生错误关联。
-    if len(grouped) == 1 and any(
-        "退款成功" in str(message.get("text") or "")
-        or "钱款已原路退返" in str(message.get("text") or "")
-        or "已退款" in str(message.get("text") or "")
-        for message in messages
-    ):
-        only_order = next(iter(grouped.values()))
-        if only_order["status"] != "refunded":
-            only_order["status"] = "refunded"
-            order_no = next(iter(grouped))
-            await db.flush()
-            order = (await db.execute(select(Order).where(Order.order_no == order_no))).scalar_one_or_none()
-            if order is not None and order.account_id == account.id and order.status != "refunded":
-                order.status = "refunded"
-                changed = True
     if changed:
         await db.commit()
 
@@ -852,6 +852,7 @@ async def receive_internal_event(payload: dict[str, Any], x_internal_token: str 
         return ok({"stored": False, "broadcast": False}, "非聊天推送已忽略")
     async with async_session_maker() as db:
         _, created = await _save_message(account_id, cid, message, db)
+        status_updated = await apply_live_order_status(db, account_id, message)
     browser_payload = {"event": "new_message", "account_id": str(account_id), "cid": cid, "message": message}
     await _broadcast(account_id, browser_payload)
     if created and not bool(message.get("isSelf")):
@@ -863,7 +864,7 @@ async def receive_internal_event(payload: dict[str, Any], x_internal_token: str 
         # 自动回复必须在实时事件入口触发。历史消息接口只负责展示，不能在
         # 用户打开聊天页或刷新列表时重复向买家发送消息。
         asyncio.create_task(dispatch_auto_reply(account_id, cid, message))
-    return ok({"stored": created, "broadcast": True}, "实时消息已接收")
+    return ok({"stored": created, "broadcast": True, "order_status_updated": status_updated}, "实时消息已接收")
 
 
 @router.post("/connect/{account_id}")
