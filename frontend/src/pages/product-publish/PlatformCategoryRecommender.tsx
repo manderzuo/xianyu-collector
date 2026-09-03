@@ -422,9 +422,14 @@ export function PlatformCategoryRecommender({ form, onChange, categoryLocked = f
   const selectedIndex = selectedCandidate ? String(candidates.indexOf(selectedCandidate)) : ''
 
   const updateAttributes = (platformAttributes: PlatformMaterialAttribute[]) => {
+    const nextCardList = syncCardListAttributes(
+      form.platform_card_list?.length ? form.platform_card_list : cardList,
+      platformAttributes,
+    )
+    setCardList(nextCardList)
     const patch: Partial<PublishForm> = {
       platform_attributes: platformAttributes,
-      platform_card_list: syncCardListAttributes(cardList, platformAttributes),
+      platform_card_list: nextCardList,
     }
     if (properties.some((property) => property.property_id === '20000')) {
       patch.brand = selectedProperty(platformAttributes, '20000')?.value_name || ''
