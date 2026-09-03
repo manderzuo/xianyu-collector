@@ -17,9 +17,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.core.dependencies import get_current_user
 from backend.app.core.response import error, ok
 from common.db.session import async_session_maker, get_session
-from common.models import Account, AccountCookie, CapabilityCheck, FeatureRecord
+from common.models import Account, AccountContent, AccountCookie, CapabilityCheck, FeatureRecord
 from common.services.account_sync import sync_account_products
 from common.services.amap_inputtips import AmapInputTipsError, search_input_tips
+from common.services.goofish_mtop import mtop_call
 from common.services.goofish_publish import GoofishPublishError, detect_publish_capability, publish_item
 from common.services.goofish_client import GoofishClient
 from common.services.platform_category_service import CategoryRecommendationError, PlatformCategoryService
@@ -107,6 +108,98 @@ def _material_data(item: FeatureRecord) -> dict[str, Any]:
     value.setdefault("platform_attributes", [])
     value.setdefault("category_source", "manual")
     return value
+
+
+def _is_service_payload(payload: dict[str, Any]) -> bool:
+    if bool(payload.get("is_service_category")):
+        return True
+    path = payload.get("platform_category_path") or []
+    return isinstance(path, list) and any(
+        isinstance(item, dict)
+        and (str(item.get("id") or "").strip() == "201450801" or str(item.get("name") or "").strip() == "服务")
+        for item in path
+    )
+
+
+async def _find_service_template(
+    account: Account,
+    item_data: dict[str, Any],
+    db: AsyncSession,
+) -> tuple[dict[str, Any] | None, str]:
+    """从该账号已同步的同类服务商品提取 APP 直发所需技能参数。
+
+    分类推荐接口只返回频道属性，不返回 ``itemSkillDTO``。该参数和
+    ``properties`` 是“发服务”区别于“发闲置”的关键，因此必须从同账号、
+    同平台分类的真实服务商品编辑详情中复用，避免写死某一个技能分类。
+    """
+    current_cookie = str(account.cookie or "")
+    if not _is_service_payload(item_data) or not current_cookie.strip():
+        return None, current_cookie
+    target_category = str(
+        item_data.get("platform_category_id")
+        or item_data.get("platform_tb_category_id")
+        or ""
+    ).strip()
+    rows = list(
+        (
+            await db.execute(
+                select(AccountContent).where(
+                    AccountContent.account_id == account.id,
+                    AccountContent.content_type == "product",
+                )
+            )
+        ).scalars().all()
+    )
+    candidates: list[tuple[int, AccountContent]] = []
+    for row in rows:
+        payload = row.payload if isinstance(row.payload, dict) else {}
+        card = payload.get("cardData") if isinstance(payload.get("cardData"), dict) else payload
+        detail_url = str(card.get("detailUrl") or payload.get("detail_url") or "")
+        category_id = str(card.get("categoryId") or payload.get("category_id") or "").strip()
+        is_skill = "isskill=true" in detail_url.lower() or str(payload.get("attribute_product") or "").lower() == "skill"
+        if not is_skill or not row.external_id:
+            continue
+        if target_category and category_id and category_id != target_category:
+            continue
+        # 在售商品优先；同类分类优先；最后才使用其它已同步服务商品。
+        score = (0 if row.status == "on_sale" else 10) + (0 if target_category and category_id == target_category else 5)
+        candidates.append((score, row))
+    candidates.sort(key=lambda value: (value[0], -int(value[1].id or 0)))
+
+    for _, row in candidates:
+        response = await mtop_call(
+            api="mtop.idle.pc.idleitem.editDetail",
+            data={"itemId": str(row.external_id)},
+            cookies_str=current_cookie,
+            account_id=str(account.goofish_id or account.id),
+            proxy=account.proxy,
+            origin="https://seller.goofish.com",
+            referer="https://seller.goofish.com/?site=COMMONPRO",
+            extra_headers={"idle_site_biz_code": "COMMONPRO"},
+        )
+        current_cookie = str(response.get("cookies_str") or current_cookie)
+        if not response.get("success"):
+            continue
+        detail = ((response.get("res") or {}).get("data") or {})
+        if not isinstance(detail, dict):
+            continue
+        skill = detail.get("itemSkillDTO")
+        item_cat = detail.get("itemCatDTO") if isinstance(detail.get("itemCatDTO"), dict) else {}
+        actual_category = str(item_cat.get("catId") or "").strip()
+        if (
+            str(detail.get("attribute_product") or "").lower() == "skill"
+            and isinstance(skill, dict)
+            and str(skill.get("skillCategoryId") or "").strip()
+            and (not target_category or not actual_category or actual_category == target_category)
+        ):
+            return {
+                "itemSkillDTO": dict(skill),
+                "properties": detail.get("properties"),
+                "attribute_biz_line": detail.get("attribute_biz_line"),
+                "attribute_bizActivityType": detail.get("attribute_bizActivityType"),
+                "itemFrom": detail.get("itemFrom"),
+            }, current_cookie
+    return None, current_cookie
 
 
 @router.get("/materials")
@@ -411,12 +504,15 @@ async def _run_batch_publish_background(
                     result = {"success": False, "message": "批量任务中的素材快照不存在", "item_id": None, "item_url": None, "cookies_str": account.cookie}
                 else:
                     try:
+                        publish_cookie = account.cookie or ""
+                        service_template, publish_cookie = await _find_service_template(account, material, session)
                         result = await publish_item(
                             item_data={**material, "account_id": str(account.id)},
-                            cookie=account.cookie or "",
+                            cookie=publish_cookie,
                             platform_account_id=str(account.goofish_id or account.id),
                             proxy=account.proxy,
                             is_fish_shop=bool(capability.get("is_fish_shop")),
+                            service_template=service_template,
                         )
                     except GoofishPublishError as exc:
                         result = {"success": False, "account_invalid": exc.account_invalid, "message": str(exc), "item_id": None, "item_url": None, "cookies_str": account.cookie}
@@ -582,12 +678,15 @@ async def publish_single(payload: dict[str, Any] = Body(default_factory=dict), u
     await db.commit()
     await db.refresh(record)
     try:
+        publish_cookie = account.cookie or ""
+        service_template, publish_cookie = await _find_service_template(account, payload, db)
         result = await publish_item(
             item_data=payload,
-            cookie=account.cookie or "",
+            cookie=publish_cookie,
             platform_account_id=str(account.goofish_id or account.id),
             proxy=account.proxy,
             is_fish_shop=bool(capability.get("is_fish_shop")),
+            service_template=service_template,
         )
     except GoofishPublishError as exc:
         result = {"success": False, "account_invalid": exc.account_invalid, "message": str(exc), "item_id": None, "item_url": None, "cookies_str": account.cookie}
@@ -601,6 +700,9 @@ async def publish_single(payload: dict[str, Any] = Body(default_factory=dict), u
         **(record.payload or {}),
         "item_id": result.get("item_id"),
         "item_url": result.get("item_url"),
+        "requires_app": bool(result.get("requires_app")),
+        "draft_id": result.get("draft_id"),
+        "qr_content": result.get("qr_content"),
         "error_message": None if result.get("success") else record.note,
     }
     await db.commit()

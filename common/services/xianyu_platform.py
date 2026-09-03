@@ -49,34 +49,45 @@ def _result_items(result: dict[str, Any], item_ids: list[str]) -> list[dict[str,
 
 
 async def offline_items(*, cookies: str, account_id: str, item_ids: list[str]) -> dict[str, Any]:
-    """调用闲鱼卖家后台批量下架接口。"""
+    """调用闲鱼商品下架接口。
+
+    卖家工作台的批量下架接口对服务/技能商品会返回无权限；PC 商品
+    详情页实际使用的是 ``mtop.taobao.idle.item.downshelf``，这里逐个
+    调用它，既兼容普通商品，也兼容服务商品。
+    """
     cleaned = list(dict.fromkeys(str(item_id or "").strip() for item_id in item_ids if str(item_id or "").strip()))
     if not cleaned:
         raise XianyuPlatformError("请选择要下架的商品")
-    result = await mtop_call(
-        api="mtop.alibaba.idle.seller.pc.item.batch.offline",
-        data={"itemIds": ",".join(cleaned)},
-        cookies_str=cookies,
-        account_id=account_id,
-        origin="https://seller.goofish.com",
-        referer="https://seller.goofish.com/?site=COMMONPRO",
-        extra_params={"needLoginPC": "true", "showErrorToast": "true", "spm_cnt": "a21107h.42826273.0.0"},
-        extra_headers={"idle_site_biz_code": "COMMONPRO"},
-    )
-    if not result.get("success"):
-        raise XianyuPlatformError(str(result.get("error") or "闲鱼商品下架失败"))
-    results = _result_items(result, cleaned)
-    # 该接口在成功时有时只返回 code=success，不返回逐项明细；此时按接口成功响应兜底。
-    if all(not item["success"] for item in results):
+    current_cookie = cookies
+    results: list[dict[str, Any]] = []
+    for item_id in cleaned:
+        result = await mtop_call(
+            api="mtop.taobao.idle.item.downshelf",
+            data={"itemId": item_id},
+            cookies_str=current_cookie,
+            account_id=account_id,
+            origin="https://www.goofish.com",
+            referer=f"https://www.goofish.com/item?id={item_id}",
+            extra_params={"spm_cnt": "a21ybx.item.0.0"},
+            version="2.0",
+        )
+        current_cookie = str(result.get("cookies_str") or current_cookie)
         response_data = (result.get("res") or {}).get("data") if isinstance(result.get("res"), dict) else {}
-        if isinstance(response_data, dict) and str(response_data.get("code") or "").lower() == "success":
-            results = [{"item_id": item_id, "success": True, "message": "下架成功"} for item_id in cleaned]
+        platform_success = bool(response_data.get("success")) if isinstance(response_data, dict) else False
+        success = bool(result.get("success")) and (
+            platform_success or not isinstance(response_data, dict) or "success" not in response_data
+        )
+        results.append({
+            "item_id": item_id,
+            "success": success,
+            "message": "下架成功" if success else str(result.get("error") or "闲鱼商品下架失败"),
+        })
     return {
         "success": any(item["success"] for item in results),
         "results": results,
         "success_count": sum(1 for item in results if item["success"]),
         "fail_count": sum(1 for item in results if not item["success"]),
-        "cookies_str": result.get("cookies_str") or cookies,
+        "cookies_str": current_cookie,
     }
 
 

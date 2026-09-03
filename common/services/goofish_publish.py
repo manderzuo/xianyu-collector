@@ -27,6 +27,7 @@ PERSONAL_PUBLISH_API = "mtop.idle.pc.idleitem.publish"
 FISH_SHOP_PUBLISH_API = "mtop.idle.pc.backend.idleitem.publish"
 SERVICE_CARDS_API = "mtop.idle.item.publish.service.cards.list"
 DRAFT_PUBLISH_API = "mtop.idle.idleitem.draft.publish"
+MOBILE_SERVICE_PUBLISH_API = "mtop.idle.idleitem.publish"
 IMAGE_UPLOAD_URL = "https://stream-upload.goofish.com/api/upload.api?floderId=0&appkey=fleamarket&_input_charset=utf-8"
 
 
@@ -609,6 +610,107 @@ async def _service_publish_draft(
     }
 
 
+def _mobile_service_payload(
+    payload: dict[str, Any],
+    service_template: dict[str, Any],
+) -> dict[str, Any]:
+    """把网页发布表单补成 APP ``发服务`` 使用的商品请求。
+
+    ``mtop.idle.idleitem.publish`` 与网页的 ``pc.idleitem.publish`` 不是
+    同一条协议。真正的服务商品除了分类和库存，还必须带有技能商品标记、
+    技能分类和 properties；这些值没有出现在网页分类推荐响应里，只能从
+    该账号已有的同类服务商品编辑详情中取得。
+    """
+    result = dict(payload)
+    skill = service_template.get("itemSkillDTO")
+    if not isinstance(skill, dict) or not _text(skill.get("skillCategoryId")):
+        raise GoofishPublishError("当前账号没有可复用的闲鱼服务商品参数，请先同步一个同类服务商品")
+    result["attribute_product"] = "skill"
+    result["itemSkillDTO"] = {
+        "skillCategoryId": _text(skill.get("skillCategoryId")),
+        "skillCategoryName": _text(skill.get("skillCategoryName")),
+    }
+    properties = _text(service_template.get("properties"))
+    if properties:
+        result["properties"] = properties
+    # APP 服务商品不走物流。保留表单中的地址与分类，但将运费结构改成
+    # 真实服务商品编辑详情中的形状，避免被平台当成“发闲置”商品。
+    result["itemPostFeeDTO"] = {
+        "canFreeShipping": False,
+        "onlyTakeSelf": False,
+        "supportFreight": False,
+        "idleTemplateId": "0",
+        "templateId": "0",
+        "postPriceInCent": "0",
+    }
+    result["attribute_biz_line"] = _text(service_template.get("attribute_biz_line")) or "normalbuynow"
+    if service_template.get("itemFrom") is not None:
+        result["itemFrom"] = service_template.get("itemFrom")
+    if service_template.get("attribute_bizActivityType") is not None:
+        result["attribute_bizActivityType"] = service_template.get("attribute_bizActivityType")
+    # 移动端服务发布使用 mainPublish；pcMainPublish 会落入普通发闲置入口。
+    result["sourceId"] = "mainPublish"
+    result["bizcode"] = "mainPublish"
+    result["publishScene"] = "mainPublish"
+    result["uniqueCode"] = f"{int(time.time() * 1000)}{_text(result.get('uniqueCode'))[-8:]}"
+    return result
+
+
+async def _service_publish_mobile(
+    *,
+    payload: dict[str, Any],
+    service_template: dict[str, Any],
+    cookie: str,
+    platform_account_id: str,
+    proxy: str | None,
+) -> dict[str, Any]:
+    """直接调用 APP 服务商品发布接口，不生成二维码、不依赖手机确认。"""
+    mobile_payload = _mobile_service_payload(payload, service_template)
+    response = await mtop_call(
+        api=MOBILE_SERVICE_PUBLISH_API,
+        data=mobile_payload,
+        cookies_str=cookie,
+        account_id=platform_account_id,
+        proxy=proxy or settings.goofish_proxy or None,
+        origin="https://www.goofish.com",
+        referer="https://www.goofish.com/publish",
+        extra_params={"spm_cnt": "a21ybx.publish.0.0"},
+    )
+    latest_cookie = response.get("cookies_str") or cookie
+    if not response.get("success"):
+        return {
+            "success": False,
+            "message": f"闲鱼服务商品发布失败：{response.get('error') or '未知错误'}",
+            "account_invalid": bool(response.get("account_invalid")),
+            "cookies_str": latest_cookie,
+            "item_id": None,
+            "item_url": None,
+        }
+    item_id, item_url = _item_reference((response.get("res") or {}).get("data"))
+    if item_id:
+        item_url = f"https://www.goofish.com/item?id={item_id}"
+    if not item_id:
+        return {
+            "success": False,
+            "message": "闲鱼服务商品接口已返回成功，但未返回商品 ID，请到账号商品列表核对",
+            "account_invalid": False,
+            "cookies_str": latest_cookie,
+            "item_id": None,
+            "item_url": None,
+        }
+    return {
+        "success": True,
+        "message": "服务商品已通过闲鱼 APP 发布接口发布成功",
+        "account_invalid": False,
+        "cookies_str": latest_cookie,
+        "item_id": item_id,
+        "item_url": item_url,
+        "requires_app": False,
+        "draft_id": None,
+        "qr_content": None,
+    }
+
+
 async def detect_publish_capability(*, cookie: str, platform_account_id: str, proxy: str | None = None) -> dict[str, Any]:
     response = await mtop_call(
         api=PREGET_API,
@@ -655,7 +757,7 @@ async def detect_publish_capability(*, cookie: str, platform_account_id: str, pr
     }
 
 
-async def publish_item(*, item_data: dict[str, Any], cookie: str, platform_account_id: str, proxy: str | None, is_fish_shop: bool) -> dict[str, Any]:
+async def publish_item(*, item_data: dict[str, Any], cookie: str, platform_account_id: str, proxy: str | None, is_fish_shop: bool, service_template: dict[str, Any] | None = None) -> dict[str, Any]:
     title = _text(item_data.get("title")); description = _text(item_data.get("description"))
     if not title or not description:
         raise GoofishPublishError("商品标题和商品描述不能为空")
@@ -714,6 +816,14 @@ async def publish_item(*, item_data: dict[str, Any], cookie: str, platform_accou
         if has_sku:
             payload["itemProperties"] = properties; payload["itemSkuList"] = sku_rows
     if service_category:
+        if service_template:
+            return await _service_publish_mobile(
+                payload=payload,
+                service_template=service_template,
+                cookie=cookie,
+                platform_account_id=platform_account_id,
+                proxy=proxy,
+            )
         return await _service_publish_draft(
             payload=payload,
             card_list=[item for item in (item_data.get("platform_card_list") or []) if isinstance(item, dict)],
