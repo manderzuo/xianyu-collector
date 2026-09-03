@@ -25,6 +25,8 @@ from common.services.goofish_mtop import mtop_call
 PREGET_API = "mtop.idle.pc.idleitem.preget"
 PERSONAL_PUBLISH_API = "mtop.idle.pc.idleitem.publish"
 FISH_SHOP_PUBLISH_API = "mtop.idle.pc.backend.idleitem.publish"
+SERVICE_CARDS_API = "mtop.idle.item.publish.service.cards.list"
+DRAFT_PUBLISH_API = "mtop.idle.idleitem.draft.publish"
 IMAGE_UPLOAD_URL = "https://stream-upload.goofish.com/api/upload.api?floderId=0&appkey=fleamarket&_input_charset=utf-8"
 
 
@@ -360,6 +362,146 @@ def _item_reference(value: Any) -> tuple[str | None, str | None]:
     return None, None
 
 
+def _draft_reference(value: Any) -> str | None:
+    """从草稿接口的嵌套响应中提取 draftId，不把普通 itemId 混用。"""
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key.lower() in {"draftid", "draft_id"} and item is not None:
+                found = _text(item)
+                if found:
+                    return found
+            found = _draft_reference(item)
+            if found:
+                return found
+    elif isinstance(value, list):
+        for item in value:
+            found = _draft_reference(item)
+            if found:
+                return found
+    return None
+
+
+def _is_service_category(item_data: dict[str, Any]) -> bool:
+    if bool(item_data.get("is_service_category")):
+        return True
+    path = item_data.get("platform_category_path") or []
+    if not isinstance(path, list):
+        return False
+    return any(
+        isinstance(item, dict)
+        and (_text(item.get("id")) == "201450801" or _text(item.get("name")) == "服务")
+        for item in path
+    )
+
+
+async def _service_publish_draft(
+    *,
+    payload: dict[str, Any],
+    card_list: list[dict[str, Any]],
+    cookie: str,
+    platform_account_id: str,
+    proxy: str | None,
+) -> dict[str, Any]:
+    """按闲鱼网页发布页的真实服务分类流程生成 APP 草稿。"""
+    if not card_list:
+        raise GoofishPublishError("服务类分类数据已失效，请重新选择商品分类")
+
+    item_info = dict(payload)
+    item_info.update({
+        "publishScene": "mainPublish",
+        "scene": "mainPublish",
+        "sourceId": "draftbox",
+        "innerPublishType": "innerMainPublish",
+    })
+    cards_response = await mtop_call(
+        api=SERVICE_CARDS_API,
+        data={
+            "cpvList": json.dumps(card_list, ensure_ascii=False, separators=(",", ":")),
+            "itemInfoJson": json.dumps(item_info, ensure_ascii=False, separators=(",", ":")),
+            "param": json.dumps(
+                {"multiSkuEditingMode": "false", "settingsPreferences": None, "supportDefaultOpen": True},
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
+        },
+        cookies_str=cookie,
+        account_id=platform_account_id,
+        proxy=proxy or settings.goofish_proxy or None,
+        origin="https://seller.goofish.com",
+        referer="https://seller.goofish.com/",
+    )
+    if not cards_response.get("success"):
+        return {
+            "success": False,
+            "message": f"闲鱼服务配置获取失败：{cards_response.get('error') or '未知错误'}",
+            "account_invalid": bool(cards_response.get("account_invalid")),
+            "cookies_str": cards_response.get("cookies_str") or cookie,
+        }
+
+    service_data = ((cards_response.get("res") or {}).get("data") or {})
+    services = service_data.get("services") if isinstance(service_data, dict) else []
+    if not isinstance(services, list):
+        services = []
+    payload["userRightsProtocols"] = [
+        {"enable": bool(service.get("defaultEnable")), "serviceCode": _text(service.get("code"))}
+        for service in services
+        if isinstance(service, dict) and _text(service.get("code"))
+    ]
+    payload.update({
+        "baseParams": {"bizcode": "pcMainPublish", "bucketId": "", "scene": "mainPublish", "simpleItem": "true"},
+        "innerPublishType": "innerMainPublish",
+        "scene": "mainPublish",
+        "sourceId": "draftbox",
+        "publishScene": "mainPublish",
+        "bizcode": "pcMainPublish",
+        "itemGroupDTO": {"groupId": ""},
+        "itemTopicParams": {"topicInfos": []},
+        "topics": [],
+        "yhbItemInfoDTO": {
+            "idleAppraiseScene": "",
+            "settingsPreferences": {"assumeRule": "", "tradeRule": ""},
+            "useYhbService": False,
+        },
+        "itemProperties": payload.get("itemProperties") or [],
+        "itemSkuList": payload.get("itemSkuList") or [],
+    })
+    draft_response = await mtop_call(
+        api=DRAFT_PUBLISH_API,
+        data=payload,
+        cookies_str=cards_response.get("cookies_str") or cookie,
+        account_id=platform_account_id,
+        proxy=proxy or settings.goofish_proxy or None,
+        origin="https://seller.goofish.com",
+        referer="https://seller.goofish.com/publish",
+    )
+    if not draft_response.get("success"):
+        return {
+            "success": False,
+            "message": f"闲鱼服务类草稿创建失败：{draft_response.get('error') or '未知错误'}",
+            "account_invalid": bool(draft_response.get("account_invalid")),
+            "cookies_str": draft_response.get("cookies_str") or cards_response.get("cookies_str") or cookie,
+        }
+    draft_id = _draft_reference((draft_response.get("res") or {}).get("data"))
+    if not draft_id:
+        return {
+            "success": False,
+            "message": "闲鱼服务类草稿创建成功但未返回草稿编号，请稍后在闲鱼草稿箱查看",
+            "account_invalid": False,
+            "cookies_str": draft_response.get("cookies_str") or cookie,
+        }
+    return {
+        "success": True,
+        "requires_app": True,
+        "draft_id": draft_id,
+        "qr_content": f"fleamarket://simple_post?draftId={draft_id}&publishScene=mainPublish&sourceId=draftbox&innerPublishType=innerMainPublish",
+        "message": "服务类商品草稿已生成，请扫码在闲鱼APP完成服务信息和库存发布",
+        "account_invalid": False,
+        "cookies_str": draft_response.get("cookies_str") or cookie,
+        "item_id": None,
+        "item_url": None,
+    }
+
+
 async def detect_publish_capability(*, cookie: str, platform_account_id: str, proxy: str | None = None) -> dict[str, Any]:
     response = await mtop_call(
         api=PREGET_API,
@@ -417,12 +559,13 @@ async def publish_item(*, item_data: dict[str, Any], cookie: str, platform_accou
         raise GoofishPublishError("最多上传9张商品图片")
     if item_data.get("videos"):
         raise GoofishPublishError("视频发布需要先完成视频媒体上传配置，当前未提交视频内容")
-    if not is_fish_shop and (item_data.get("specifications") or item_data.get("sku_rows")):
+    service_category = _is_service_category(item_data)
+    if not is_fish_shop and not service_category and (item_data.get("specifications") or item_data.get("sku_rows")):
         raise GoofishPublishError("当前账号未开通鱼小铺，不能发布多规格和独立库存商品")
     personal = not is_fish_shop
     properties, sku_rows, has_sku = _sku_payload(item_data) if is_fish_shop else ([], [], False)
     requested_quantity = _quantity(item_data.get("quantity") or item_data.get("stock"))
-    if personal and requested_quantity != 1:
+    if personal and not service_category and requested_quantity != 1:
         raise GoofishPublishError("当前普通卖家账号不支持多库存商品，请将线上库存设为1或开通鱼小铺")
     labels = _category_labels(item_data)
     address_payload = await _resolve_item_address(item_data)
@@ -434,9 +577,9 @@ async def publish_item(*, item_data: dict[str, Any], cookie: str, platform_accou
     payload: dict[str, Any] = {
         "freebies": False,
         "itemTypeStr": "b",
-        # 普通卖家只能发布单库存商品；鱼小铺无规格商品使用单品库存，
-        # 有规格时库存由 itemSkuList 的各 SKU 承载。
-        "quantity": "1" if personal or has_sku else str(requested_quantity),
+        # 普通实物卖家只能发布单库存商品；服务类商品沿用 APP 服务草稿，
+        # 因此必须保留用户填写的库存（例如手机端的 9999）。
+        "quantity": str(requested_quantity) if service_category or (not personal and not has_sku) else "1",
         "simpleItem": "true",
         "imageInfoDOList": uploaded_images,
         "itemTextDTO": {"desc": description, "title": title, "titleDescSeparate": False},
@@ -463,6 +606,14 @@ async def publish_item(*, item_data: dict[str, Any], cookie: str, platform_accou
         payload["itemPriceDTO"] = {} if has_sku else {"origPriceInCent": _price_cent(item_data.get("original_price") or item_data.get("price"), "原价"), "priceInCent": _price_cent(item_data.get("price"), "售价")}
         if has_sku:
             payload["itemProperties"] = properties; payload["itemSkuList"] = sku_rows
+    if service_category:
+        return await _service_publish_draft(
+            payload=payload,
+            card_list=[item for item in (item_data.get("platform_card_list") or []) if isinstance(item, dict)],
+            cookie=cookie,
+            platform_account_id=platform_account_id,
+            proxy=proxy,
+        )
     response = await mtop_call(
         api=PERSONAL_PUBLISH_API if personal else FISH_SHOP_PUBLISH_API,
         data={"inputJson": json.dumps(payload, ensure_ascii=False, separators=(",", ":"))} if not personal else payload,

@@ -2,7 +2,7 @@
  * 单品发布页面共享数据结构。
  * 规格数据只用于本次发布，不写入素材库。
  */
-import type { MaterialVideo, PlatformCategoryPathItem, PlatformMaterialAttribute } from '@/api/productPublish'
+import type { MaterialVideo, PlatformCategoryCardData, PlatformCategoryPathItem, PlatformMaterialAttribute } from '@/api/productPublish'
 
 export type ShippingMethod = 'free' | 'distance' | 'fixed' | 'template' | 'none'
 
@@ -74,6 +74,8 @@ export interface PublishForm {
   platform_leaf_id: string
   platform_tb_category_id: string
   platform_category_path: PlatformCategoryPathItem[]
+  platform_card_list: PlatformCategoryCardData[]
+  is_service_category: boolean
   platform_attributes: PlatformMaterialAttribute[]
   category_source: 'manual' | 'recommendation'
   category_confidence?: number

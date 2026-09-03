@@ -129,6 +129,11 @@ def _build_path(value: dict[str, Any]) -> list[dict[str, str]]:
     return path
 
 
+def _is_service_path(path: list[dict[str, str]]) -> bool:
+    """闲鱼服务/技能分类的根节点是“服务”。"""
+    return any(item.get("id") == "201450801" or item.get("name") == "服务" for item in path)
+
+
 def _parse_current_card_list(response: dict[str, Any]) -> list[dict[str, Any]]:
     """保留分类、品牌、成色及属性卡，供下一次切换分类时原样回传。"""
     result: list[dict[str, Any]] = []
@@ -172,6 +177,7 @@ def _parse_candidates(response: dict[str, Any]) -> list[dict[str, Any]]:
                 "path": path,
                 "score": value.get("score"),
                 "is_selected": _bool(value.get("isClicked")) or _bool(value.get("isUserClick")),
+                "is_service_category": _is_service_path(path),
             })
     return result
 
@@ -268,8 +274,8 @@ class PlatformCategoryService:
             "title": title.strip(),
             "lockCpv": False,
             "multiSKU": False,
-            "publishScene": "pcBackendPublish",
-            "scene": "shopPcPublish",
+            "publishScene": "mainPublish",
+            "scene": "newPublishChoice",
             "description": description.strip(),
             "uniqueCode": f"{int(time.time() * 1000)}{str(account_id)[-4:]}",
         }

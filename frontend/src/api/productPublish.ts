@@ -37,6 +37,7 @@ export interface PlatformCategoryCandidate {
   path: PlatformCategoryPathItem[]
   score?: number | null
   is_selected?: boolean
+  is_service_category?: boolean
 }
 
 export interface PlatformCategoryPropertyOption {
@@ -126,6 +127,8 @@ export interface ProductMaterial {
   platform_leaf_id?: string | null
   platform_tb_category_id?: string | null
   platform_category_path: PlatformCategoryPathItem[]
+  platform_card_list?: PlatformCategoryCardData[]
+  is_service_category?: boolean
   platform_attributes: PlatformMaterialAttribute[]
   category_source: 'manual' | 'recommendation'
   category_confidence?: number | null
@@ -160,6 +163,8 @@ export interface MaterialCreateParams {
   platform_leaf_id?: string | null
   platform_tb_category_id?: string | null
   platform_category_path?: PlatformCategoryPathItem[]
+  platform_card_list?: PlatformCategoryCardData[]
+  is_service_category?: boolean
   platform_attributes?: PlatformMaterialAttribute[]
   category_source?: 'manual' | 'recommendation'
   category_confidence?: number | null
@@ -260,6 +265,9 @@ export interface PublishSingleResponseData {
   sync_message?: string | null
   sync_total_count?: number
   sync_saved_count?: number
+  requires_app?: boolean
+  draft_id?: string | null
+  qr_content?: string | null
 }
 
 export type PublishSingleResponse = ApiResponse<PublishSingleResponseData>
@@ -327,6 +335,8 @@ const normalizeMaterial = (raw: RawRecord): ProductMaterial => {
       const entry = asRecord(item)
       return { id: String(entry.id ?? ''), name: String(entry.name ?? '') }
     }) : [],
+    platform_card_list: Array.isArray(value('platform_card_list', [])) ? value('platform_card_list', []) as PlatformCategoryCardData[] : [],
+    is_service_category: Boolean(value('is_service_category', false)),
     platform_attributes: Array.isArray(value('platform_attributes', [])) ? value('platform_attributes', []) as PlatformMaterialAttribute[] : [],
     category_source: value('category_source', 'manual') as 'manual' | 'recommendation',
     category_confidence: value('category_confidence') == null ? null : Number(value('category_confidence')),
@@ -442,6 +452,8 @@ export const publishSingle = (params: {
   platform_leaf_id?: string | null
   platform_tb_category_id?: string | null
   platform_category_path?: PlatformCategoryPathItem[]
+  platform_card_list?: PlatformCategoryCardData[]
+  is_service_category?: boolean
   platform_attributes?: PlatformMaterialAttribute[]
   category_source?: 'manual' | 'recommendation'
   category_confidence?: number | null

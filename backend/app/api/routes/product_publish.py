@@ -425,12 +425,15 @@ async def _run_batch_publish_background(
                 await _save_latest_cookie(account, result.get("cookies_str") or account.cookie or "", session)
                 success = bool(result.get("success"))
                 message = str(result.get("message") or ("商品发布成功" if success else "商品发布失败"))[:2000]
-                child.status = "success" if success else "failed"
+                child.status = "pending" if success and result.get("requires_app") else ("success" if success else "failed")
                 child.note = message
                 child.payload = {
                     **(child.payload or {}),
                     "item_id": result.get("item_id"),
                     "item_url": result.get("item_url"),
+                    "requires_app": bool(result.get("requires_app")),
+                    "draft_id": result.get("draft_id"),
+                    "qr_content": result.get("qr_content"),
                     "error_message": None if success else message,
                 }
                 await session.commit()
@@ -471,7 +474,7 @@ async def _run_batch_publish_background(
         failed_count = sum(row.status == "failed" for row in children)
         pending_count = sum(row.status == "pending" for row in children)
         publishing_count = sum(row.status == "publishing" for row in children)
-        final_status = "success" if success_count == len(children) and children else "partial" if success_count else "failed"
+        final_status = "pending" if pending_count or publishing_count else ("success" if success_count == len(children) and children else "partial" if success_count else "failed")
         await _update_batch_parent(session, batch_id, status=final_status, extra={"message": "批量发布完成", "success": success_count, "failed": failed_count})
 
 
@@ -592,7 +595,7 @@ async def publish_single(payload: dict[str, Any] = Body(default_factory=dict), u
         result = {"success": False, "account_invalid": False, "message": f"发布执行失败：{exc}", "item_id": None, "item_url": None, "cookies_str": account.cookie}
 
     await _save_latest_cookie(account, result.get("cookies_str") or account.cookie or "", db)
-    record.status = "success" if result.get("success") else "failed"
+    record.status = "pending" if result.get("success") and result.get("requires_app") else ("success" if result.get("success") else "failed")
     record.note = str(result.get("message") or ("商品发布成功" if result.get("success") else "商品发布失败"))[:2000]
     record.payload = {
         **(record.payload or {}),
@@ -609,6 +612,9 @@ async def publish_single(payload: dict[str, Any] = Body(default_factory=dict), u
         "sync_message": "发布成功后商品同步将在下一次账号同步时执行" if result.get("success") else None,
         "sync_total_count": 0,
         "sync_saved_count": 0,
+        "requires_app": bool(result.get("requires_app")),
+        "draft_id": result.get("draft_id"),
+        "qr_content": result.get("qr_content"),
     }
     if not result.get("success"):
         code = "account_invalid" if result.get("account_invalid") else "publish_failed"

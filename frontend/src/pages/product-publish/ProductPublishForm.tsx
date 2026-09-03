@@ -34,6 +34,8 @@ export function ProductPublishForm({ form, setForm, accounts, onUploadSpecImage,
   const [showAddressPicker, setShowAddressPicker] = useState(false)
   // 未传账号能力时保持公共表单原有功能；只有明确检测为普通卖家才收起鱼小铺字段。
   const isFishShop = accountCapability?.is_fish_shop !== false
+  const isServiceCategory = form.is_service_category
+  const supportsInventory = isFishShop || isServiceCategory
   const shippingOptions = isFishShop
     ? SHIPPING_OPTIONS
     : SHIPPING_OPTIONS.filter((option) => option.value !== 'template')
@@ -107,7 +109,7 @@ export function ProductPublishForm({ form, setForm, accounts, onUploadSpecImage,
               <div className={`grid grid-cols-1 gap-3 ${isFishShop ? 'md:grid-cols-3' : 'md:grid-cols-2'}`}>
                 <div className="input-group"><label className="input-label">价格 <span className="text-red-500">*</span></label><div className="relative"><span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">¥</span><input type="number" className="input-ios pl-8" min="0" step="0.01" placeholder="0.00" value={form.price} onChange={(event) => update({ price: event.target.value })} /></div></div>
                 <div className="input-group"><label className="input-label">原价</label><div className="relative"><span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">¥</span><input type="number" className="input-ios pl-8" min="0" step="0.01" placeholder="0.00" value={form.original_price} onChange={(event) => update({ original_price: event.target.value })} /></div></div>
-                <div className="input-group"><label className="input-label">线上库存</label>{isFishShop ? <input type="number" className="input-ios" min="1" max="999999" step="1" value={form.quantity} onChange={(event) => update({ quantity: Math.min(999999, Math.max(1, Number(event.target.value) || 1)) })} /> : <input type="number" className="input-ios bg-slate-100 text-slate-500" value="1" disabled />}<p className="mt-1 text-xs text-slate-400">{isFishShop ? '发布后闲鱼可售数量。' : '普通卖家不支持多库存，闲鱼会按单库存发布；需要持续多次销售请开通鱼小铺。'}</p></div>
+                <div className="input-group"><label className="input-label">线上库存</label>{supportsInventory ? <input type="number" className="input-ios" min="1" max="999999" step="1" value={form.quantity} onChange={(event) => update({ quantity: Math.min(999999, Math.max(1, Number(event.target.value) || 1)) })} /> : <input type="number" className="input-ios bg-slate-100 text-slate-500" value="1" disabled />}<p className="mt-1 text-xs text-slate-400">{isServiceCategory ? '服务类商品支持多库存；提交后扫码在闲鱼APP完成服务信息和库存发布。' : isFishShop ? '发布后闲鱼可售数量。' : '普通卖家实物商品按单库存发布；需要持续多次销售请开通鱼小铺。'}</p></div>
               </div>
               {isFishShop
                 ? <p className="text-xs text-slate-400">鱼小铺软件服务费按成交额（含运费）的1.6%计收</p>

@@ -39,6 +39,8 @@ const emptyCategory = {
   platform_leaf_id: '',
   platform_tb_category_id: '',
   platform_category_path: [],
+  platform_card_list: [],
+  is_service_category: false,
   platform_attributes: [],
   category_source: 'manual' as const,
   category_confidence: undefined,
@@ -76,6 +78,7 @@ function candidatePatch(candidate: PlatformCategoryCandidate): Partial<PublishFo
     platform_leaf_id: candidate.leaf_id || '',
     platform_tb_category_id: candidate.tb_cat_id || '',
     platform_category_path: candidate.path || [],
+    is_service_category: Boolean(candidate.is_service_category),
     category_source: 'recommendation',
     category_confidence: typeof candidate.score === 'number' ? candidate.score : undefined,
   }
@@ -97,6 +100,7 @@ function candidateFromForm(form: PublishForm): PlatformCategoryCandidate | null 
     leaf_id: form.platform_leaf_id || null,
     tb_cat_id: form.platform_tb_category_id || null,
     path: form.platform_category_path || [],
+    is_service_category: form.is_service_category,
     score: typeof form.category_confidence === 'number' ? form.category_confidence : null,
     is_selected: true,
   }
@@ -221,7 +225,7 @@ function buildCategorySelection(cards: PlatformCategoryCardData[], candidate: Pl
   return {
     current_card_list: currentCardList,
     selected_list: selectedLabel ? [selectedLabel] : [],
-    cat_id: candidate.cat_id || '',
+    cat_id: candidateCategoryId(candidate),
     cat_name: categoryName,
     channel_cat_id: channelCategoryId,
   }
@@ -253,7 +257,7 @@ export function PlatformCategoryRecommender({ form, onChange, categoryLocked = f
       const importedCandidate = candidateFromForm(form)
       setCandidates(importedCandidate ? [importedCandidate] : [])
       setProperties(propertiesFromAttributes(form.platform_attributes))
-      setCardList([])
+      setCardList(form.platform_card_list || [])
       setError('')
       setLoading(false)
       return
@@ -307,7 +311,7 @@ export function PlatformCategoryRecommender({ form, onChange, categoryLocked = f
           setError('接口返回的分类缺少发布所需的分类 ID，请点击重试')
           return
         }
-        onChange({ ...candidatePatch(preferredCandidate), platform_attributes: [], brand: '', condition: '全新' })
+        onChange({ ...candidatePatch(preferredCandidate), platform_card_list: response.data.card_list || [], platform_attributes: [], brand: '', condition: '全新' })
       } catch {
         if (version !== requestVersion.current) return
         setError('分类推荐请求失败，请稍后重试')
@@ -351,7 +355,7 @@ export function PlatformCategoryRecommender({ form, onChange, categoryLocked = f
       setCandidates(refreshedCandidates)
       setProperties(response.data.properties || [])
       setCardList(response.data.card_list || selection.current_card_list)
-      onChange({ ...candidatePatch(refreshedCandidate), platform_attributes: [], brand: '', condition: '全新' })
+      onChange({ ...candidatePatch(refreshedCandidate), platform_card_list: response.data.card_list || selection.current_card_list, platform_attributes: [], brand: '', condition: '全新' })
     } catch {
       if (version === requestVersion.current) setError('分类切换请求失败，请点击重试')
     } finally {
