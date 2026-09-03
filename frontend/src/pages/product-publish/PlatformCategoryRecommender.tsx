@@ -52,10 +52,24 @@ function candidateLabel(candidate: PlatformCategoryCandidate) {
   return candidate.cat_name || candidate.channel_cat_name || candidate.path.at(-1)?.name || '未命名分类'
 }
 
+/**
+ * 闲鱼新频道分类可能只返回 catId + channelCatId，不再返回旧版 tbCatId。
+ * catId 仍然是发布请求 itemCatDTO.catId 所需的分类 ID，不能因为 tbCatId
+ * 缺失就把整个候选分类判成无效。
+ */
+function candidateCategoryId(candidate: PlatformCategoryCandidate) {
+  return candidate.cat_id || candidate.tb_cat_id || ''
+}
+
+function isPublishableCandidate(candidate: PlatformCategoryCandidate) {
+  return Boolean(candidate.channel_cat_id && candidateCategoryId(candidate))
+}
+
 function candidatePatch(candidate: PlatformCategoryCandidate): Partial<PublishForm> {
+  const categoryId = candidateCategoryId(candidate)
   return {
     category: candidateLabel(candidate),
-    platform_category_id: candidate.cat_id || '',
+    platform_category_id: categoryId,
     platform_category_name: candidate.cat_name || '',
     platform_channel_category_id: candidate.channel_cat_id || '',
     platform_channel_category_name: candidate.channel_cat_name || '',
@@ -277,14 +291,14 @@ export function PlatformCategoryRecommender({ form, onChange, categoryLocked = f
         }
 
         const returnedCandidates = response.data.candidates
-        const preferredCandidate = returnedCandidates.find((candidate) => candidate.is_selected && candidate.channel_cat_id && candidate.tb_cat_id)
+        const preferredCandidate = returnedCandidates.find((candidate) => candidate.is_selected && isPublishableCandidate(candidate))
           || returnedCandidates.find((candidate) => sameCandidate({
             cat_id: form.platform_category_id,
             channel_cat_id: form.platform_channel_category_id,
             tb_cat_id: form.platform_tb_category_id,
             path: form.platform_category_path,
-          }, candidate) && candidate.channel_cat_id && candidate.tb_cat_id)
-          || returnedCandidates.find((candidate) => candidate.channel_cat_id && candidate.tb_cat_id)
+          }, candidate) && isPublishableCandidate(candidate))
+          || returnedCandidates.find((candidate) => isPublishableCandidate(candidate))
 
         setCandidates(returnedCandidates)
         setProperties(response.data.properties || [])

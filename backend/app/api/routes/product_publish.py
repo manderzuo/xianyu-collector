@@ -232,7 +232,7 @@ async def recommend_category(
     """按标题/描述调用闲鱼真实分类推荐接口。
 
     分类卡必须保存完整回传给前端，用户切换分类时平台才会返回对应的
-    属性卡和发布所需的 channelCatId、tbCatId。该路由不能落到旧版兼容
+    属性卡和发布所需的 channelCatId、catId（老分类可能另带 tbCatId）。该路由不能落到旧版兼容
     兜底层，否则只会记录 FeatureRecord 而不会得到任何分类。
     """
     title = str(payload.get("title") or "").strip()

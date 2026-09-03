@@ -189,12 +189,15 @@ def _category_labels(item_data: dict[str, Any]) -> list[dict[str, Any]]:
     channel_name = _text(item_data.get("platform_channel_category_name"))
     category_name = _text(item_data.get("platform_category_name"))
     tb_id = _text(item_data.get("platform_tb_category_id"))
-    category_id = _text(item_data.get("platform_category_id"))
-    if not channel_id or not channel_name or not tb_id or not category_id:
+    # 新频道分类接口可能不再返回 tbCatId，但 catId + channelCatId
+    # 仍足以组成发布请求。老分类继续沿用 tbCatId；仅当两种分类 ID
+    # 都不存在时才阻止发布，避免把合法的新频道分类误判为不完整。
+    category_id = _text(item_data.get("platform_category_id")) or tb_id
+    if not channel_id or not channel_name or not category_id:
         raise GoofishPublishError("平台商品分类信息不完整，请先重新选择商品分类")
     labels = [{
         "channelCateName": channel_name, "valueId": None, "channelCateId": channel_id,
-        "valueName": None, "tbCatId": tb_id, "subPropertyId": None, "labelType": "common",
+        "valueName": None, "tbCatId": tb_id or None, "subPropertyId": None, "labelType": "common",
         "subValueId": None, "labelId": None, "propertyName": "分类", "isUserClick": "1",
         "isUserCancel": None, "from": "newPublishChoice", "propertyId": "-10000",
         "labelFrom": "newPublish", "text": category_name or channel_name,
@@ -211,7 +214,7 @@ def _category_labels(item_data: dict[str, Any]) -> list[dict[str, Any]]:
         value_id = _text(attribute.get("value_id"))
         labels.append({
             "channelCateName": channel_name, "valueId": value_id, "channelCateId": channel_id,
-            "valueName": value, "tbCatId": tb_id, "subPropertyId": None, "labelType": "common",
+            "valueName": value, "tbCatId": tb_id or None, "subPropertyId": None, "labelType": "common",
             "subValueId": None, "labelId": None, "propertyName": name, "isUserClick": "1",
             "isUserCancel": None, "from": "newPublishChoice", "propertyId": property_id,
             "labelFrom": "newPublish", "text": value,
@@ -427,11 +430,11 @@ async def publish_item(*, item_data: dict[str, Any], cookie: str, platform_accou
         "itemAddrDTO": address_payload,
         "defaultPrice": False,
         "itemCatDTO": {
-            "catId": _text(item_data.get("platform_category_id")),
+            "catId": _text(item_data.get("platform_category_id")) or _text(item_data.get("platform_tb_category_id")),
             "catName": _text(item_data.get("platform_category_name")),
             "channelCatId": _text(item_data.get("platform_channel_category_id")),
             "leafId": _text(item_data.get("platform_leaf_id")),
-            "tbCatId": _text(item_data.get("platform_tb_category_id")),
+            "tbCatId": _text(item_data.get("platform_tb_category_id")) or None,
         },
         "uniqueCode": f"{int(time.time() * 1000)}{platform_account_id[-4:]}",
         "sourceId": "pcMainPublish" if personal else "pcBackendPublish",

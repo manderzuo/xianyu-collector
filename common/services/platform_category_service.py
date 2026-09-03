@@ -163,11 +163,11 @@ def _parse_candidates(response: dict[str, Any]) -> list[dict[str, Any]]:
             if not path:
                 continue
             result.append({
-                "cat_id": _text(value.get("catId")) or None,
+                "cat_id": _text(value.get("catId")) or _text(transport.get("catId")) or None,
                 "cat_name": category_name or None,
                 "channel_cat_id": channel_id or None,
                 "channel_cat_name": channel_name or None,
-                "leaf_id": _text(value.get("leafId")) or None,
+                "leaf_id": _text(value.get("leafId")) or _text(transport.get("leafId")) or None,
                 "tb_cat_id": tb_id or None,
                 "path": path,
                 "score": value.get("score"),
