@@ -422,6 +422,8 @@ async def publish_item(*, item_data: dict[str, Any], cookie: str, platform_accou
     personal = not is_fish_shop
     properties, sku_rows, has_sku = _sku_payload(item_data) if is_fish_shop else ([], [], False)
     requested_quantity = _quantity(item_data.get("quantity") or item_data.get("stock"))
+    if personal and requested_quantity != 1:
+        raise GoofishPublishError("当前普通卖家账号不支持多库存商品，请将线上库存设为1或开通鱼小铺")
     labels = _category_labels(item_data)
     address_payload = await _resolve_item_address(item_data)
     uploaded_images = []
@@ -432,9 +434,9 @@ async def publish_item(*, item_data: dict[str, Any], cookie: str, platform_accou
     payload: dict[str, Any] = {
         "freebies": False,
         "itemTypeStr": "b",
-        # 有规格时库存由 itemSkuList 的各 SKU 承载；无规格商品（包括普通卖家）
-        # 使用表单填写的线上库存，避免成交一次后平台因数量=1自动售罄。
-        "quantity": "1" if has_sku else str(requested_quantity),
+        # 普通卖家只能发布单库存商品；鱼小铺无规格商品使用单品库存，
+        # 有规格时库存由 itemSkuList 的各 SKU 承载。
+        "quantity": "1" if personal or has_sku else str(requested_quantity),
         "simpleItem": "true",
         "imageInfoDOList": uploaded_images,
         "itemTextDTO": {"desc": description, "title": title, "titleDescSeparate": False},
