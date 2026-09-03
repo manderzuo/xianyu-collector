@@ -19,8 +19,12 @@ from common.models import Account, AccountContent, FeatureRecord, PolishLog
 from common.services.account_renewal import renew_account_session
 from common.services.cookie_renewal import is_session_expired_message
 
-MTOP_APP_KEY = "34839810"
+# 闲鱼网页端当前擦亮请求使用独立的 AppKey 和 2.0 接口版本。
+# 旧版的 34839810/1.0 仍可能返回 SUCCESS，但不会可靠反映 APP 的
+# exposure 状态，因此不能继续使用旧协议判定擦亮已落地。
+MTOP_APP_KEY = "12574478"
 MTOP_API = "mtop.taobao.idle.item.polish"
+MTOP_API_VERSION = "2.0"
 LOG_RETENTION_DAYS = 10
 POLISH_INTERVAL = timedelta(hours=6)
 logger = logging.getLogger("xr.scheduler.polish")
@@ -98,21 +102,24 @@ async def _polish_item(client: httpx.AsyncClient, cookie: str, item_id: str, ret
     data = json.dumps({"itemId": str(item_id)}, separators=(",", ":"), ensure_ascii=False)
     timestamp = str(int(time.time() * 1000))
     params = {
-        "jsv": "2.7.2", "appKey": MTOP_APP_KEY, "t": timestamp,
-        "sign": _sign(timestamp, token, data), "v": "2.0", "type": "originaljson",
-        "accountSite": "xianyu", "dataType": "json", "timeout": "20000",
-        "api": MTOP_API, "sessionOption": "AutoLoginOnly", "spm_cnt": "a21ybx.item.0.0",
-        "spm_pre": "a21ybx.personal.feeds.1.42f86ac21eZ9zd", "log_id": "42f86ac21eZ9zd",
+        "jsv": "2.7.2",
+        "appKey": MTOP_APP_KEY,
+        "t": timestamp,
+        "sign": _sign(timestamp, token, data),
+        "api": MTOP_API,
+        "v": "2.0",
+        "type": "originaljson",
+        "dataType": "json",
+        "needLoginPC": "true",
     }
     try:
         response = await client.post(
-            f"{settings.goofish_mtop_host.rstrip('/')}/h5/{MTOP_API}/1.0/",
+            f"{settings.goofish_mtop_host.rstrip('/')}/h5/{MTOP_API}/{MTOP_API_VERSION}/",
             params=params,
             data={"data": data},
             headers={
                 "accept": "application/json",
-                "accept-language": "en,zh-CN;q=0.9,zh;q=0.8,ru;q=0.7",
-                "cache-control": "no-cache",
+                "accept-language": "zh-CN",
                 "content-type": "application/x-www-form-urlencoded",
                 "origin": "https://www.goofish.com",
                 "pragma": "no-cache",
@@ -139,10 +146,18 @@ async def _polish_item(client: httpx.AsyncClient, cookie: str, item_id: str, ret
     ret = result.get("ret") if isinstance(result, dict) else []
     message = str(ret[0] if isinstance(ret, list) and ret else "未知错误")
     logger.info("擦亮接口返回 item_id=%s ret=%s", item_id, ret)
+    response_data = result.get("data") if isinstance(result, dict) else None
+    exposure = response_data.get("exposure") if isinstance(response_data, dict) else None
+    platform_confirmed = exposure is True or str(exposure).strip().lower() in {"true", "1", "yes"}
     if message == "SUCCESS::调用成功":
         return {
             "success": True,
-            "message": "闲鱼接口已接受擦亮请求，APP状态未核验",
+            "message": (
+                "闲鱼接口已返回 exposure=true，平台已确认擦亮"
+                if platform_confirmed
+                else "闲鱼接口已接受擦亮请求，等待平台确认"
+            ),
+            "platform_confirmed": platform_confirmed,
             "cookie": updated_cookie,
         }
     if is_session_expired_message(message):
@@ -158,7 +173,8 @@ async def _polish_item(client: httpx.AsyncClient, cookie: str, item_id: str, ret
         return {
             "success": False,
             "already_polished": True,
-            "message": "闲鱼返回商品今天已擦亮，未执行本次操作",
+            "platform_confirmed": True,
+            "message": "闲鱼已确认商品今天擦亮过，无需重复执行",
             "cookie": updated_cookie,
         }
     if any(word in message for word in ("TOKEN_EXPIRED", "TOKEN_EXOIRED")) and retry < 2 and updated_cookie != cookie:
@@ -231,21 +247,26 @@ async def execute_polish(account_id: int | None = None, *, force: bool = False) 
                         success_count += 1
                         payload["last_polished_date"] = started.date().isoformat()
                         payload["last_polished_at"] = started.isoformat()
-                        # mtop 返回 SUCCESS 只代表请求被平台接受，当前项目没有
-                        # 可用的 APP 状态读回接口，不能把它冒充成手机端“已擦亮”。
-                        payload["is_polished"] = False
-                        payload["polish_verified"] = False
-                        payload["polish_status"] = "submitted"
-                        payload["polish_status_message"] = "闲鱼接口已接受擦亮请求，APP展示状态尚未读回核验"
+                        # 当前 2.0 接口在成功响应中返回 exposure=true，只有这个
+                        # 平台字段才允许把本地状态更新为“已核验”。
+                        platform_confirmed = bool(result.get("platform_confirmed"))
+                        payload["is_polished"] = platform_confirmed
+                        payload["polish_verified"] = platform_confirmed
+                        payload["polish_status"] = "verified" if platform_confirmed else "submitted"
+                        payload["polish_status_message"] = (
+                            "闲鱼接口已返回 exposure=true，平台已确认擦亮"
+                            if platform_confirmed
+                            else "闲鱼接口已接受擦亮请求，等待平台确认"
+                        )
                         item.payload = payload
                     elif is_already_polished:
                         already_polished_count += 1
-                        # 防止六小时内反复提交同一条被平台拒绝的请求；
-                        # 明确记录平台回执，不更新“本次成功”时间。
+                        # 平台明确返回当天已擦亮，属于可证明的成功状态；
+                        # 但不更新“本次成功”时间，仍用尝试时间做六小时防抖。
                         payload["last_polish_attempt_date"] = started.date().isoformat()
                         payload["last_polish_attempt_at"] = started.isoformat()
-                        payload["is_polished"] = False
-                        payload["polish_verified"] = False
+                        payload["is_polished"] = True
+                        payload["polish_verified"] = True
                         payload["polish_status"] = "platform_already_polished"
                         payload["polish_status_message"] = str(result.get("message") or "平台返回商品当天已擦亮")[:500]
                         item.payload = payload
