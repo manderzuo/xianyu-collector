@@ -162,6 +162,47 @@ function transportData(value: PlatformCategoryCardValue) {
     : {}
 }
 
+/**
+ * 闲鱼的服务类草稿不仅读取 itemLabelExtList，还会读取 cpvList 中每个
+ * 属性值的 isClicked/transportData。属性编辑器原先只更新了表单字段，
+ * 导致服务卡接口拿到的仍是“未选择属性”的旧卡片，APP 会把草稿降级成
+ * 普通商品，价格面板也就不会显示库存。
+ */
+function syncCardListAttributes(cards: PlatformCategoryCardData[], attributes: PlatformMaterialAttribute[]) {
+  return cards.map((card) => {
+    const propertyId = asText(card.propertyId)
+    if (!propertyId || propertyId === '-10000' || !Array.isArray(card.valuesList)) return card
+    const propertyAttributes = attributes.filter((attribute) => asText(attribute.property_id) === propertyId)
+    if (!propertyAttributes.length) return card
+
+    return {
+      ...card,
+      valuesList: card.valuesList.map((value) => {
+        const valueId = asText(value.valueId)
+        const valueName = asText(value.valueName)
+        const selected = propertyAttributes.some((attribute) => {
+          const attributeValueId = asText(attribute.value_id)
+          return attributeValueId ? attributeValueId === valueId : asText(attribute.value_name) === valueName
+        })
+        if (!selected) return { ...value, isClicked: '0', isUserClick: '0' }
+        const transport = transportData(value)
+        return {
+          ...value,
+          isClicked: '1',
+          isUserClick: '1',
+          transportData: {
+            ...transport,
+            isUserClick: '1',
+            properties: asText(value.properties)
+              || asText(transport.properties)
+              || `${propertyId}##${asText(card.propertyName)}:${valueId}##${valueName}`,
+          },
+        }
+      }),
+    }
+  })
+}
+
 function candidateMatchesCardValue(candidate: PlatformCategoryCandidate, value: PlatformCategoryCardValue) {
   const transport = transportData(value)
   const channelCatId = asText(value.channelCatId) || asText(transport.channelCateId)
@@ -381,7 +422,10 @@ export function PlatformCategoryRecommender({ form, onChange, categoryLocked = f
   const selectedIndex = selectedCandidate ? String(candidates.indexOf(selectedCandidate)) : ''
 
   const updateAttributes = (platformAttributes: PlatformMaterialAttribute[]) => {
-    const patch: Partial<PublishForm> = { platform_attributes: platformAttributes }
+    const patch: Partial<PublishForm> = {
+      platform_attributes: platformAttributes,
+      platform_card_list: syncCardListAttributes(cardList, platformAttributes),
+    }
     if (properties.some((property) => property.property_id === '20000')) {
       patch.brand = selectedProperty(platformAttributes, '20000')?.value_name || ''
     }

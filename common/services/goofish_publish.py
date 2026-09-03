@@ -411,7 +411,6 @@ async def _service_publish_draft(
         "publishScene": "mainPublish",
         "scene": "mainPublish",
         "sourceId": "draftbox",
-        "innerPublishType": "innerMainPublish",
     })
     cards_response = await mtop_call(
         api=SERVICE_CARDS_API,
@@ -449,7 +448,6 @@ async def _service_publish_draft(
     ]
     payload.update({
         "baseParams": {"bizcode": "pcMainPublish", "bucketId": "", "scene": "mainPublish", "simpleItem": "true"},
-        "innerPublishType": "innerMainPublish",
         "scene": "mainPublish",
         "sourceId": "draftbox",
         "publishScene": "mainPublish",
