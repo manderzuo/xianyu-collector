@@ -113,6 +113,10 @@ export interface Item {
   item_category?: string
   price?: string
   item_price?: string
+  stock?: number                 // 闲鱼线上可售库存
+  stock_known?: boolean          // false 表示平台本次没有返回库存
+  status?: string                // 本地归一化的平台状态
+  platform_status_text?: string  // 闲鱼原始状态文案
   has_sku?: boolean
   is_polished?: boolean            // 是否擦亮
   polish_status?: 'submitted' | 'platform_already_polished' | 'verified' | 'failed' | 'unknown'

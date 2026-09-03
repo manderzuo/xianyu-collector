@@ -1339,6 +1339,8 @@ export function Items() {
                   <th className="min-w-[160px]">商品ID</th>
                   <th className="min-w-[260px]">商品标题</th>
                   <th className="min-w-[80px]">价格</th>
+                  <th className="min-w-[90px] text-center">线上库存</th>
+                  <th className="min-w-[110px] text-center">平台状态</th>
                   <th className="min-w-[100px] text-center">是否擦亮</th>
                   <th className="min-w-[100px] text-center">多规格</th>
                   <th className="min-w-[120px] text-center">多数量发货</th>
@@ -1353,7 +1355,7 @@ export function Items() {
             <tbody>
               {filteredItems.length === 0 ? (
                 <tr>
-                  <td colSpan={14}>
+                  <td colSpan={16}>
                     <div className="empty-state py-8">
                       <Package className="empty-state-icon" />
                       <p className="text-gray-500">暂无商品数据</p>
@@ -1410,6 +1412,12 @@ export function Items() {
                     </td>
                     <td className="text-amber-600 font-medium">
                       {item.item_price || (item.price ? `¥${item.price}` : '-')}
+                    </td>
+                    <td className="text-center font-medium">
+                      {item.stock_known === false ? <span className="text-slate-400" title="闲鱼列表/详情接口本次未返回库存">未返回</span> : <span className={item.stock === 0 ? 'text-red-600' : 'text-emerald-600'}>{item.stock ?? '-'}</span>}
+                    </td>
+                    <td className="text-center text-xs">
+                      <span className={item.status === 'off_sale' ? 'text-red-600' : 'text-emerald-600'} title={item.platform_status_text || undefined}>{item.status === 'off_sale' ? '已下架/售罄' : item.status === 'on_sale' ? '在售' : (item.status || '未知')}</span>
                     </td>
                     <td>
                       {(() => {

@@ -22,6 +22,9 @@ interface SyncedItemRow {
 
 function mapSyncedItem(row: SyncedItemRow): Item {
   const payload = row.payload || {}
+  const inventory = payload.platform_inventory && typeof payload.platform_inventory === 'object'
+    ? payload.platform_inventory as { stock_known?: boolean; status_text?: string }
+    : null
   const rawPolishStatus = typeof payload.polish_status === 'string' ? payload.polish_status : ''
   const polishStatus: Item['polish_status'] = rawPolishStatus === 'submitted'
     || rawPolishStatus === 'platform_already_polished'
@@ -39,6 +42,10 @@ function mapSyncedItem(row: SyncedItemRow): Item {
     item_detail: row.description || undefined,
     price: row.price === null || row.price === undefined ? undefined : String(row.price),
     item_price: row.price === null || row.price === undefined ? undefined : `¥${row.price}`,
+    stock: row.stock === null || row.stock === undefined ? undefined : Number(row.stock),
+    stock_known: inventory ? inventory.stock_known !== false : false,
+    status: row.status,
+    platform_status_text: inventory?.status_text || undefined,
     has_sku: Boolean(payload.has_sku),
     // 只有明确的读回核验才算“已擦亮”；接口 SUCCESS 仅展示为已提交。
     is_polished: payload.polish_verified === true || polishStatus === 'verified',

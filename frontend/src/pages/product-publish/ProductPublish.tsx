@@ -15,7 +15,7 @@ import ProductVideoUploader from './ProductVideoUploader'
 import MaterialPickerModal from './MaterialPickerModal'
 import { buildSkuKey, findDuplicateSpecificationValue, type ProductSpecification, type PublishForm, type SkuRow } from './publishTypes'
 
-const PERSONAL_SELLER_DEFAULT_STOCK = 1
+const DEFAULT_PRODUCT_STOCK = 1
 
 function materialSpecifications(material: ProductMaterial): { specifications: ProductSpecification[]; skuRows: SkuRow[] } {
   const specifications = (material.specifications || []).map((spec, specIndex) => ({
@@ -103,11 +103,7 @@ export function ProductPublish() {
 
   useEffect(() => {
     if (accountCapability?.is_fish_shop !== false) return
-    setForm((current) => (
-      current.videos.length === 0 && current.quantity === PERSONAL_SELLER_DEFAULT_STOCK
-        ? current
-        : { ...current, videos: [], quantity: PERSONAL_SELLER_DEFAULT_STOCK }
-    ))
+    setForm((current) => current.videos.length === 0 ? current : { ...current, videos: [] })
     if (form.videos.length > 0) {
       addToast({ type: 'warning', message: '普通卖家账号不支持上传视频，已移除当前视频' })
     }
@@ -176,7 +172,7 @@ export function ProductPublish() {
     setCategoryLocked(hasImportedCategory)
     setForm((current) => {
       const importedShippingMethod = material.shipping_method || (material.postage > 0 ? 'fixed' : 'free')
-      return { ...current, title: material.title, description: material.description, price: String(material.price), original_price: material.original_price ? String(material.original_price) : '', category: material.category || '', address: material.address || '', address_expected_text: material.address_expected_text || undefined, platform_category_id: material.platform_category_id || '', platform_category_name: material.platform_category_name || '', platform_channel_category_id: material.platform_channel_category_id || '', platform_channel_category_name: material.platform_channel_category_name || '', platform_leaf_id: material.platform_leaf_id || '', platform_tb_category_id: material.platform_tb_category_id || '', platform_category_path: material.platform_category_path || [], platform_attributes: material.platform_attributes || [], category_source: material.category_source || 'manual', category_confidence: material.category_confidence ?? undefined, videos: personalAccount ? [] : material.videos || [], quantity: personalAccount ? PERSONAL_SELLER_DEFAULT_STOCK : material.quantity || 1, delivery_method: material.delivery_method || 'express', shipping_method: importedShippingMethod, support_pickup: Boolean(material.support_pickup), postage: String(material.postage ?? 0), brand: material.brand || '', condition: material.condition || '全新', specifications: imported.specifications, sku_rows: imported.skuRows }
+      return { ...current, title: material.title, description: material.description, price: String(material.price), original_price: material.original_price ? String(material.original_price) : '', category: material.category || '', address: material.address || '', address_expected_text: material.address_expected_text || undefined, platform_category_id: material.platform_category_id || '', platform_category_name: material.platform_category_name || '', platform_channel_category_id: material.platform_channel_category_id || '', platform_channel_category_name: material.platform_channel_category_name || '', platform_leaf_id: material.platform_leaf_id || '', platform_tb_category_id: material.platform_tb_category_id || '', platform_category_path: material.platform_category_path || [], platform_attributes: material.platform_attributes || [], category_source: material.category_source || 'manual', category_confidence: material.category_confidence ?? undefined, videos: personalAccount ? [] : material.videos || [], quantity: Math.max(1, Number(material.quantity) || DEFAULT_PRODUCT_STOCK), delivery_method: material.delivery_method || 'express', shipping_method: importedShippingMethod, support_pickup: Boolean(material.support_pickup), postage: String(material.postage ?? 0), brand: material.brand || '', condition: material.condition || '全新', specifications: imported.specifications, sku_rows: imported.skuRows }
     })
     setImagePaths(material.images || []); setImagePreviews(material.images || []); setShowPicker(false)
     if (personalSpecConflict) addToast({ type: 'warning', message: '当前普通卖家账号不支持该素材的多规格，请改用无规格素材或鱼小铺账号' })
@@ -210,7 +206,7 @@ export function ProductPublish() {
       const response = await publishSingle({
         account_id: form.account_id, title: form.title, description: form.description, price: parseFloat(form.price), original_price: form.original_price ? parseFloat(form.original_price) : undefined, category: form.category || undefined,
         platform_category_id: form.platform_category_id || undefined, platform_category_name: form.platform_category_name || undefined, platform_channel_category_id: form.platform_channel_category_id || undefined, platform_channel_category_name: form.platform_channel_category_name || undefined, platform_leaf_id: form.platform_leaf_id || undefined, platform_tb_category_id: form.platform_tb_category_id || undefined, platform_attributes: form.platform_attributes, platform_category_path: form.platform_category_path, category_source: form.category_source, category_confidence: form.category_confidence,
-        images: imagePaths, videos: accountCapability.is_fish_shop ? form.videos : [], quantity: accountCapability.is_fish_shop ? form.quantity : PERSONAL_SELLER_DEFAULT_STOCK, specifications: form.specifications.map((spec) => ({ name: spec.name, support_image: spec.supportImage, values: spec.values.map((value) => ({ name: value.name, image: value.image || undefined })) })), sku_rows: form.sku_rows.map((row) => ({ specs: row.specs, price: parseFloat(row.price), stock: parseInt(row.stock, 10) || 0 })), stock: accountCapability.is_fish_shop ? form.quantity : PERSONAL_SELLER_DEFAULT_STOCK, address: form.address || undefined, address_expected_text: form.address_expected_text || undefined, delivery_method: form.delivery_method, shipping_method: form.shipping_method, support_pickup: form.support_pickup, postage: parseFloat(form.postage) || 0, brand: form.brand || undefined, condition: form.condition,
+        images: imagePaths, videos: accountCapability.is_fish_shop ? form.videos : [], quantity: Math.max(1, Math.min(999999, Number(form.quantity) || DEFAULT_PRODUCT_STOCK)), specifications: form.specifications.map((spec) => ({ name: spec.name, support_image: spec.supportImage, values: spec.values.map((value) => ({ name: value.name, image: value.image || undefined })) })), sku_rows: form.sku_rows.map((row) => ({ specs: row.specs, price: parseFloat(row.price), stock: parseInt(row.stock, 10) || 0 })), stock: Math.max(1, Math.min(999999, Number(form.quantity) || DEFAULT_PRODUCT_STOCK)), address: form.address || undefined, address_expected_text: form.address_expected_text || undefined, delivery_method: form.delivery_method, shipping_method: form.shipping_method, support_pickup: form.support_pickup, postage: parseFloat(form.postage) || 0, brand: form.brand || undefined, condition: form.condition,
       })
       const message = response.message || (response.success ? '商品发布成功' : '发布失败')
       setResult({ success: response.success, message, item_url: response.data?.item_url || undefined, sync_status: response.data?.sync_status || undefined, sync_message: response.data?.sync_message || undefined, sync_total_count: response.data?.sync_total_count || 0, sync_saved_count: response.data?.sync_saved_count || 0 })

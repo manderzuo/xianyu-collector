@@ -48,6 +48,17 @@ def _price_cent(value: Any, label: str) -> str:
     return str(cents)
 
 
+def _quantity(value: Any) -> int:
+    """校验单品库存，普通卖家商品也要把该数量提交给平台。"""
+    try:
+        quantity = int(value or 1)
+    except (TypeError, ValueError) as exc:
+        raise GoofishPublishError("线上库存必须是整数") from exc
+    if quantity < 1 or quantity > 999999:
+        raise GoofishPublishError("线上库存必须在1到999999之间")
+    return quantity
+
+
 def _content_type(name: str) -> str:
     value = mimetypes.guess_type(name)[0] or "image/jpeg"
     return value if value.startswith("image/") else "image/jpeg"
@@ -410,6 +421,7 @@ async def publish_item(*, item_data: dict[str, Any], cookie: str, platform_accou
         raise GoofishPublishError("当前账号未开通鱼小铺，不能发布多规格和独立库存商品")
     personal = not is_fish_shop
     properties, sku_rows, has_sku = _sku_payload(item_data) if is_fish_shop else ([], [], False)
+    requested_quantity = _quantity(item_data.get("quantity") or item_data.get("stock"))
     labels = _category_labels(item_data)
     address_payload = await _resolve_item_address(item_data)
     uploaded_images = []
@@ -420,7 +432,9 @@ async def publish_item(*, item_data: dict[str, Any], cookie: str, platform_accou
     payload: dict[str, Any] = {
         "freebies": False,
         "itemTypeStr": "b",
-        "quantity": "1" if (personal or has_sku) else max(1, min(int(item_data.get("quantity") or 1), 999999)),
+        # 有规格时库存由 itemSkuList 的各 SKU 承载；无规格商品（包括普通卖家）
+        # 使用表单填写的线上库存，避免成交一次后平台因数量=1自动售罄。
+        "quantity": "1" if has_sku else str(requested_quantity),
         "simpleItem": "true",
         "imageInfoDOList": uploaded_images,
         "itemTextDTO": {"desc": description, "title": title, "titleDescSeparate": False},

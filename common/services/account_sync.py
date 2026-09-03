@@ -270,6 +270,10 @@ async def sync_account_products(
     saved_count = 0
     changed_count = 0
     fetched_pages = 0
+    inventory_enriched_count = 0
+    inventory_detail_attempt_count = 0
+    inventory_detail_budget = 20
+    inventory_detail_blocked = False
 
     try:
         if sync_products:
@@ -302,17 +306,63 @@ async def sync_account_products(
                     if not external_id:
                         continue
                     raw_payload = row.get("raw") if isinstance(row.get("raw"), dict) else row
+                    existing = existing_map.get(external_id)
+                    local_payload = existing.payload if existing and isinstance(existing.payload, dict) else {}
+                    cached_inventory = local_payload.get("platform_inventory")
+                    cached_inventory = cached_inventory if isinstance(cached_inventory, dict) else {}
+                    cached_at = _parse_platform_datetime(cached_inventory.get("checked_at"))
+                    cache_is_fresh = bool(
+                        cached_at and _now() - cached_at < timedelta(minutes=5)
+                        and cached_inventory.get("source") == "item_detail"
+                    )
+                    platform_inventory = dict(cached_inventory) if cache_is_fresh else {
+                        "stock": int(row.get("stock") or 0),
+                        "stock_known": bool(row.get("stock_known")),
+                        "status": row.get("status") or "on_sale",
+                        "source": "item_list",
+                    }
+                    # 商品列表卡片通常不带库存，补读详情接口拿到线上真实数量和状态。
+                    # 设置单次预算，避免账号商品数量异常时触发过多详情请求。
+                    if not cache_is_fresh and not inventory_detail_blocked and inventory_detail_attempt_count < inventory_detail_budget:
+                        inventory_detail_attempt_count += 1
+                        try:
+                            detail = await client.get_item_inventory(platform_id, external_id)
+                        except Exception as exc:  # noqa: BLE001
+                            detail = {"success": False, "error": str(exc)[:300]}
+                        if client.cookie_value and client.cookie_value != account.cookie:
+                            account.cookie = client.cookie_value
+                        if detail.get("success"):
+                            inventory_enriched_count += 1
+                            if detail.get("stock_known"):
+                                platform_inventory["stock"] = int(detail.get("stock") or 0)
+                                platform_inventory["stock_known"] = True
+                            platform_inventory.update({
+                                "status": detail.get("status") or platform_inventory["status"],
+                                "status_code": detail.get("status_code"),
+                                "status_text": detail.get("status_text") or "",
+                                "source": "item_detail",
+                                "checked_at": _now().isoformat(),
+                            })
+                        else:
+                            platform_inventory["error"] = str(detail.get("error") or "详情接口未返回库存")[:300]
+                            if detail.get("account_invalid"):
+                                # 风控/登录态失败时停止本轮详情补读，避免连续请求放大风控。
+                                inventory_detail_blocked = True
+                    # 保留本地擦亮、卡券、回复等元数据，但不能让上一次的
+                    # cardData 覆盖平台本次同步到的标题/价格/图片。
+                    local_metadata = {key: value for key, value in local_payload.items() if key not in {"cardData", "cardType"}}
+                    merged_payload = {**raw_payload, **local_metadata}
+                    merged_payload["platform_inventory"] = platform_inventory
                     values = {
                         "title": row.get("title") or "未命名商品",
                         "description": row.get("description"),
                         "price": row.get("price"),
-                        "stock": int(row.get("stock") or 0),
+                        "stock": int(platform_inventory["stock"] or 0),
                         "images": _image_list(row.get("images")),
-                        "status": row.get("status") or "on_sale",
-                        "payload": raw_payload,
+                        "status": platform_inventory["status"] or "on_sale",
+                        "payload": merged_payload,
                         "synced_at": _now(),
                     }
-                    existing = existing_map.get(external_id)
                     if existing is None:
                         session.add(
                             AccountContent(
@@ -354,6 +404,16 @@ async def sync_account_products(
             for old in old_rows:
                 if old.external_id not in seen_ids:
                     old.status = "off_sale"
+                    old.stock = 0
+                    payload = dict(old.payload or {})
+                    payload["platform_inventory"] = {
+                        "stock": 0,
+                        "stock_known": True,
+                        "status": "off_sale",
+                        "status_text": "不在闲鱼在售列表",
+                        "source": "absent_from_on_sale_list",
+                    }
+                    old.payload = payload
             await session.commit()
 
         product_count = int(
@@ -406,6 +466,9 @@ async def sync_account_products(
             "saved_count": saved_count,
             "changed_count": changed_count,
             "pages": fetched_pages,
+            "inventory_detail_attempt_count": inventory_detail_attempt_count,
+            "inventory_enriched_count": inventory_enriched_count,
+            "inventory_detail_blocked": inventory_detail_blocked,
             "orders": orders_result,
             # 消息不再通过一次性同步接口拉取；由在线聊天连接实时写入消息表。
             "messages": {"status": "available_via_chat", "count": messages_count},
@@ -419,6 +482,9 @@ async def sync_account_products(
             "saved_count": saved_count,
             "changed_count": changed_count,
             "pages": fetched_pages,
+            "inventory_detail_attempt_count": inventory_detail_attempt_count,
+            "inventory_enriched_count": inventory_enriched_count,
+            "inventory_detail_blocked": inventory_detail_blocked,
             "orders": orders_result,
             "messages": {"status": "available_via_chat", "count": messages_count},
             "message": (

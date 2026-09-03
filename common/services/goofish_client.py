@@ -10,6 +10,8 @@ from typing import Any
 
 import httpx
 
+from common.services.goofish_mtop import mtop_call
+
 
 APP_KEY = "34839810"
 SEARCH_API = "mtop.taobao.idlemtopsearch.pc.search"
@@ -57,6 +59,52 @@ def _normalize_amount(value: Any) -> float | None:
         return None
 
 
+def _integer_value(value: Any) -> int | None:
+    """把平台库存字段安全转换为非负整数；没有字段时返回 None。"""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return max(number, 0)
+
+
+def _first_inventory_value(source: dict[str, Any]) -> int | None:
+    """读取不同版本闲鱼商品卡片可能使用的库存字段。"""
+    for key in (
+        "quantity",
+        "stock",
+        "inventory",
+        "availableQuantity",
+        "availableStock",
+        "remainQuantity",
+        "remainStock",
+    ):
+        if key in source:
+            value = _integer_value(source.get(key))
+            if value is not None:
+                return value
+    return None
+
+
+def _platform_item_status(status_code: Any, status_text: Any, *, default: str = "on_sale") -> str:
+    """将闲鱼详情里的状态统一为本地商品状态。"""
+    text = str(status_text or "").strip().lower()
+    if any(word in text for word in ("已下架", "卖掉", "已售罄", "售罄", "下架")):
+        return "off_sale"
+    try:
+        code = int(status_code)
+    except (TypeError, ValueError):
+        code = None
+    # 详情接口实测：1=卖掉了，-2=已下架。
+    if code in {1, -2}:
+        return "off_sale"
+    if any(word in text for word in ("在售", "出售中", "可购买")):
+        return "on_sale"
+    return default
+
+
 def normalize_search_row(row: dict[str, Any]) -> dict[str, Any]:
     main = ((row.get("data") or {}).get("item") or {}) if isinstance(row, dict) else {}
     main = main.get("main") or main
@@ -82,21 +130,21 @@ def normalize_account_item(card: dict[str, Any]) -> dict[str, Any]:
     price_info = card_data.get("priceInfo") or {}
     pic_info = card_data.get("picInfo") or {}
     description = card_data.get("description") or card_data.get("desc")
-    quantity = card_data.get("quantity") or card_data.get("stock") or 0
-    try:
-        quantity = int(quantity)
-    except (TypeError, ValueError):
-        quantity = 0
+    quantity = _first_inventory_value(card_data)
+    status_code = card_data.get("itemStatus")
+    status = _platform_item_status(status_code, card_data.get("itemStatusStr"))
     return {
         "external_id": str(item_id) if item_id else None,
         "title": str(card_data.get("title") or "未命名商品").strip(),
         "description": str(description).strip() if description else None,
         "price": _normalize_amount(price_info.get("price") or card_data.get("price")),
-        "stock": quantity,
+        "stock": quantity if quantity is not None else 0,
+        "stock_known": quantity is not None,
         "images": pic_info,
-        "status": "on_sale",
+        "status": status,
         "category_id": card_data.get("categoryId"),
-        "item_status": card_data.get("itemStatus"),
+        "item_status": status_code,
+        "item_status_text": card_data.get("itemStatusStr"),
         "detail_url": card_data.get("detailUrl"),
         "raw": card,
     }
@@ -104,6 +152,7 @@ def normalize_account_item(card: dict[str, Any]) -> dict[str, Any]:
 
 class GoofishClient:
     def __init__(self, cookie_value: str, proxy: str | None = None) -> None:
+        self.cookie_value = cookie_value or ""
         self.cookies = parse_cookie_string(cookie_value)
         self.proxy = proxy or None
 
@@ -220,6 +269,55 @@ class GoofishClient:
             "page": page,
             "page_size": page_size,
             "raw": payload,
+        }
+
+    async def get_item_inventory(self, account_id: str, item_id: str) -> dict[str, Any]:
+        """从商品详情接口补读线上库存和真实上下架状态。
+
+        ``mtop.idle.web.xyh.item.list`` 的商品卡片经常不返回库存，尤其是
+        普通卖家账号；详情接口的 ``itemDO.quantity`` 才是当前线上可售数量。
+        """
+        item_id = str(item_id or "").strip()
+        if not item_id:
+            return {"success": False, "error": "商品 ID 为空", "cookies_str": self.cookie_value}
+        result = await mtop_call(
+            api="mtop.taobao.idle.pc.detail",
+            data={"itemId": item_id},
+            cookies_str=self.cookie_value,
+            account_id=str(account_id or "").strip(),
+            proxy=self.proxy,
+            extra_params={"spm_cnt": "a21ybx.item.0.0"},
+        )
+        self.cookie_value = str(result.get("cookies_str") or self.cookie_value)
+        self.cookies = parse_cookie_string(self.cookie_value)
+        if not result.get("success"):
+            return {
+                "success": False,
+                "account_invalid": bool(result.get("account_invalid")),
+                "error": result.get("error") or "商品详情获取失败",
+                "cookies_str": self.cookie_value,
+            }
+        data = ((result.get("res") or {}).get("data") or {})
+        if not isinstance(data, dict):
+            return {"success": False, "account_invalid": False, "error": "商品详情返回格式异常", "cookies_str": self.cookie_value}
+        item = data.get("itemDO") or data.get("item") or {}
+        if not isinstance(item, dict):
+            item = {}
+        quantity_raw = item.get("quantity")
+        quantity = _integer_value(quantity_raw)
+        status_code = item.get("itemStatus")
+        status_text = item.get("itemStatusStr") or item.get("statusStr")
+        status = _platform_item_status(status_code, status_text)
+        if status == "off_sale" and quantity is None:
+            quantity = 0
+        return {
+            "success": True,
+            "stock": quantity,
+            "stock_known": quantity is not None,
+            "status": status,
+            "status_code": status_code,
+            "status_text": str(status_text or "").strip(),
+            "cookies_str": self.cookie_value,
         }
 
     async def list_sold_orders(
