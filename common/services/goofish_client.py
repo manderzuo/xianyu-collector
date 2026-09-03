@@ -290,6 +290,26 @@ class GoofishClient:
         )
         self.cookie_value = str(result.get("cookies_str") or self.cookie_value)
         self.cookies = parse_cookie_string(self.cookie_value)
+        # 闲鱼对服务/技能商品的公共详情接口偶发触发 USER_VALIDATE，
+        # 但同一登录态的卖家编辑详情仍会返回真实 quantity。优先使用
+        # 该只读详情作为库存兜底，避免把已知库存错误显示成“未返回”。
+        inventory_from_edit_detail = False
+        if not result.get("success") and "USER_VALIDATE" in str(result.get("error") or "").upper():
+            fallback = await mtop_call(
+                api="mtop.idle.pc.idleitem.editDetail",
+                data={"itemId": item_id},
+                cookies_str=self.cookie_value,
+                account_id=str(account_id or "").strip(),
+                proxy=self.proxy,
+                origin="https://seller.goofish.com",
+                referer="https://seller.goofish.com/?site=COMMONPRO",
+                extra_headers={"idle_site_biz_code": "COMMONPRO"},
+            )
+            self.cookie_value = str(fallback.get("cookies_str") or self.cookie_value)
+            self.cookies = parse_cookie_string(self.cookie_value)
+            if fallback.get("success"):
+                result = fallback
+                inventory_from_edit_detail = True
         if not result.get("success"):
             return {
                 "success": False,
@@ -300,7 +320,7 @@ class GoofishClient:
         data = ((result.get("res") or {}).get("data") or {})
         if not isinstance(data, dict):
             return {"success": False, "account_invalid": False, "error": "商品详情返回格式异常", "cookies_str": self.cookie_value}
-        item = data.get("itemDO") or data.get("item") or {}
+        item = data if inventory_from_edit_detail else (data.get("itemDO") or data.get("item") or {})
         if not isinstance(item, dict):
             item = {}
         quantity_raw = item.get("quantity")
