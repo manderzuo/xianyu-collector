@@ -394,6 +394,119 @@ def _is_service_category(item_data: dict[str, Any]) -> bool:
     )
 
 
+def _draft_payload(values: dict[str, Any]) -> dict[str, Any]:
+    """生成与闲鱼网页 ``t7.xP`` 等价的服务类草稿数据。
+
+    服务分类的网页流程不是把普通发布请求改名后提交，而是先将表单
+    标准化成 draft.publish 所需的完整结构。缺少这些默认字段时，接口
+    仍可能返回 draftId，但 APP 会按普通 ``发闲置`` 草稿打开。
+    """
+    address = values.get("itemAddrDTO") if isinstance(values.get("itemAddrDTO"), dict) else {}
+    post_fee = values.get("itemPostFeeDTO") if isinstance(values.get("itemPostFeeDTO"), dict) else {}
+    price = values.get("itemPriceDTO") if isinstance(values.get("itemPriceDTO"), dict) else {}
+    text = values.get("itemTextDTO") if isinstance(values.get("itemTextDTO"), dict) else {}
+    labels = values.get("itemLabelExtList") if isinstance(values.get("itemLabelExtList"), list) else []
+    protocols = values.get("userRightsProtocols") if isinstance(values.get("userRightsProtocols"), list) else []
+    images = values.get("imageInfoDOList") if isinstance(values.get("imageInfoDOList"), list) else []
+    item_properties = values.get("itemProperties") if isinstance(values.get("itemProperties"), list) else []
+    item_skus = values.get("itemSkuList") if isinstance(values.get("itemSkuList"), list) else []
+
+    normalized_images = []
+    for image in images:
+        if not isinstance(image, dict):
+            continue
+        normalized_images.append({
+            "extraInfo": image.get("extraInfo") if isinstance(image.get("extraInfo"), dict) else {"isH": "false", "isT": "false", "raw": "false"},
+            "heightSize": int(image.get("heightSize") or 0),
+            "imgPath": image.get("imgPath") or image.get("url"),
+            "isQrCode": bool(image.get("isQrCode")),
+            "labels": image.get("labels") if isinstance(image.get("labels"), list) else [],
+            "major": bool(image.get("major")),
+            "templateIndex": _text(image.get("templateIndex")) or "0",
+            "thumbnail": image.get("thumbnail") or image.get("url"),
+            "type": int(image.get("type") or 0),
+            "url": image.get("url"),
+            "widthSize": int(image.get("widthSize") or 0),
+            "status": _text(image.get("status")) or "done",
+        })
+
+    return {
+        "aiHostUsed": False,
+        "aigc": "",
+        "aigcRequestId": "",
+        "asyncSecurityInfo": {"securityStrategyHitResult": {"FORBIDDEN": [], "WARN": []}},
+        "baseParams": {
+            "bizcode": _text(values.get("bizcode")),
+            "bucketId": _text(values.get("bucketId")),
+            "scene": _text(values.get("scene")),
+            "simpleItem": _text(values.get("simpleItem")) or "true",
+        },
+        "bizLine": _text(values.get("attribute_biz_line")),
+        "bizRent": "",
+        "bizcode": _text(values.get("bizcode")),
+        "bucketId": _text(values.get("bucketId")),
+        "defaultPrice": bool(values.get("defaultPrice")),
+        "editorVersion": "",
+        "errorTipsMsg": values.get("errorTipsMsg"),
+        "freebies": bool(values.get("freebies")),
+        "imageInfoDOList": normalized_images,
+        # 官方 xP 对新建草稿固定传空值；innerPublishType 只属于二维码深链。
+        "innerPublishType": "",
+        "itemAddrDTO": {
+            "area": _text(address.get("area")),
+            "city": _text(address.get("city")),
+            "divisionId": _text(address.get("divisionId")),
+            "gps": _text(address.get("gps")),
+            "poiId": _text(address.get("poiId")),
+            "poiName": _text(address.get("poiName")),
+            "prov": _text(address.get("prov")),
+        },
+        "itemCatDTO": values.get("itemCatDTO") if isinstance(values.get("itemCatDTO"), dict) else {},
+        "itemGroupDTO": {"groupId": ""},
+        "itemLabelExtList": labels,
+        "itemPostFeeDTO": {
+            "canFreeShipping": bool(post_fee.get("canFreeShipping")),
+            "supportFreight": bool(post_fee.get("supportFreight")),
+            "onlyTakeSelf": bool(post_fee.get("onlyTakeSelf")),
+            "postPriceInCent": _text(post_fee.get("postPriceInCent")) or None,
+            "templateId": post_fee.get("templateId"),
+        },
+        "itemPriceDTO": {
+            "origPriceInCent": _text(price.get("origPriceInCent")) or None,
+            "priceInCent": _text(price.get("priceInCent")) or None,
+        },
+        "itemStatus": _text(values.get("itemStatus")) or "0",
+        "itemTextDTO": {
+            "desc": _text(text.get("desc")),
+            "richTextDesc": text.get("richTextDesc"),
+            "title": _text(text.get("title")) or _text(text.get("desc")),
+            "titleDescSeparate": bool(text.get("titleDescSeparate")),
+            "trackParamsRichTextStyle": text.get("trackParamsRichTextStyle"),
+        },
+        "itemTopicParams": {"topicInfos": []},
+        "itemTypeStr": _text(values.get("itemTypeStr")) or "b",
+        "publishScene": _text(values.get("publishScene")),
+        "quantity": _text(values.get("quantity")) or "1",
+        "scene": _text(values.get("scene")),
+        "simpleItem": _text(values.get("simpleItem")) or "true",
+        "sourceId": _text(values.get("sourceId")),
+        "topics": values.get("topics") if isinstance(values.get("topics"), list) else [],
+        "uniqueCode": _text(values.get("uniqueCode")),
+        "userRightsProtocols": [
+            {"enable": bool(protocol.get("enable")), "serviceCode": _text(protocol.get("serviceCode"))}
+            for protocol in protocols
+            if isinstance(protocol, dict) and _text(protocol.get("serviceCode"))
+        ],
+        "yhbItemInfoDTO": {
+            "idleAppraiseScene": "",
+            "settingsPreferences": {"assumeRule": "", "tradeRule": ""},
+            "useYhbService": False,
+        },
+        "itemSkuList": item_skus,
+        "itemProperties": item_properties,
+    }
+
+
 async def _service_publish_draft(
     *,
     payload: dict[str, Any],
@@ -406,16 +519,21 @@ async def _service_publish_draft(
     if not card_list:
         raise GoofishPublishError("服务类分类数据已失效，请重新选择商品分类")
 
-    item_info = dict(payload)
-    item_info.update({
+    # 服务卡接口接收的是网页 xP 标准化后的 itemInfoJson；二维码里的
+    # sourceId/draftbox 不属于草稿请求本身，不能混入 itemInfoJson。
+    item_info = _draft_payload({
+        **payload,
+        "bizcode": "",
+        "scene": "",
+        "sourceId": "",
         "publishScene": "mainPublish",
-        "scene": "mainPublish",
-        "sourceId": "draftbox",
     })
+    item_info["publishScene"] = "mainPublish"
+    official_cards = [{"cardData": card} for card in card_list]
     cards_response = await mtop_call(
         api=SERVICE_CARDS_API,
         data={
-            "cpvList": json.dumps(card_list, ensure_ascii=False, separators=(",", ":")),
+            "cpvList": json.dumps(official_cards, ensure_ascii=False, separators=(",", ":")),
             "itemInfoJson": json.dumps(item_info, ensure_ascii=False, separators=(",", ":")),
             "param": json.dumps(
                 {"multiSkuEditingMode": "false", "settingsPreferences": None, "supportDefaultOpen": True},
@@ -446,26 +564,17 @@ async def _service_publish_draft(
         for service in services
         if isinstance(service, dict) and _text(service.get("code"))
     ]
-    payload.update({
-        "baseParams": {"bizcode": "pcMainPublish", "bucketId": "", "scene": "mainPublish", "simpleItem": "true"},
-        "scene": "mainPublish",
-        "sourceId": "draftbox",
+    draft_payload = _draft_payload({
+        **payload,
+        "bizcode": "",
+        "scene": "",
+        "sourceId": "",
         "publishScene": "mainPublish",
-        "bizcode": "pcMainPublish",
-        "itemGroupDTO": {"groupId": ""},
-        "itemTopicParams": {"topicInfos": []},
-        "topics": [],
-        "yhbItemInfoDTO": {
-            "idleAppraiseScene": "",
-            "settingsPreferences": {"assumeRule": "", "tradeRule": ""},
-            "useYhbService": False,
-        },
-        "itemProperties": payload.get("itemProperties") or [],
-        "itemSkuList": payload.get("itemSkuList") or [],
     })
+    draft_payload["uniqueCode"] = f"{int(time.time() * 1000)}{platform_account_id[-4:]}"
     draft_response = await mtop_call(
         api=DRAFT_PUBLISH_API,
-        data=payload,
+        data=draft_payload,
         cookies_str=cards_response.get("cookies_str") or cookie,
         account_id=platform_account_id,
         proxy=proxy or settings.goofish_proxy or None,
