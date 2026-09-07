@@ -400,7 +400,7 @@ def _local_version() -> str:
                 return value
         except OSError:
             continue
-    return os.getenv("APP_VERSION", "1.0.0").strip() or "1.0.0"
+    return os.getenv("APP_VERSION", "1.0.2").strip() or "1.0.2"
 
 
 def _version_parts(value: str) -> tuple[int, ...]:

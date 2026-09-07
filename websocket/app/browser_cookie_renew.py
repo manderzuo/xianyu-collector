@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
@@ -168,6 +169,14 @@ def _find_login_frame(page):
     return None
 
 
+def _cookie_map(context) -> dict[str, str]:
+    return {
+        str(item.get("name")): str(item.get("value"))
+        for item in context.cookies()
+        if item.get("name") and item.get("value")
+    }
+
+
 def _sync_password_login(
     cookie_value: str,
     account_id: str,
@@ -221,38 +230,45 @@ def _sync_password_login(
                 context.add_cookies(payloads)
         page = context.pages[0] if context.pages else context.new_page()
         page.goto("https://www.goofish.com/im", wait_until="domcontentloaded", timeout=60000)
-        page.wait_for_timeout(4000)
 
-        # 先复用持久化浏览器中的登录态；这也是旧版“快速进入”路径。
-        for frame in [page, *page.frames]:
-            for selector in (
-                'button:has-text("快速进入")',
-                'button[type="submit"]:has-text("快速进入")',
-                '.fm-button:has-text("快速进入")',
-                '.fn-button:has-text("快速进入")',
-            ):
-                try:
-                    locator = frame.locator(selector)
-                    if locator.count() > 0 and locator.first.is_visible():
-                        locator.first.click(timeout=5000)
-                        page.wait_for_timeout(5000)
-                        cookies = context.cookies()
-                        cookie_map = {
-                            str(item.get("name")): str(item.get("value"))
-                            for item in cookies
-                            if item.get("name") and item.get("value")
-                        }
-                        if cookie_map.get("unb"):
-                            return {
-                                "success": True,
-                                "new_cookies_str": _merge_browser_cookies(cookie_value, cookies),
-                                "method": "browser_quick_enter",
-                                "message": "已复用浏览器登录态完成续期",
-                            }
-                except Exception:
-                    continue
+        # 先复用持久化浏览器中的登录态；首次启动时页面和 iframe 都可能
+        # 延迟加载，必须轮询真实元素状态，不能只依赖固定 sleep。
+        login_frame = None
+        quick_enter_attempted = False
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            if not quick_enter_attempted:
+                for frame in [page, *page.frames]:
+                    for selector in (
+                        'button:has-text("快速进入")',
+                        'button[type="submit"]:has-text("快速进入")',
+                        '.fm-button:has-text("快速进入")',
+                        '.fn-button:has-text("快速进入")',
+                    ):
+                        try:
+                            locator = frame.locator(selector)
+                            if locator.count() > 0 and locator.first.is_visible():
+                                quick_enter_attempted = True
+                                locator.first.click(timeout=5000)
+                                page.wait_for_timeout(2500)
+                                cookies = context.cookies()
+                                if _cookie_map(context).get("unb"):
+                                    return {
+                                        "success": True,
+                                        "new_cookies_str": _merge_browser_cookies(cookie_value, cookies),
+                                        "method": "browser_quick_enter",
+                                        "message": "已复用浏览器登录态完成续期",
+                                    }
+                                break
+                        except Exception:
+                            continue
+                    if quick_enter_attempted:
+                        break
+            login_frame = _find_login_frame(page)
+            if login_frame is not None:
+                break
+            page.wait_for_timeout(500)
 
-        login_frame = _find_login_frame(page)
         if login_frame is None:
             # 页面可能已经登录，也可能弹出了风控验证。
             body_text = (page.locator("body").text_content() or "").strip()
@@ -265,39 +281,43 @@ def _sync_password_login(
             password_tab = login_frame.locator("a.password-login-tab-item")
             if password_tab.count() > 0 and password_tab.first.is_visible():
                 password_tab.first.click(timeout=5000)
-                page.wait_for_timeout(1200)
         except Exception:
             pass
 
+        password_input = login_frame.locator("#fm-login-password")
+        try:
+            password_input.wait_for(state="visible", timeout=15000)
+            login_frame.locator("#fm-login-id").wait_for(state="visible", timeout=15000)
+        except Exception:
+            return {"success": False, "status": "transient_error", "message": "闲鱼密码登录表单加载超时，请重试"}
         login_frame.locator("#fm-login-id").fill(str(username).strip())
-        login_frame.locator("#fm-login-password").fill(str(password))
+        password_input.fill(str(password))
         submit = None
         for selector in ("button.password-login", 'button[type="submit"]', ".fm-submit"):
             try:
                 candidate = login_frame.locator(selector)
-                if candidate.count() > 0 and candidate.first.is_visible():
+                if candidate.count() > 0:
+                    candidate.first.wait_for(state="visible", timeout=5000)
                     submit = candidate.first
                     break
             except Exception:
                 continue
         if submit is None:
-            return {"success": False, "message": "未找到密码登录按钮"}
+            return {"success": False, "status": "transient_error", "message": "闲鱼密码登录按钮加载超时，请重试"}
         submit.click(timeout=5000)
-        page.wait_for_timeout(5000)
 
-        for _ in range(12):
+        # 提交后等待真实登录结果。首次冷启动可能需要更长时间，不能在
+        # 固定 5 秒后立即把仍在提交中的页面当成密码错误。
+        deadline = time.monotonic() + 45
+        while time.monotonic() < deadline:
             body_text = (page.locator("body").text_content() or "").strip()
             if any(word in body_text for word in ("滑块", "人脸", "安全验证", "请完成验证")):
                 return {"success": False, "status": "verification_required", "message": "登录触发闲鱼安全验证，请完成滑块或人脸验证"}
             cookies = context.cookies()
-            cookie_map = {
-                str(item.get("name")): str(item.get("value"))
-                for item in cookies
-                if item.get("name") and item.get("value")
-            }
+            cookie_map = _cookie_map(context)
             form_visible = False
             try:
-                form_visible = login_frame.locator("#fm-login-password").is_visible()
+                form_visible = password_input.is_visible()
             except Exception:
                 pass
             if cookie_map.get("unb") and not form_visible:
@@ -307,7 +327,14 @@ def _sync_password_login(
                     "method": "password",
                     "message": "账号密码登录成功",
                 }
-            page.wait_for_timeout(1500)
+            for selector in (".login-error-msg", ".fm-error", ".error-msg"):
+                try:
+                    error_text = (login_frame.locator(selector).first.text_content() or "").strip()
+                    if error_text and login_frame.locator(selector).first.is_visible():
+                        return {"success": False, "message": f"密码登录失败：{error_text[:300]}"}
+                except Exception:
+                    continue
+            page.wait_for_timeout(1000)
 
         # 优先返回页面原始错误，便于界面告诉用户是密码错误还是被平台拦截。
         for selector in (".login-error-msg", ".fm-error", ".error-msg"):

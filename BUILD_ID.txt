@@ -1,1 +1,1 @@
-20260907-1.01-cloud-auth-strict
+20260907-1.0.2-password-login-cold-start-fix

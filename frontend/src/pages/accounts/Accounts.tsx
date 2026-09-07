@@ -154,10 +154,12 @@ export function Accounts() {
   // 协议登录触发人脸时的人脸二维码(base64 data-url)
   const [pwdFaceQrUrl, setPwdFaceQrUrl] = useState('')
   const pwdCheckIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const pwdCheckInFlightRef = useRef(false)
   const pwdSuccessCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pwdLoginClosedRef = useRef(false)
   const pwdLoginRequestIdRef = useRef(0)
   const pwdSessionIdRef = useRef('')
+  const pwdLoginBusyRef = useRef(false)
 
   // 手动输入状态
   const [manualAccountId, setManualAccountId] = useState('')
@@ -699,6 +701,8 @@ export function Accounts() {
     clearPwdCheck()
     const pwdCheckRequestId = pwdLoginRequestIdRef.current
     pwdCheckIntervalRef.current = setInterval(async () => {
+      if (pwdCheckInFlightRef.current) return
+      pwdCheckInFlightRef.current = true
       try {
         const result = await checkPasswordLoginStatus(sessionId)
         if (
@@ -753,17 +757,23 @@ export function Accounts() {
         }
       } catch {
         // 忽略网络错误，继续轮询
+      } finally {
+        pwdCheckInFlightRef.current = false
       }
     }, 2000)
   }
 
   const handlePasswordLogin = async (e: FormEvent) => {
     e.preventDefault()
+    // 防止快速双击/回车重复创建两个登录任务；后一个任务会取消前一个，
+    // 造成正常的首次登录被界面显示为失败。
+    if (pwdLoginBusyRef.current || pwdLoading || pwdStatus === 'processing') return
     if (!pwdAccount.trim() || !pwdPassword.trim()) {
       addToast({ type: 'warning', message: '请输入账号和密码' })
       return
     }
 
+    pwdLoginBusyRef.current = true
     pwdLoginClosedRef.current = false
     const pwdLoginRequestId = pwdLoginRequestIdRef.current + 1
     pwdLoginRequestIdRef.current = pwdLoginRequestId
@@ -813,6 +823,7 @@ export function Accounts() {
       setPwdErrorMessage('登录请求失败')
       addToast({ type: 'error', message: '登录请求失败' })
     } finally {
+      pwdLoginBusyRef.current = false
       if (isCurrentPwdLoginRequest()) {
         setPwdLoading(false)
       }

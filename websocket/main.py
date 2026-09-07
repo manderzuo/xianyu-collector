@@ -17,7 +17,7 @@ from websocket.app.handler import handle_socket
 from websocket.app.xianyu_runtime import runtime_manager
 from websocket.app.browser_cookie_renew import renew_browser_cookies, renew_password_cookies
 
-app = FastAPI(title=f"{settings.brand_name} WebSocket", version="1.0.0")
+app = FastAPI(title=f"{settings.brand_name} WebSocket", version="1.0.2")
 manager = ConnectionManager()
 logger = logging.getLogger("xr.websocket")
 

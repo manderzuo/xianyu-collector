@@ -89,7 +89,7 @@ async def lifespan(app: FastAPI):
     scheduler.shutdown(wait=False)
 
 
-app = FastAPI(title=f"{settings.brand_name} Scheduler", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title=f"{settings.brand_name} Scheduler", version="1.0.2", lifespan=lifespan)
 
 
 @app.get("/health", tags=["系统"])
