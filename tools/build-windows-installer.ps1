@@ -111,10 +111,14 @@ The target computer needs administrator permission for Docker Desktop installati
 
 First startup builds the four application images and downloads base images. This can take several minutes.
 After installation, start.bat starts the existing containers without deleting data.
-Each start.bat run checks the Tencent-hosted Xianyu release manifest first. If a newer
-image release is available, the installer asks for confirmation, pulls the images and
-restarts the services while preserving Docker volumes. A temporary network or registry
-failure is logged and the current installation still starts.
+Each start.bat run opens the Xianyu update window and checks the Tencent-hosted release
+manifest. If a newer image release is available, the window shows the release notes and
+asks for confirmation, then pulls the images and restarts the services while preserving
+Docker volumes. The detailed update log is saved at app\logs\update.log, including the
+manifest response, Docker command output, exit codes and post-failure container status.
+A temporary network or registry failure is logged and the current installation still starts.
+The installer also synchronizes the application database credentials with an existing
+MySQL container before the services start, so an update does not break an existing database.
 If an older package left a garbled desktop shortcut, copy this package over the same
 installation folder and run start.bat once. The launcher will remove the stale Xianyu
 shortcut and recreate it with the correct Chinese name.

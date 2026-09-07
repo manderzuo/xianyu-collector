@@ -4,6 +4,7 @@ $AppRoot = Join-Path $PackageRoot 'app'
 $ComposeFile = Join-Path $AppRoot 'docker-compose.yml'
 $EnvFile = Join-Path $AppRoot '.env'
 $UpdateChecker = Join-Path $AppRoot 'deploy\check-xianyu-update.ps1'
+$DbCredentialSync = Join-Path $AppRoot 'deploy\sync-xianyu-db-credentials.ps1'
 $DockerBootstrap = Join-Path $PackageRoot 'resources\docker-bootstrap.ps1'
 $Desktop = [Environment]::GetFolderPath('Desktop')
 $ShortcutTitle = -join ([char[]](0x95f2, 0x9c7c, 0x7ba1, 0x7406, 0x7cfb, 0x7edf))
@@ -35,8 +36,8 @@ function Update-DesktopShortcut {
         Remove-StaleXianyuShortcuts -KeepPath $ShortcutPath
         $shell = New-Object -ComObject WScript.Shell
         $shortcut = $shell.CreateShortcut($ShortcutPath)
-        $shortcut.TargetPath = Join-Path $env:SystemRoot 'System32\cmd.exe'
-        $shortcut.Arguments = "/c `"$(Join-Path $PackageRoot 'start.bat')`""
+        $shortcut.TargetPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+        $shortcut.Arguments = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$(Join-Path $PSScriptRoot 'start.ps1')`""
         $shortcut.WorkingDirectory = $PackageRoot
         $shortcut.Description = $ShortcutTitle
         if (Test-Path -LiteralPath $IconPath) { $shortcut.IconLocation = "$IconPath,0" }
@@ -52,6 +53,10 @@ if (-not (Test-Path -LiteralPath $EnvFile)) {
 }
 Update-DesktopShortcut
 try { & $DockerBootstrap } catch { Write-Host "[xianyu] $($_.Exception.Message)" -ForegroundColor Red; exit 1 }
+
+if (Test-Path -LiteralPath $DbCredentialSync) {
+    & $DbCredentialSync -ProjectRoot $AppRoot
+}
 
 # Check the Tencent-hosted release manifest before starting the local stack.
 # The checker is deliberately best-effort: a temporary network or registry

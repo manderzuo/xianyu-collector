@@ -6,6 +6,7 @@ $EnvExample = Join-Path $AppRoot '.env.example'
 $EnvFile = Join-Path $AppRoot '.env'
 $DockerBootstrap = Join-Path $PackageRoot 'resources\docker-bootstrap.ps1'
 $WslBootstrap = Join-Path $PackageRoot 'resources\prepare-wsl.ps1'
+$DbCredentialSync = Join-Path $AppRoot 'deploy\sync-xianyu-db-credentials.ps1'
 
 function Fail([string]$Message) {
     Write-Host "[xianyu] ERROR: $Message" -ForegroundColor Red
@@ -112,6 +113,10 @@ foreach ($entry in @(
 
 $envMap = Get-EnvMap $EnvFile
 $containerPrefix = $envMap['XR_CONTAINER_PREFIX']
+
+if (Test-Path -LiteralPath $DbCredentialSync) {
+    & $DbCredentialSync -ProjectRoot $AppRoot
+}
 $ownedContainers = @(docker ps -a --format '{{.Names}}' | Where-Object { $_ -like "$containerPrefix-*" })
 $ports = @()
 foreach ($entry in @(
@@ -202,8 +207,8 @@ if (Test-Path -LiteralPath $oldShortcutPath) {
 }
 $shell = New-Object -ComObject WScript.Shell
 $shortcut = $shell.CreateShortcut($shortcutPath)
-$shortcut.TargetPath = Join-Path $env:SystemRoot 'System32\cmd.exe'
-$shortcut.Arguments = "/c `"$(Join-Path $PackageRoot 'start.bat')`""
+$shortcut.TargetPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+$shortcut.Arguments = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$(Join-Path $PSScriptRoot 'start.ps1')`""
 $shortcut.WorkingDirectory = $PackageRoot
 $shortcut.Description = $shortcutTitle
 if (Test-Path -LiteralPath $iconPath) { $shortcut.IconLocation = "$iconPath,0" }
