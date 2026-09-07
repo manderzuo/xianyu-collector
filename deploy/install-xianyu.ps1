@@ -179,6 +179,19 @@ $shortcutTitle = -join ([char[]](0x95f2, 0x9c7c, 0x7ba1, 0x7406, 0x7cfb, 0x7edf)
 $shortcutPath = Join-Path $desktop "$shortcutTitle.lnk"
 $oldShortcutPath = Join-Path $desktop 'Xianyu System.lnk'
 $iconPath = Join-Path $ProjectRoot 'assets\xianyu-launcher.ico'
+try {
+    $shortcutShell = New-Object -ComObject WScript.Shell
+    Get-ChildItem -LiteralPath $desktop -Filter '*.lnk' -File -ErrorAction SilentlyContinue | ForEach-Object {
+        if ($_.FullName -eq $shortcutPath) { return }
+        try {
+            $candidate = $shortcutShell.CreateShortcut($_.FullName)
+            $identity = "$($candidate.TargetPath)`n$($candidate.Arguments)`n$($candidate.IconLocation)"
+            if ($identity -match '(?is)xianyu' -and $identity -match '(?is)(start-xianyu\.ps1|[\\/]start\.bat)') {
+                Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue
+            }
+        } catch { }
+    }
+} catch { }
 if (Test-Path -LiteralPath $oldShortcutPath) {
     Remove-Item -LiteralPath $oldShortcutPath -Force
 }

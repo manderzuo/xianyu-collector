@@ -8,9 +8,28 @@ $ShortcutPath = Join-Path $Desktop "$ShortcutTitle.lnk"
 $OldShortcutPath = Join-Path $Desktop 'Xianyu System.lnk'
 $IconPath = Join-Path $ProjectRoot 'assets\xianyu-launcher.ico'
 
+function Remove-StaleXianyuShortcuts {
+    param([string]$KeepPath)
+
+    try {
+        $shell = New-Object -ComObject WScript.Shell
+        Get-ChildItem -LiteralPath $Desktop -Filter '*.lnk' -File -ErrorAction SilentlyContinue | ForEach-Object {
+            if ($_.FullName -eq $KeepPath) { return }
+            try {
+                $shortcut = $shell.CreateShortcut($_.FullName)
+                $identity = "$($shortcut.TargetPath)`n$($shortcut.Arguments)`n$($shortcut.IconLocation)"
+                if ($identity -match '(?is)xianyu' -and $identity -match '(?is)(start-xianyu\.ps1|[\\/]start\.bat)') {
+                    Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue
+                }
+            } catch { }
+        }
+    } catch { }
+}
+
 function Update-DesktopShortcut {
     try {
         if (Test-Path -LiteralPath $OldShortcutPath) { Remove-Item -LiteralPath $OldShortcutPath -Force }
+        Remove-StaleXianyuShortcuts -KeepPath $ShortcutPath
         $shell = New-Object -ComObject WScript.Shell
         $shortcut = $shell.CreateShortcut($ShortcutPath)
         $shortcut.TargetPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'

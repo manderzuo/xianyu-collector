@@ -184,6 +184,19 @@ $iconPath = Join-Path $PackageRoot 'xianyu-launcher.ico'
 if (-not (Test-Path -LiteralPath $iconPath)) {
     $iconPath = Join-Path $PackageRoot 'assets\xianyu-launcher.ico'
 }
+try {
+    $shortcutShell = New-Object -ComObject WScript.Shell
+    Get-ChildItem -LiteralPath $desktop -Filter '*.lnk' -File -ErrorAction SilentlyContinue | ForEach-Object {
+        if ($_.FullName -eq $shortcutPath) { return }
+        try {
+            $candidate = $shortcutShell.CreateShortcut($_.FullName)
+            $identity = "$($candidate.TargetPath)`n$($candidate.Arguments)`n$($candidate.IconLocation)"
+            if ($identity -match '(?is)xianyu' -and $identity -match '(?is)(start-xianyu\.ps1|[\\/]start\.bat)') {
+                Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue
+            }
+        } catch { }
+    }
+} catch { }
 if (Test-Path -LiteralPath $oldShortcutPath) {
     Remove-Item -LiteralPath $oldShortcutPath -Force
 }
