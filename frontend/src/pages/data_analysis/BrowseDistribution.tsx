@@ -1,251 +1,165 @@
 /**
  * 流量分布组件
  *
- * 独立的账号选择、时间范围和查询，展示来源分布、商品分布、时间分布、地域分布
+ * 账号和时间范围由数据总览顶部统一控制，这里只负责展示结果，避免重复选择。
  */
-import { useEffect, useState, useCallback } from 'react'
 import { motion } from 'framer-motion'
-import { RefreshCw } from 'lucide-react'
-import { getAccountDetails } from '@/api/accounts'
-import { getBrowseSummary, type BrowseSummaryRequest, type ProfileItem } from '@/api/data_analysis'
-import { useUIStore } from '@/store/uiStore'
-import type { AccountDetail } from '@/types'
-
-/** 时间范围选项 */
-const DATE_TYPE_OPTIONS = [
-  { value: 'recent1d', label: '近1天' },
-  { value: 'recent7d', label: '近7天' },
-  { value: 'recent30d', label: '近30天' },
-  { value: 'customDate', label: '自定义' },
-] as const
-
-type DateTypeValue = typeof DATE_TYPE_OPTIONS[number]['value']
+import { MapPin, MessageCircle, Package, Radio } from 'lucide-react'
+import type { BrowseSummaryData, ProfileItem } from '@/api/data_analysis'
 
 /** 单个分布卡片 */
 function DistributionCard({
   title,
+  caption,
   items,
-  labelWidth = 'w-16',
+  labelWidth = 'w-20',
+  icon: Icon,
+  emptyMessage,
 }: {
   title: string
+  caption: string
   items: ProfileItem[]
   labelWidth?: string
+  icon: typeof Radio
+  emptyMessage: string
 }) {
   return (
-    <div className="bg-white dark:bg-slate-800 rounded-lg p-4 shadow-sm border border-gray-100 dark:border-slate-700">
-      <h3 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-3">{title}</h3>
-      <div className="h-[240px] overflow-y-auto pr-2 space-y-2.5">
+    <div className="min-h-[292px] rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm transition-shadow hover:shadow-lg dark:border-slate-700 dark:bg-slate-800/90">
+      <div className="mb-5 flex items-start justify-between gap-3">
+        <div>
+          <h3 className="flex items-center gap-2 text-sm font-semibold text-slate-800 dark:text-slate-100">
+            <span className="flex h-8 w-8 items-center justify-center rounded-xl bg-blue-50 text-blue-600 dark:bg-blue-500/10 dark:text-blue-300">
+              <Icon className="h-4 w-4" />
+            </span>
+            {title}
+          </h3>
+          <p className="mt-1 text-xs text-slate-400 dark:text-slate-500">{caption}</p>
+        </div>
+        <span className="rounded-full bg-slate-100 px-2 py-1 text-[10px] text-slate-500 dark:bg-slate-700 dark:text-slate-400">
+          本周期
+        </span>
+      </div>
+      <div className="h-[206px] space-y-3 overflow-y-auto pr-1">
         {items.map((item, idx) => (
-          <div key={idx} className="flex items-center gap-2">
+          <div key={`${item.profileCode}-${idx}`} className="flex items-center gap-2.5">
             <span
-              className={`text-xs text-gray-600 dark:text-gray-400 ${labelWidth} flex-shrink-0 truncate`}
+              className={`truncate text-xs text-slate-600 dark:text-slate-300 ${labelWidth} flex-shrink-0`}
               title={item.profileVal}
             >
               {item.profileVal}
             </span>
-            <div className="flex-1 h-5 bg-gray-100 dark:bg-slate-700 rounded overflow-hidden">
+            <div className="h-2 flex-1 overflow-hidden rounded-full bg-slate-100 dark:bg-slate-700">
               <div
-                className="h-full bg-blue-500 rounded transition-all"
-                style={{ width: `${item.usrRatio * 100}%` }}
+                className="h-full rounded-full bg-gradient-to-r from-blue-500 to-cyan-400 transition-all"
+                style={{ width: `${Math.min(Math.max(item.usrRatio, 0), 100)}%` }}
               />
             </div>
-            <span className="text-xs text-gray-500 dark:text-gray-400 w-14 text-right flex-shrink-0">
+            <span className="w-14 flex-shrink-0 text-right text-xs font-medium text-slate-500 dark:text-slate-400">
               {item.usrRatioFormat}
             </span>
           </div>
         ))}
         {items.length === 0 && (
-          <p className="text-xs text-gray-400 text-center py-4">暂无数据</p>
+          <div className="flex h-full flex-col items-center justify-center rounded-xl border border-dashed border-slate-200 text-center dark:border-slate-700">
+            <Icon className="mb-2 h-6 w-6 text-slate-300 dark:text-slate-600" />
+            <p className="text-xs text-slate-400 dark:text-slate-500">{emptyMessage}</p>
+          </div>
         )}
       </div>
     </div>
   )
 }
 
-export function BrowseDistribution() {
-  const { addToast } = useUIStore()
-  const [accounts, setAccounts] = useState<AccountDetail[]>([])
-  const [selectedAccountId, setSelectedAccountId] = useState<number | null>(null)
-  const [dateType, setDateType] = useState<DateTypeValue>('recent1d')
-  const [customStartDate, setCustomStartDate] = useState('')
-  const [customEndDate, setCustomEndDate] = useState('')
-  const [loading, setLoading] = useState(false)
-  const [browseData, setBrowseData] = useState<{
-    sceneSourceList: ProfileItem[]
-    itemCateList: ProfileItem[]
-    buyerActiveList: ProfileItem[]
-    buyerProvinceList: ProfileItem[]
-  } | null>(null)
+export interface BrowseDistributionProps {
+  browseData: BrowseSummaryData | null
+  loading: boolean
+  selectedAccountId: number | null
+  onRefresh: () => void
+}
 
-  /** 将 yyyy-MM-dd 转为 yyyyMMdd */
-  const toCompactDate = (dateStr: string): string => {
-    return dateStr.replace(/-/g, '')
+export function BrowseDistribution({
+  browseData,
+  loading,
+  selectedAccountId,
+  onRefresh,
+}: BrowseDistributionProps) {
+  if (!selectedAccountId) {
+    return (
+      <div className="rounded-2xl border border-dashed border-slate-300 py-14 text-center text-sm text-slate-400 dark:border-slate-700">
+        请先在上方选择账号
+      </div>
+    )
   }
 
-  /** 加载账号列表 */
-  useEffect(() => {
-    const loadAccounts = async () => {
-      try {
-        const data = await getAccountDetails()
-        setAccounts(data)
-      } catch {
-        addToast({ type: 'error', message: '加载账号列表失败' })
-      }
-    }
-    loadAccounts()
-  }, [])
-
-  /** 获取流量分布数据 */
-  const fetchData = useCallback(async () => {
-    if (!selectedAccountId) return
-
-    if (dateType === 'customDate') {
-      if (!customStartDate || !customEndDate) {
-        addToast({ type: 'error', message: '请选择开始日期和结束日期' })
-        return
-      }
-      if (customStartDate > customEndDate) {
-        addToast({ type: 'error', message: '开始日期不能晚于结束日期' })
-        return
-      }
-    }
-
-    setLoading(true)
-    try {
-      const params: BrowseSummaryRequest = {
-        account_id: selectedAccountId,
-        date_type: dateType,
-        date_range: dateType === 'customDate'
-          ? `${toCompactDate(customStartDate)}|${toCompactDate(customEndDate)}`
-          : '',
-      }
-      const result = await getBrowseSummary(params)
-      if (result.success && result.data) {
-        setBrowseData(result.data.data || null)
-      } else {
-        addToast({ type: 'error', message: result.message || '获取流量分布失败' })
-        setBrowseData(null)
-      }
-    } catch {
-      addToast({ type: 'error', message: '获取流量分布失败，请稍后重试' })
-      setBrowseData(null)
-    } finally {
-      setLoading(false)
-    }
-  }, [selectedAccountId, dateType, customStartDate, customEndDate, addToast])
-
-  /** 非自定义日期时自动触发 */
-  useEffect(() => {
-    if (selectedAccountId && dateType !== 'customDate') {
-      fetchData()
-    }
-  }, [selectedAccountId, dateType, fetchData])
-
   return (
-    <div className="space-y-4">
-      {/* 顶部操作栏 */}
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 bg-white dark:bg-slate-800 rounded-lg p-4 shadow-sm">
-        <h2 className="text-lg font-semibold text-gray-800 dark:text-gray-200">
-          流量分布
-        </h2>
-        <div className="flex flex-wrap items-center gap-3">
-          {/* 账号选择 */}
-          <select
-            className="px-3 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-slate-700 text-gray-700 dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-500"
-            value={selectedAccountId ?? ''}
-            onChange={(e) => setSelectedAccountId(Number(e.target.value))}
-          >
-            <option value="" disabled>选择账号</option>
-            {[...accounts].sort((a, b) => (a.enabled === b.enabled ? 0 : a.enabled ? -1 : 1)).map((acc) => (
-              <option key={acc.pk} value={acc.pk}>
-                {acc.note || acc.id || `账号${acc.pk}`}{acc.enabled ? '' : '（已禁用）'}
-              </option>
-            ))}
-          </select>
-
-          {/* 时间范围选择 */}
-          <div className="flex rounded-md overflow-hidden border border-gray-300 dark:border-gray-600">
-            {DATE_TYPE_OPTIONS.map((opt) => (
-              <button
-                key={opt.value}
-                className={`px-3 py-1.5 text-sm transition-colors ${
-                  dateType === opt.value
-                    ? 'bg-blue-500 text-white'
-                    : 'bg-white dark:bg-slate-700 text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-slate-600'
-                }`}
-                onClick={() => setDateType(opt.value)}
-              >
-                {opt.label}
-              </button>
-            ))}
-          </div>
-
-          {/* 自定义日期范围选择器 */}
-          {dateType === 'customDate' && (
-            <div className="flex items-center gap-2">
-              <input
-                type="date"
-                className="px-2 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-slate-700 text-gray-700 dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                value={customStartDate}
-                onChange={(e) => setCustomStartDate(e.target.value)}
-              />
-              <span className="text-gray-400 text-sm">至</span>
-              <input
-                type="date"
-                className="px-2 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-slate-700 text-gray-700 dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                value={customEndDate}
-                onChange={(e) => setCustomEndDate(e.target.value)}
-              />
-              <button
-                className="px-3 py-1.5 text-sm bg-blue-500 text-white rounded-md hover:bg-blue-600 transition-colors disabled:opacity-50"
-                onClick={fetchData}
-                disabled={loading || !selectedAccountId || !customStartDate || !customEndDate}
-              >
-                查询
-              </button>
-            </div>
-          )}
-
-          {/* 刷新按钮 */}
-          <button
-            className="p-1.5 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-slate-700 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-slate-600 transition-colors disabled:opacity-50"
-            onClick={fetchData}
-            disabled={loading || !selectedAccountId}
-            title="刷新数据"
-          >
-            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-          </button>
+    <section className="space-y-4">
+      <div className="flex items-end justify-between gap-3">
+        <div>
+          <p className="text-xs font-medium uppercase tracking-[0.18em] text-blue-500">Audience insights</p>
+          <h2 className="mt-1 text-xl font-bold text-slate-900 dark:text-white">流量分布</h2>
+          <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">已跟随上方账号与日期范围自动更新，无需二次选择</p>
         </div>
+        <button
+          className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-600 transition hover:border-blue-300 hover:text-blue-600 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
+          onClick={onRefresh}
+          disabled={loading}
+        >
+          <Radio className={`h-3.5 w-3.5 ${loading ? 'animate-pulse' : ''}`} />
+          刷新分布
+        </button>
       </div>
 
-      {/* 加载中 */}
-      {loading && (
-        <div className="flex items-center justify-center py-8">
-          <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-500"></div>
-          <span className="ml-2 text-sm text-gray-500 dark:text-gray-400">加载中...</span>
+      {loading && !browseData && (
+        <div className="flex items-center justify-center rounded-2xl border border-slate-200 bg-white py-10 text-sm text-slate-400 dark:border-slate-700 dark:bg-slate-800">
+          <div className="mr-3 h-5 w-5 animate-spin rounded-full border-2 border-blue-200 border-b-blue-500" />
+          正在同步流量分布...
         </div>
       )}
 
-      {/* 分布图表 */}
-      {!loading && browseData && (
+      {browseData && (
         <motion.div
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
-          className="grid grid-cols-1 lg:grid-cols-2 gap-4"
+          className={`grid grid-cols-1 gap-4 lg:grid-cols-2 transition-opacity duration-200 ${loading ? 'opacity-65' : 'opacity-100'}`}
         >
-          <DistributionCard title="来源分布" items={browseData.sceneSourceList || []} />
-          <DistributionCard title="商品分布" items={browseData.itemCateList || []} labelWidth="w-24" />
-          <DistributionCard title="时间分布" items={browseData.buyerActiveList || []} />
-          <DistributionCard title="地域分布" items={browseData.buyerProvinceList || []} />
+          {browseData.sceneSourceList?.length > 0 && (
+            <DistributionCard
+              title="来源分布"
+              caption="平台流量来源"
+              items={browseData.sceneSourceList}
+              icon={Radio}
+              emptyMessage="暂无平台来源画像，需接入闲鱼罗盘数据"
+            />
+          )}
+          <DistributionCard
+            title="商品分布"
+            caption="按商品名称统计"
+            items={browseData.itemCateList || []}
+            labelWidth="w-28"
+            icon={Package}
+            emptyMessage="当前周期暂无商品同步数据"
+          />
+          <DistributionCard
+            title="活跃时段"
+            caption="买家咨询活跃时间"
+            items={browseData.buyerActiveList || []}
+            icon={MessageCircle}
+            emptyMessage="当前周期暂无本地咨询记录"
+          />
+          {browseData.buyerProvinceList?.length > 0 && (
+            <DistributionCard
+              title="地域分布"
+              caption="买家地域画像"
+              items={browseData.buyerProvinceList}
+              icon={MapPin}
+              emptyMessage="暂无平台地域画像，需接入闲鱼罗盘数据"
+            />
+          )}
         </motion.div>
       )}
-
-      {/* 未选择账号提示 */}
-      {!selectedAccountId && (
-        <div className="flex flex-col items-center justify-center py-12 text-gray-400">
-          <p>请先选择一个账号</p>
-        </div>
+      {loading && browseData && (
+        <p className="text-right text-xs text-slate-400 dark:text-slate-500">正在更新流量分布...</p>
       )}
-    </div>
+    </section>
   )
 }

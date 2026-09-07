@@ -81,6 +81,9 @@ def _sync_renew(cookie_value: str, account_id: str) -> dict[str, Any]:
         page.wait_for_timeout(3000)
 
         quick_enter = False
+        # 快速进入分支也会继续走统一的登录态判断；必须先初始化，
+        # 否则点击成功后会直接引用未赋值的 logged_in。
+        logged_in = False
         frames = [page, *page.frames]
         for frame in frames:
             for selector in (
@@ -101,8 +104,10 @@ def _sync_renew(cookie_value: str, account_id: str) -> dict[str, Any]:
                 break
         if quick_enter:
             page.wait_for_timeout(5000)
+            # 快速进入按钮只会在持久化浏览器已有登录态时出现，点击成功
+            # 即表示已完成进入；后续仍会通过接口确认拿到的 Cookie。
+            logged_in = True
         else:
-            logged_in = False
             for selector in (
                 "div.nick",
                 ".header-right .nick",
@@ -123,7 +128,7 @@ def _sync_renew(cookie_value: str, account_id: str) -> dict[str, Any]:
         if not logged_in:
             return {
                     "success": False,
-                    "has_quick_enter": False,
+                    "has_quick_enter": quick_enter,
                     "message": "浏览器未处于已登录状态，未找到快速进入入口，需要重新扫码或密码登录",
                 }
 

@@ -2,7 +2,7 @@
 """数据大盘：从真实业务表即时汇总指标。"""
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, Body, Depends, HTTPException
@@ -116,9 +116,7 @@ def _metric(name: str, value: float | int, previous: float | int = 0) -> dict[st
 
 
 async def _owned_account(account_id: int, user: dict[str, Any], session: AsyncSession) -> Account:
-    statement = select(Account).where(Account.id == account_id)
-    if not _is_admin(user):
-        statement = statement.where(Account.user_id == int(user.get("sub", 1)))
+    statement = select(Account).where(Account.id == account_id, Account.user_id == int(user.get("sub", 1)))
     account = (await session.execute(statement)).scalar_one_or_none()
     if account is None:
         raise HTTPException(status_code=404, detail="账号不存在或无权访问")
@@ -272,12 +270,42 @@ async def browse_summary(
             )
         ).scalars().all()
     )
+    chat_rows = list(
+        (
+            await session.execute(
+                select(ChatMessageRecord).where(
+                    ChatMessageRecord.account_id == account.id,
+                    ChatMessageRecord.is_self.is_(False),
+                    ChatMessageRecord.message_time >= int(
+                        datetime.combine(start, time.min).timestamp() * 1000
+                    ),
+                    ChatMessageRecord.message_time < int(
+                        datetime.combine(end, time.min).timestamp() * 1000
+                    ),
+                )
+            )
+        ).scalars().all()
+    )
 
     def distribution(keys: tuple[str, ...]) -> list[dict[str, Any]]:
         counts: dict[str, int] = {}
         for row in rows:
             payload_data = row.payload if isinstance(row.payload, dict) else {}
-            value = next((str(payload_data.get(key) or "").strip() for key in keys if payload_data.get(key)), "")
+            card_data = payload_data.get("cardData") if isinstance(payload_data.get("cardData"), dict) else {}
+            nested_item_cat = card_data.get("itemCatDTO") if isinstance(card_data.get("itemCatDTO"), dict) else {}
+            value = next(
+                (
+                    str(
+                        payload_data.get(key)
+                        or card_data.get(key)
+                        or nested_item_cat.get(key)
+                        or ""
+                    ).strip()
+                    for key in keys
+                    if payload_data.get(key) or card_data.get(key) or nested_item_cat.get(key)
+                ),
+                "",
+            )
             if value:
                 counts[value] = counts.get(value, 0) + 1
         total = sum(counts.values())
@@ -291,13 +319,60 @@ async def browse_summary(
             for value, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
         ]
 
+    def product_distribution() -> list[dict[str, Any]]:
+        """按商品名称统计，避免把平台内部类目 ID 直接展示给客户。"""
+        counts: dict[str, int] = {}
+        for row in rows:
+            payload_data = row.payload if isinstance(row.payload, dict) else {}
+            card_data = payload_data.get("cardData") if isinstance(payload_data.get("cardData"), dict) else {}
+            title = str(
+                row.title
+                or payload_data.get("title")
+                or card_data.get("title")
+                or ""
+            ).strip()
+            if title:
+                counts[title] = counts.get(title, 0) + 1
+        total = sum(counts.values())
+        return [
+            {
+                "profileCode": title,
+                "profileVal": title,
+                "usrRatio": round(count * 100 / total, 2) if total else 0,
+                "usrRatioFormat": f"{count * 100 / total:.2f}%" if total else "0.00%",
+            }
+            for title, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+        ]
+
+    active_hours: dict[str, int] = {}
+    for row in chat_rows:
+        try:
+            hour = datetime.fromtimestamp(
+                int(row.message_time) / 1000,
+                tz=timezone(timedelta(hours=8)),
+            ).hour
+        except (TypeError, ValueError, OverflowError):
+            continue
+        label = f"{hour:02d}:00-{hour:02d}:59"
+        active_hours[label] = active_hours.get(label, 0) + 1
+    active_total = sum(active_hours.values())
+    buyer_active = [
+        {
+            "profileCode": label,
+            "profileVal": label,
+            "usrRatio": round(count * 100 / active_total, 2) if active_total else 0,
+            "usrRatioFormat": f"{count * 100 / active_total:.2f}%" if active_total else "0.00%",
+        }
+        for label, count in sorted(active_hours.items(), key=lambda item: (-item[1], item[0]))
+    ]
+
     return ok(
         {
             "code": "SUCCESS",
             "data": {
                 "sceneSourceList": [],
-                "itemCateList": distribution(("categoryName", "category_name", "category")),
-                "buyerActiveList": [],
+                "itemCateList": product_distribution(),
+                "buyerActiveList": buyer_active,
                 "buyerProvinceList": distribution(("province", "buyerProvince", "area")),
             },
             "msg": "流量分布来自本地商品快照；未同步的平台画像维度为空",

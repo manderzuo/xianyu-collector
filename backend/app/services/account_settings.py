@@ -16,6 +16,8 @@ from common.models.feature_records import FeatureRecord
 
 
 ACCOUNT_SETTINGS_FEATURE = "account-settings"
+PLATFORM_AI_SETTINGS_FEATURE = "platform-ai-settings"
+PLATFORM_AI_SETTINGS_ID = "default"
 
 
 def default_account_settings() -> dict[str, Any]:
@@ -59,6 +61,14 @@ def default_account_settings() -> dict[str, Any]:
     }
 
 
+def default_platform_ai_settings() -> dict[str, Any]:
+    """平台账号级 AI 配置；同一平台账号下的闲鱼账号共享。"""
+    return {
+        "ai_enabled": False,
+        "ai_settings": {},
+    }
+
+
 def _copy_settings(payload: dict[str, Any] | None) -> dict[str, Any]:
     settings = default_account_settings()
     if isinstance(payload, dict):
@@ -77,6 +87,18 @@ def _copy_settings(payload: dict[str, Any] | None) -> dict[str, Any]:
         settings.update(auto_confirm=True, send_before_confirm=False)
     elif settings.get("send_before_confirm"):
         settings.update(auto_confirm=True, confirm_before_send=False)
+    return settings
+
+
+def _copy_platform_ai_settings(payload: dict[str, Any] | None) -> dict[str, Any]:
+    settings = default_platform_ai_settings()
+    if isinstance(payload, dict):
+        settings.update({key: value for key, value in payload.items() if key != "ai_settings"})
+        nested = payload.get("ai_settings")
+        if isinstance(nested, dict):
+            settings["ai_settings"] = dict(nested)
+    settings["ai_enabled"] = bool(settings.get("ai_enabled"))
+    settings["ai_settings"] = dict(settings.get("ai_settings") or {})
     return settings
 
 
@@ -150,3 +172,80 @@ async def save_account_settings(
     await db.commit()
     await db.refresh(row)
     return _copy_settings(row.payload)
+
+
+async def load_platform_ai_settings(
+    db: AsyncSession,
+    owner_id: int,
+) -> dict[str, Any]:
+    """读取平台账号级 AI 配置，并兼容迁移旧的账号级配置。"""
+    row = (
+        await db.execute(
+            select(FeatureRecord).where(
+                FeatureRecord.owner_id == owner_id,
+                FeatureRecord.feature == PLATFORM_AI_SETTINGS_FEATURE,
+                FeatureRecord.external_id == PLATFORM_AI_SETTINGS_ID,
+            )
+        )
+    ).scalar_one_or_none()
+    if row is not None:
+        return _copy_platform_ai_settings(row.payload)
+
+    # 老版本把 AI 配置保存在闲鱼账号下。首次读取时选取该平台账号已有的
+    # 一份有效配置作为迁移兜底，但不修改旧记录，避免影响账号级历史数据。
+    legacy_rows = (
+        await db.execute(
+            select(FeatureRecord)
+            .where(
+                FeatureRecord.owner_id == owner_id,
+                FeatureRecord.feature == ACCOUNT_SETTINGS_FEATURE,
+            )
+            .order_by(FeatureRecord.id.desc())
+        )
+    ).scalars().all()
+    for legacy in legacy_rows:
+        payload = legacy.payload if isinstance(legacy.payload, dict) else {}
+        ai_settings = payload.get("ai_settings")
+        if isinstance(ai_settings, dict) and ai_settings:
+            return _copy_platform_ai_settings(
+                {"ai_enabled": payload.get("ai_enabled"), "ai_settings": ai_settings}
+            )
+    return default_platform_ai_settings()
+
+
+async def save_platform_ai_settings(
+    db: AsyncSession,
+    owner_id: int,
+    values: dict[str, Any],
+) -> dict[str, Any]:
+    """保存平台账号级 AI 配置，供该平台账号下所有闲鱼账号使用。"""
+    row = (
+        await db.execute(
+            select(FeatureRecord).where(
+                FeatureRecord.owner_id == owner_id,
+                FeatureRecord.feature == PLATFORM_AI_SETTINGS_FEATURE,
+                FeatureRecord.external_id == PLATFORM_AI_SETTINGS_ID,
+            )
+        )
+    ).scalar_one_or_none()
+    current = await load_platform_ai_settings(db, owner_id)
+    if row is None:
+        row = FeatureRecord(
+            owner_id=owner_id,
+            feature=PLATFORM_AI_SETTINGS_FEATURE,
+            external_id=PLATFORM_AI_SETTINGS_ID,
+            status="active",
+            payload=current,
+            note="平台账号共享 AI 配置",
+        )
+        db.add(row)
+    merged = dict(current)
+    if "ai_enabled" in values:
+        merged["ai_enabled"] = bool(values["ai_enabled"])
+    nested = values.get("ai_settings")
+    if isinstance(nested, dict):
+        merged["ai_settings"] = {**dict(current.get("ai_settings") or {}), **nested}
+    row.payload = _copy_platform_ai_settings(merged)
+    await db.commit()
+    await db.refresh(row)
+    return _copy_platform_ai_settings(row.payload)

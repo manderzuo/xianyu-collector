@@ -20,6 +20,7 @@ interface UserFormState {
   role: UserRole
   status: UserStatus
   account_limit: string
+  plan_code: string
   expire_at: string
 }
 
@@ -39,6 +40,7 @@ const createInitialState = (initial: User | null): UserFormState => ({
   role: initial?.role ?? (initial?.is_admin ? 'ADMIN' : 'MEMBER'),
   status: initial?.status ?? 'ACTIVE',
   account_limit: initial?.account_limit != null ? String(initial.account_limit) : '',
+  plan_code: initial?.plan_code ?? 'NORMAL',
   expire_at: toDatetimeLocalValue(initial?.expire_at),
 })
 
@@ -57,6 +59,8 @@ const toUser = (item: AdminUserApiItem): User => ({
   status: item.status,
   is_admin: item.is_admin,
   account_limit: item.account_limit,
+  plan_code: item.plan_code,
+  plan_expires_at: item.plan_expires_at,
   expire_at: item.expire_at,
 })
 
@@ -138,6 +142,7 @@ export function UserFormModal({ initial, onClose, onSaved }: Props) {
         role: form.role,
         status: form.status,
         account_limit: accountLimit,
+        plan_code: form.plan_code,
         expire_at: expireAtValue,
       }
 
@@ -246,6 +251,13 @@ export function UserFormModal({ initial, onClose, onSaved }: Props) {
                 onChange={(event) => updateField('account_limit', event.target.value)}
                 placeholder="留空表示不限制"
               />
+            </div>
+            <div className="input-group">
+              <label className="input-label">套餐</label>
+              <select className="input-ios" value={form.plan_code} onChange={(event) => updateField('plan_code', event.target.value)}>
+                <option value="NORMAL">普通用户</option>
+                <option value="VIP">VIP 用户</option>
+              </select>
             </div>
             <div className="input-group">
               <label className="input-label">到期日</label>

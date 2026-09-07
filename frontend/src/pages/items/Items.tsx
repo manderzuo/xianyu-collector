@@ -7,6 +7,7 @@ import { ItemCardRelationModal } from './ItemCardRelationModal'
 import { useUIStore } from '@/store/uiStore'
 import { PageLoading } from '@/components/common/Loading'
 import { useAuthStore } from '@/store/authStore'
+import { useLiveRefresh } from '@/utils/liveRefresh'
 import { Select } from '@/components/common/Select'
 import { ConfirmModal } from '@/components/common/ConfirmModal'
 import type { Account, Item } from '@/types'
@@ -118,12 +119,13 @@ export function Items() {
     pageSize: number = pagination.pageSize,
     currentFilters: ItemFilterParams = filters,
     currentKeyword: string = searchKeyword,
+    silent = false,
   ) => {
     if (!_hasHydrated || !isAuthenticated || !token) {
       return
     }
     try {
-      setItemsLoading(true)
+      if (!silent) setItemsLoading(true)
       const trimmedKeyword = currentKeyword.trim()
       const result = await getItemsPaginated(page, pageSize, selectedAccount || undefined, {
         ...currentFilters,
@@ -146,10 +148,23 @@ export function Items() {
     } catch {
       addToast({ type: 'error', message: '加载商品列表失败' })
     } finally {
-      setItemsLoading(false)
+      if (!silent) setItemsLoading(false)
       setLoading(false)
     }
   }
+
+  useLiveRefresh(
+    () => {
+      if (_hasHydrated && isAuthenticated && token) {
+        return loadItems(1, pagination.pageSize, filters, searchKeyword, true)
+      }
+    },
+    {
+      topics: ['items', 'all'],
+      intervalMs: 30000,
+      enabled: _hasHydrated && isAuthenticated && Boolean(token),
+    },
+  )
 
   // 分页切换
   const handlePageChange = (newPage: number) => {

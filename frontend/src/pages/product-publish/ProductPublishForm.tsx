@@ -8,7 +8,7 @@ import type { PublishAccountCapability } from '@/api/productPublish'
 import ProductSpecificationsEditor from './ProductSpecificationsEditor'
 import AddressPickerModal from './AddressPickerModal'
 import PlatformCategoryRecommender from './PlatformCategoryRecommender'
-import type { ProductSpecification, PublishForm, ShippingMethod, SkuRow } from './publishTypes'
+import type { ProductSpecification, PublishForm, PublishType, ShippingMethod, SkuRow } from './publishTypes'
 
 const SHIPPING_OPTIONS: Array<{ value: ShippingMethod; label: string }> = [
   { value: 'free', label: '包邮' },
@@ -34,9 +34,24 @@ export function ProductPublishForm({ form, setForm, accounts, onUploadSpecImage,
   const [showAddressPicker, setShowAddressPicker] = useState(false)
   // 未传账号能力时保持公共表单原有功能；只有明确检测为普通卖家才收起鱼小铺字段。
   const isFishShop = accountCapability?.is_fish_shop !== false
+  const publishType: PublishType = form.publish_type || (form.is_service_category ? 'service' : 'item')
+  const isServicePublish = publishType === 'service'
   const isServiceCategory = form.is_service_category
-  const supportsInventory = isFishShop || isServiceCategory
-  const shippingOptions = isFishShop
+  const inferredInventoryMode = form.inventory_mode
+    || (form.platform_channel_category_id === '201454708' && form.platform_tb_category_id === '201160807' ? 'verified' : isServiceCategory ? 'service' : 'single')
+  const supportsInventory = isFishShop || (isServicePublish && (inferredInventoryMode === 'verified' || inferredInventoryMode === 'candidate'))
+  const inventoryHint = inferredInventoryMode === 'verified'
+    ? 'APP 已实测支持库存；计价方式必须选择“元/件”。'
+    : inferredInventoryMode === 'candidate'
+      ? '库存候选分类；请先选择“元/件”，再用 APP 价格面板核验。'
+      : inferredInventoryMode === 'service'
+        ? '当前服务类目未验证 APP 展示库存；需要库存请改选带“元/件”的服务分类。'
+        : isFishShop
+          ? '发布后闲鱼可售数量。'
+          : '普通卖家实物商品按单库存发布；需要持续多次销售请开通鱼小铺。'
+  const shippingOptions = isServicePublish
+    ? SHIPPING_OPTIONS.filter((option) => option.value === 'none')
+    : isFishShop
     ? SHIPPING_OPTIONS
     : SHIPPING_OPTIONS.filter((option) => option.value !== 'template')
   const hasUnsupportedPersonalSpecifications = !isFishShop
@@ -45,6 +60,33 @@ export function ProductPublishForm({ form, setForm, accounts, onUploadSpecImage,
   const update = (patch: Partial<PublishForm>) => {
     if ((patch.title !== undefined || patch.description !== undefined) && onCategoryEdit) onCategoryEdit()
     setForm((current) => ({ ...current, ...patch }))
+  }
+  const changePublishType = (publish_type: PublishType) => {
+    if (publish_type === publishType) return
+    onCategoryEdit?.()
+    setForm((current) => ({
+      ...current,
+      publish_type,
+      category: '',
+      platform_category_id: '',
+      platform_category_name: '',
+      platform_channel_category_id: '',
+      platform_channel_category_name: '',
+      platform_leaf_id: '',
+      platform_tb_category_id: '',
+      platform_category_path: [],
+      platform_card_list: [],
+      is_service_category: false,
+      inventory_mode: undefined,
+      inventory_label: undefined,
+      inventory_reason: undefined,
+      inventory_price_unit: undefined,
+      platform_attributes: [],
+      category_source: 'manual',
+      category_confidence: undefined,
+      shipping_method: publish_type === 'service' ? 'none' : 'free',
+      delivery_method: publish_type === 'service' ? 'pickup' : 'express',
+    }))
   }
   const updateSpecs = (specifications: ProductSpecification[], skuRows: SkuRow[]) => update({ specifications, sku_rows: skuRows, price: skuRows[0]?.price || form.price })
 
@@ -79,6 +121,27 @@ export function ProductPublishForm({ form, setForm, accounts, onUploadSpecImage,
             </div>
           )}
 
+          <section className="space-y-2">
+            <label className="input-label">发布类型 <span className="text-red-500">*</span></label>
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+              {([
+                { value: 'item' as const, title: '发布商品（发闲置）', description: '普通商品/实物，按商品或规格发布' },
+                { value: 'service' as const, title: '发布服务（发服务）', description: '服务项目，可按服务类目设置服务次数' },
+              ]).map((option) => (
+                <button
+                  key={option.value}
+                  type="button"
+                  className={`rounded-lg border px-3 py-2 text-left transition-colors ${publishType === option.value ? 'border-blue-500 bg-blue-50 text-blue-700 dark:border-blue-400 dark:bg-blue-900/20 dark:text-blue-300' : 'border-slate-200 text-slate-600 hover:border-blue-300 dark:border-slate-700 dark:text-slate-300'}`}
+                  onClick={() => changePublishType(option.value)}
+                >
+                  <span className="block text-sm font-medium">{option.title}</span>
+                  <span className="mt-0.5 block text-xs text-slate-400">{option.description}</span>
+                </button>
+              ))}
+            </div>
+            <p className="text-xs text-slate-400">发布类型会决定闲鱼使用“发闲置”还是“发服务”链路；切换后需要重新选择平台分类。</p>
+          </section>
+
           <section className="space-y-3">
             <h3 className="text-base font-semibold text-slate-800 dark:text-slate-100">基础信息</h3>
             <div className="input-group">
@@ -98,7 +161,7 @@ export function ProductPublishForm({ form, setForm, accounts, onUploadSpecImage,
             />
           </section>
 
-          {isFishShop && <section className="space-y-3">
+          {isFishShop && !isServicePublish && <section className="space-y-3">
             <div className="flex items-center justify-between"><h3 className="text-base font-semibold text-slate-800 dark:text-slate-100">商品规格</h3><span className="text-xs text-slate-400">最多添加2个规格类型</span></div>
             <ProductSpecificationsEditor specifications={form.specifications} skuRows={form.sku_rows} onChange={updateSpecs} onUploadImage={onUploadSpecImage} />
           </section>}
@@ -109,7 +172,7 @@ export function ProductPublishForm({ form, setForm, accounts, onUploadSpecImage,
               <div className={`grid grid-cols-1 gap-3 ${isFishShop ? 'md:grid-cols-3' : 'md:grid-cols-2'}`}>
                 <div className="input-group"><label className="input-label">价格 <span className="text-red-500">*</span></label><div className="relative"><span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">¥</span><input type="number" className="input-ios pl-8" min="0" step="0.01" placeholder="0.00" value={form.price} onChange={(event) => update({ price: event.target.value })} /></div></div>
                 <div className="input-group"><label className="input-label">原价</label><div className="relative"><span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">¥</span><input type="number" className="input-ios pl-8" min="0" step="0.01" placeholder="0.00" value={form.original_price} onChange={(event) => update({ original_price: event.target.value })} /></div></div>
-                <div className="input-group"><label className="input-label">线上库存</label>{supportsInventory ? <input type="number" className="input-ios" min="1" max="999999" step="1" value={form.quantity} onChange={(event) => update({ quantity: Math.min(999999, Math.max(1, Number(event.target.value) || 1)) })} /> : <input type="number" className="input-ios bg-slate-100 text-slate-500" value="1" disabled />}<p className="mt-1 text-xs text-slate-400">{isServiceCategory ? '服务类商品支持多库存；账号有同类服务参数时可直接发布，无需扫码。' : isFishShop ? '发布后闲鱼可售数量。' : '普通卖家实物商品按单库存发布；需要持续多次销售请开通鱼小铺。'}</p></div>
+                <div className="input-group"><label className="input-label">{isServicePublish ? '服务次数 / 库存' : '线上库存'}</label>{supportsInventory ? <input type="number" className="input-ios" min="1" max="999999" step="1" value={form.quantity} onChange={(event) => update({ quantity: Math.min(999999, Math.max(1, Number(event.target.value) || 1)) })} /> : <input type="number" className="input-ios bg-slate-100 text-slate-500" value="1" disabled />}<p className="mt-1 text-xs text-slate-400">{inventoryHint}</p></div>
               </div>
               {isFishShop
                 ? <p className="text-xs text-slate-400">鱼小铺软件服务费按成交额（含运费）的1.6%计收</p>

@@ -1,0 +1,108 @@
+# Windows Docker 自动部署说明
+
+## 一、使用前提
+
+目标电脑只需要提前安装并启动 Docker Desktop。部署脚本会自动检查 Docker CLI、Docker Compose 和 Docker 引擎状态。
+
+将整个项目文件夹复制到目标电脑任意目录，例如桌面、D 盘或其他数据盘均可。脚本不会依赖固定盘符、固定用户名或固定工作目录。
+
+## 二、首次安装
+
+双击项目根目录下的 `install-xianyu.bat`。
+
+脚本会自动完成：
+
+1. 识别项目根目录。
+2. 创建本地 `.env` 配置文件。
+3. 生成本机独立的容器、网络和数据卷名称。
+4. 检测端口占用，并自动选择可用端口。
+5. 构建前端、后端、WebSocket 和 Scheduler 镜像。
+6. 启动 MySQL、Redis、Backend、WebSocket、Scheduler 和 Frontend。
+7. 等待前端响应。
+8. 在当前 Windows 用户桌面创建 `Xianyu System` 启动器。
+9. 自动打开浏览器。
+
+如果 `.env` 中 `XR_DEPLOY_MODE=remote`，安装脚本会从更新清单指定的 GHCR 镜像拉取镜像，不会在客户电脑上编译源码。
+
+## 三、后续启动
+
+以后可以双击桌面上的 `Xianyu System`，或者双击项目根目录的 `start-xianyu.bat`。启动器会按当前 `.env` 的端口启动已有容器并打开浏览器。
+
+停止服务可以双击 `stop-xianyu.bat`。该操作只停止容器，不删除数据库、Redis、上传文件或浏览器数据。
+
+## 四、端口和旧环境保护
+
+首次安装默认尝试使用 20000、28089、28090、28091；如果端口被占用，脚本会继续向后寻找可用端口，并将最终端口写入项目目录的 `.env`。
+
+脚本不会使用或覆盖旧稳定端口 19000，也不会执行 `docker compose down -v`、删除数据卷或删除旧容器的操作。
+
+如果目标电脑已经运行另一套系统，项目会使用自己的容器前缀、网络名称和数据卷名称，避免因固定容器名称导致冲突。
+
+## 五、GitHub 免费镜像和自动更新
+
+源码仓库可以继续保持私有。GitHub Actions 在 `main` 有新提交、创建版本标签或手动运行时，构建四个业务镜像，并推送到 GitHub Container Registry（GHCR）；同时把 `release/latest.json` 上传到腾讯云更新目录。
+
+客户端启动器会读取 `.env` 中的 `UPDATE_MANIFEST_URL`。发现新版本后弹窗提示，用户确认后执行：
+
+1. 保存当前 `.env` 备份。
+2. 切换到清单中的镜像仓库和镜像标签。
+3. 拉取新镜像。
+4. 使用原有数据卷重启服务。
+5. 检查前端健康状态。
+6. 成功后写入新的版本号和构建号。
+
+更新失败会恢复 `.env` 并尝试启动原镜像。更新不会删除数据库、Redis、上传文件或浏览器数据。
+
+GHCR 公开镜像支持匿名拉取，客户端不需要执行 `docker login`。公开镜像会暴露镜像内的程序文件，
+这是免镜像仓库费用和免客户端认证之间的取舍。
+
+镜像仓库地址、命名空间、更新清单地址和 Token 均从 `.env` 或部署配置读取，不写死盘符和本地目录。
+
+GitHub Actions 只需要配置腾讯云更新目录相关 Secrets：`TENCENT_UPDATE_SSH_HOST`、`TENCENT_UPDATE_SSH_USER`、`TENCENT_UPDATE_SSH_KEY`、`TENCENT_UPDATE_REMOTE_PATH`。镜像发布使用 GitHub 自动提供的 `GITHUB_TOKEN`，不需要 TCR 账号密码。
+
+## 六、数据迁移
+
+只复制代码文件不会自动带走原电脑中的 Docker 数据卷。若需要迁移原系统数据，应先在原电脑做数据库备份，再在目标电脑恢复；不要直接复制正在使用中的 MySQL 数据目录。
+
+需要迁移的敏感数据包括：数据库备份、上传文件、浏览器登录数据和 `.env`。其中 `.env` 可能包含数据库密码、JWT 密钥和外部 API Key，不要公开发送。
+
+## 七、故障排查
+
+### Docker 未启动
+
+打开 Docker Desktop，等待状态变为 Running，再重新运行安装脚本。
+
+### 页面打不开
+
+查看项目目录 `.env` 中的 `FRONTEND_PORT`，在浏览器访问 `http://127.0.0.1:<FRONTEND_PORT>`。
+
+### 端口被占用
+
+删除 `.env` 前请先备份。通常不需要手动改端口；重新运行安装脚本会检查当前配置并在端口冲突时自动选择新端口。不要删除 Docker 数据卷。
+
+### 服务启动失败
+
+在项目根目录打开 PowerShell，执行：
+
+```powershell
+docker compose --env-file .env ps
+docker compose --env-file .env logs --tail=100 backend
+docker compose --env-file .env logs --tail=100 frontend
+```
+
+重点检查 Backend 健康状态、MySQL 健康状态、Redis 健康状态和前端端口。
+
+## 八、脚本文件说明
+
+| 文件 | 作用 |
+| --- | --- |
+| `install-xianyu.bat` | 首次安装、构建、启动和创建桌面启动器 |
+| `start-xianyu.bat` | 启动现有部署并打开浏览器 |
+| `stop-xianyu.bat` | 停止当前部署，不删除数据 |
+| `deploy/install-xianyu.ps1` | 安装主逻辑 |
+| `deploy/start-xianyu.ps1` | 启动逻辑 |
+| `deploy/stop-xianyu.ps1` | 停止逻辑 |
+| `deploy/check-xianyu-update.ps1` | 检查并执行镜像更新 |
+| `.env` | 当前电脑的实际端口、密钥和部署标识 |
+
+三个 `.bat` 文件只使用英文、数字和 ASCII 符号，避免 Windows 批处理文件因中文编码产生执行错误。

@@ -16,6 +16,8 @@ from common.models.account_contents import AccountContent, AccountSyncState
 from common.models.accounts import Account
 from common.models.messages import Message
 from common.models.orders import Order
+from common.services.account_renewal import renew_account_session
+from common.services.cookie_renewal import is_session_expired_message
 from common.services.goofish_client import GoofishClient, parse_cookie_string
 
 
@@ -231,7 +233,7 @@ async def _acquire_sync_state(session: AsyncSession, account_id: int) -> Account
     return None
 
 
-async def sync_account_products(
+async def _sync_account_products_once(
     session: AsyncSession,
     account: Account,
     *,
@@ -503,6 +505,75 @@ async def sync_account_products(
         state.last_result = {"fetched_count": fetched_count, "pages": fetched_pages}
         await session.commit()
         raise
+
+
+async def sync_account_products(
+    session: AsyncSession,
+    account: Account,
+    *,
+    page_size: int = 20,
+    max_pages: int = 100,
+    sync_products: bool = True,
+    sync_orders: bool = True,
+) -> dict[str, Any]:
+    """同步账号商品/订单，并在平台会话失效时自动恢复后重试一次。
+
+    闲鱼的本地 Cookie 有效期和服务端 Session 有效期并不一致：本地
+    ``cookie_expire_at`` 可能仍在未来，但商品接口已经返回 Session 过期。
+    统一在同步边界处理该场景，确保手动同步和 scheduler 同步使用同一套
+    续期逻辑；续期失败才把账号留在过期状态并提示扫码。
+    """
+    try:
+        return await _sync_account_products_once(
+            session,
+            account,
+            page_size=page_size,
+            max_pages=max_pages,
+            sync_products=sync_products,
+            sync_orders=sync_orders,
+        )
+    except (RuntimeError, ValueError) as exc:
+        if not is_session_expired_message(str(exc)):
+            raise
+
+        original_error = str(exc)[:1000]
+        renewal = await renew_account_session(
+            session,
+            account,
+            source="account_sync_session_expired",
+            force=True,
+            notify_runtime=True,
+            observed_session_expired=True,
+        )
+        if not renewal.get("success"):
+            renewal_message = str(renewal.get("message") or "自动续期失败")[:1000]
+            raise RuntimeError(
+                f"{original_error}；系统已尝试自动续期但失败：{renewal_message}，请重新扫码登录"
+            ) from exc
+
+        try:
+            result = await _sync_account_products_once(
+                session,
+                account,
+                page_size=page_size,
+                max_pages=max_pages,
+                sync_products=sync_products,
+                sync_orders=sync_orders,
+            )
+            result["session_recovered"] = True
+            result["session_renewal_method"] = renewal.get("method") or "unknown"
+            result["session_recovery_message"] = "检测到平台会话失效，已自动续期并重试同步"
+            return result
+        except (RuntimeError, ValueError) as retry_exc:
+            if is_session_expired_message(str(retry_exc)):
+                # 自动续期后平台仍拒绝当前会话，不能继续让账号显示 active，
+                # 否则 scheduler 会不断用同一份失效 Cookie 重试并放大风控。
+                account.status = "expired"
+                account.cookie_expire_at = _now()
+                await session.commit()
+            raise RuntimeError(
+                f"自动续期后同步重试仍失败：{str(retry_exc)[:1000]}，请重新扫码登录"
+            ) from retry_exc
 
 
 async def sync_account_orders(

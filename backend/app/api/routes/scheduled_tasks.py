@@ -12,6 +12,11 @@ admin_router = APIRouter(prefix="/api/v1/admin/scheduled-tasks", tags=["管理�
 TASKS = TASK_CATALOG
 
 
+def _require_admin(user: dict) -> None:
+    if str(user.get("role") or "").lower() not in {"admin", "administrator"} and not user.get("is_admin"):
+        raise HTTPException(status_code=403, detail="仅管理员可以管理定时任务")
+
+
 @router.get("")
 @router.get("/")
 async def list_tasks():
@@ -57,7 +62,8 @@ async def _scheduler_request(method: str, path: str, **kwargs):
 
 @admin_router.get("")
 @admin_router.get("/")
-async def list_admin_tasks():
+async def list_admin_tasks(user=Depends(get_current_user)):
+    _require_admin(user)
     return await _scheduler_request("GET", "/api/v1/scheduled-tasks")
 
 
@@ -66,7 +72,9 @@ async def update_admin_task(
     task_code: str,
     interval_seconds: int | None = Query(default=None, ge=1, le=86400),
     enabled: bool | None = Query(default=None),
+    user=Depends(get_current_user),
 ):
+    _require_admin(user)
     canonical = canonical_task_name(task_code)
     if canonical not in {item[0] for item in TASKS}:
         raise HTTPException(status_code=409, detail="该旧任务没有可迁移的调度配置")
@@ -79,7 +87,8 @@ async def update_admin_task(
 
 
 @admin_router.post("/{task_code}/trigger")
-async def trigger_admin_task(task_code: str, payload: dict | None = Body(default=None)):
+async def trigger_admin_task(task_code: str, payload: dict | None = Body(default=None), user=Depends(get_current_user)):
+    _require_admin(user)
     if task_code not in {item[0] for item in TASKS} and task_code not in LEGACY_TASK_NAMES:
         raise HTTPException(status_code=404, detail="任务不存在")
     return await _scheduler_request("POST", f"/api/v1/scheduled-tasks/{task_code}/trigger", json=payload or {})

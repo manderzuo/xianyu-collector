@@ -34,6 +34,23 @@ TOKEN_ERROR_MARKERS = (
     "FAIL_SYS_TOKEN_EMPTY",
 )
 
+# 闲鱼分类接口没有直接返回“APP 是否展示库存”的布尔字段。以下规则来自
+# 同一账号的真实编辑详情对照：设计素材/源文件 + 元/件已经在 APP 价格面板
+# 实测显示库存；带旧版 tbCatId 的服务分类只有在当前属性响应确实提供“元/件”
+# 时才允许标为候选，避免旧类目 ID 造成误判。
+INVENTORY_VERIFIED_CHANNEL_ID = "201454708"
+INVENTORY_VERIFIED_TB_ID = "201160807"
+INVENTORY_CANDIDATE_TB_IDS = {"50050476", "201370801", "201157011"}
+SERVICE_NO_INVENTORY_CHANNEL_IDS = {
+    "202151841",  # AI教学服务
+    "202158122",  # AI视频工具/服务
+    "202156031",  # AI图文工具/服务
+    "202154631",  # AI设计工具/服务
+    "202156032",  # AI数字人
+    "202148345",  # DeepSeek服务
+    "202148346",  # AI音频工具/服务
+}
+
 
 class CategoryRecommendationError(RuntimeError):
     """分类接口不可用或没有返回有效分类时抛出的业务异常。"""
@@ -134,6 +151,45 @@ def _is_service_path(path: list[dict[str, str]]) -> bool:
     return any(item.get("id") == "201450801" or item.get("name") == "服务" for item in path)
 
 
+def _inventory_classification(candidate: dict[str, Any], *, inventory_pricing_available: bool = False) -> dict[str, str]:
+    """给分类候选标注库存履约模式。
+
+    ``inventory_mode`` 是业务提示而不是平台官方能力字段：平台目前没有公开
+    一个可靠的 supportsInventory 标志，所以只把真实 APP 已验证的组合标成
+    verified，其它分类最多标成 candidate，避免误导用户直接批量上架。
+    """
+    channel_id = _text(candidate.get("channel_cat_id"))
+    tb_id = _text(candidate.get("tb_cat_id"))
+    is_service = bool(candidate.get("is_service_category"))
+    if channel_id == INVENTORY_VERIFIED_CHANNEL_ID and tb_id == INVENTORY_VERIFIED_TB_ID:
+        return {
+            "inventory_mode": "verified",
+            "inventory_label": "库存已验证",
+            "inventory_reason": "APP 已实测显示库存；计价方式必须选择“元/件”",
+            "inventory_price_unit": "元/件",
+        }
+    if is_service and tb_id in INVENTORY_CANDIDATE_TB_IDS and inventory_pricing_available:
+        return {
+            "inventory_mode": "candidate",
+            "inventory_label": "库存候选",
+            "inventory_reason": "老类目提供元/件，需先用 APP 实测价格面板",
+            "inventory_price_unit": "元/件",
+        }
+    if channel_id in SERVICE_NO_INVENTORY_CHANNEL_IDS or is_service:
+        return {
+            "inventory_mode": "service",
+            "inventory_label": "服务履约",
+            "inventory_reason": "按次/按时/按课服务，APP 通常不展示库存",
+            "inventory_price_unit": "",
+        }
+    return {
+        "inventory_mode": "single",
+        "inventory_label": "普通单库存",
+        "inventory_reason": "普通卖家按单库存发布；多库存需要平台账号能力",
+        "inventory_price_unit": "",
+    }
+
+
 def _parse_current_card_list(response: dict[str, Any]) -> list[dict[str, Any]]:
     """保留分类、品牌、成色及属性卡，供下一次切换分类时原样回传。"""
     result: list[dict[str, Any]] = []
@@ -167,7 +223,7 @@ def _parse_candidates(response: dict[str, Any]) -> list[dict[str, Any]]:
                 path = [{"id": channel_id, "name": channel_name}]
             if not path:
                 continue
-            result.append({
+            candidate = {
                 "cat_id": _text(value.get("catId")) or _text(transport.get("catId")) or None,
                 "cat_name": category_name or None,
                 "channel_cat_id": channel_id or None,
@@ -178,7 +234,9 @@ def _parse_candidates(response: dict[str, Any]) -> list[dict[str, Any]]:
                 "score": value.get("score"),
                 "is_selected": _bool(value.get("isClicked")) or _bool(value.get("isUserClick")),
                 "is_service_category": _is_service_path(path),
-            })
+            }
+            candidate.update(_inventory_classification(candidate))
+            result.append(candidate)
     return result
 
 
@@ -247,6 +305,16 @@ def _parse_properties(response: dict[str, Any]) -> list[dict[str, Any]]:
             "options": options,
         })
     return result
+
+
+def _has_inventory_pricing(properties: list[dict[str, Any]]) -> bool:
+    """判断本次分类属性响应是否真的提供了“元/件”计价。"""
+    return any(
+        _text(option.get("value_name")) == "元/件"
+        for prop in properties
+        for option in (prop.get("options") or [])
+        if isinstance(option, dict)
+    )
 
 
 class PlatformCategoryService:
@@ -342,11 +410,20 @@ class PlatformCategoryService:
 
                     candidates = _parse_candidates(result)
                     _apply_predict_result(result, candidates)
+                    properties = _parse_properties(result)
+                    inventory_pricing_available = _has_inventory_pricing(properties)
+                    # 预测结果可能只补全候选的分类 ID；补全后重新计算库存履约模式，
+                    # 同时要求当前属性面板真的提供“元/件”，避免旧类目 ID 误判。
+                    for candidate in candidates:
+                        candidate.update(_inventory_classification(
+                            candidate,
+                            inventory_pricing_available=inventory_pricing_available and bool(candidate.get("is_selected")),
+                        ))
                     if not candidates:
                         raise CategoryRecommendationError("接口未返回可用的商品分类")
                     return {
                         "candidates": candidates,
-                        "properties": _parse_properties(result),
+                        "properties": properties,
                         "card_list": _parse_current_card_list(result),
                         "account_id": account_id,
                         "cookies_str": next_cookie,

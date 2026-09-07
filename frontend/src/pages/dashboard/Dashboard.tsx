@@ -6,6 +6,7 @@ import { type AdminStats, type TodayStats, getAdminStats, getTodayStats } from '
 import { getPublicAds, type Advertisement } from '@/api/advertisements'
 import { useUIStore } from '@/store/uiStore'
 import { useAuthStore } from '@/store/authStore'
+import { useLiveRefresh } from '@/utils/liveRefresh'
 import { OrderAmountChart } from '@/components/common/OrderAmountChart'
 
 interface DashboardStats {
@@ -49,9 +50,9 @@ export function Dashboard() {
   const [expandedTextAds, setExpandedTextAds] = useState<Set<number>>(new Set())
 
   /** 加载基础统计数据 */
-  const loadStats = async () => {
+  const loadStats = async (silent = false) => {
     try {
-      setStatsLoading(true)
+      if (!silent) setStatsLoading(true)
       
       // 调用后端统计接口，一次性获取所有统计数据
       const statsData = await getAccountStats()
@@ -70,18 +71,18 @@ export function Dashboard() {
     } catch (error) {
       addToast({ type: 'error', message: '加载统计数据失败' })
     } finally {
-      setStatsLoading(false)
+      if (!silent) setStatsLoading(false)
     }
   }
 
   /** 加载管理员统计数据 */
-  const loadAdminStats = async () => {
+  const loadAdminStats = async (silent = false) => {
     if (!user?.is_admin) {
-      setAdminStatsLoading(false)
+      if (!silent) setAdminStatsLoading(false)
       return
     }
     try {
-      setAdminStatsLoading(true)
+      if (!silent) setAdminStatsLoading(true)
       const [adminResult, todayResult] = await Promise.all([
         getAdminStats(),
         getTodayStats(),
@@ -95,7 +96,7 @@ export function Dashboard() {
     } catch {
       // ignore
     } finally {
-      setAdminStatsLoading(false)
+      if (!silent) setAdminStatsLoading(false)
     }
   }
 
@@ -129,21 +130,19 @@ export function Dashboard() {
     loadDashboard()
   }, [_hasHydrated, isAuthenticated, token])
 
-  // 自动回复由后台实时服务异步写入，已打开的仪表盘也需要及时反映最新数量。
-  // 聚焦窗口时立即刷新，后台每 15 秒同步一次统计；广告数据不随之重复请求。
-  useEffect(() => {
-    if (!_hasHydrated || !isAuthenticated || !token) return
-    const refreshStats = () => {
-      loadStats()
-      loadAdminStats()
-    }
-    const timer = window.setInterval(refreshStats, 15000)
-    window.addEventListener('focus', refreshStats)
-    return () => {
-      window.clearInterval(timer)
-      window.removeEventListener('focus', refreshStats)
-    }
-  }, [_hasHydrated, isAuthenticated, token])
+  useLiveRefresh(
+    () => {
+      if (_hasHydrated && isAuthenticated && token) {
+        void loadStats(true)
+        void loadAdminStats(true)
+      }
+    },
+    {
+      topics: ['dashboard', 'accounts', 'orders', 'items', 'all'],
+      intervalMs: 15000,
+      enabled: _hasHydrated && isAuthenticated && Boolean(token),
+    },
+  )
 
   // 轮播广告自动切换
   useEffect(() => {

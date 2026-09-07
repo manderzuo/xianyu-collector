@@ -10,7 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.dependencies import get_current_user
 from backend.app.core.response import ok
-from backend.app.services.account_settings import load_account_settings, save_account_settings
+from backend.app.services.account_settings import load_platform_ai_settings, save_platform_ai_settings
+from backend.app.services.entitlements import FEATURE_AI_SMART_REPLY, require_feature
 from common.db.session import get_session
 from common.models.accounts import Account
 from common.services.ai_provider_service import fetch_ai_model_list, test_ai_connection
@@ -31,9 +32,7 @@ def _is_admin(user: dict[str, Any]) -> bool:
 
 
 async def _account(account_id: int, user: dict[str, Any], db: AsyncSession) -> Account:
-    statement = select(Account).where(Account.id == account_id)
-    if not _is_admin(user):
-        statement = statement.where(Account.user_id == _uid(user))
+    statement = select(Account).where(Account.id == account_id, Account.user_id == _uid(user))
     account = (await db.execute(statement)).scalar_one_or_none()
     if account is None:
         raise HTTPException(status_code=404, detail="账号不存在")
@@ -41,7 +40,7 @@ async def _account(account_id: int, user: dict[str, Any], db: AsyncSession) -> A
 
 
 async def _save_ai(account: Account, payload: dict[str, Any], db: AsyncSession) -> dict[str, Any]:
-    current = await load_account_settings(db, int(account.user_id), int(account.id))
+    current = await load_platform_ai_settings(db, int(account.user_id))
     current_ai = dict(current.get("ai_settings") or {})
     nested = payload.get("ai_settings")
     if isinstance(nested, dict):
@@ -55,15 +54,17 @@ async def _save_ai(account: Account, payload: dict[str, Any], db: AsyncSession) 
     elif "enabled" in payload:
         values["ai_enabled"] = bool(payload["enabled"])
         current_ai["ai_enabled"] = values["ai_enabled"]
-    saved = await save_account_settings(db, int(account.user_id), int(account.id), values)
-    return dict(saved.get("ai_settings") or {})
+    saved = await save_platform_ai_settings(db, int(account.user_id), values)
+    return {**dict(saved.get("ai_settings") or {}), "ai_enabled": bool(saved.get("ai_enabled"))}
 
 
 @router.post("/models")
 async def models(
     payload: dict[str, Any] | None = Body(default=None),
     user=Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
 ):
+    await require_feature(db, user, FEATURE_AI_SMART_REPLY)
     data = payload or {}
     try:
         values = await fetch_ai_model_list(
@@ -77,25 +78,66 @@ async def models(
 @router.get("")
 @router.get("/")
 async def all_settings(user=Depends(get_current_user), db: AsyncSession = Depends(get_session)):
-    statement = select(Account).order_by(Account.id.asc())
-    if not _is_admin(user):
-        statement = statement.where(Account.user_id == _uid(user))
-    accounts = (await db.execute(statement)).scalars().all()
-    result: dict[str, Any] = {}
-    for account in accounts:
-        settings = await load_account_settings(db, int(account.user_id), int(account.id))
-        result[str(account.id)] = dict(settings.get("ai_settings") or {})
-        result[str(account.id)]["ai_enabled"] = bool(settings.get("ai_enabled"))
-    return ok(result, "AI设置查询成功")
+    await require_feature(db, user, FEATURE_AI_SMART_REPLY)
+    settings = await load_platform_ai_settings(db, _uid(user))
+    return ok(
+        {**dict(settings.get("ai_settings") or {}), "ai_enabled": bool(settings.get("ai_enabled"))},
+        "平台账号 AI 设置查询成功",
+    )
+
+
+@router.post("")
+@router.post("/")
+@router.put("")
+@router.put("/")
+async def put_platform_settings(
+    payload: dict[str, Any] | None = Body(default=None),
+    user=Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+):
+    """保存当前登录平台账号的 AI 配置，所属闲鱼账号统一共享。"""
+    await require_feature(db, user, FEATURE_AI_SMART_REPLY)
+    values = payload or {}
+    current = await load_platform_ai_settings(db, _uid(user))
+    current_ai = dict(current.get("ai_settings") or {})
+    nested = values.get("ai_settings")
+    if isinstance(nested, dict):
+        current_ai.update(nested)
+    else:
+        current_ai.update({key: value for key, value in values.items() if key != "ai_enabled"})
+    saved = await save_platform_ai_settings(
+        db,
+        _uid(user),
+        {
+            "ai_enabled": bool(values["ai_enabled"]) if "ai_enabled" in values else current.get("ai_enabled"),
+            "ai_settings": current_ai,
+        },
+    )
+    return ok(
+        {**dict(saved.get("ai_settings") or {}), "ai_enabled": bool(saved.get("ai_enabled"))},
+        "平台账号 AI 设置已保存，所属闲鱼账号共享",
+    )
+
+
+@router.post("/test")
+async def test_platform_settings(user=Depends(get_current_user), db: AsyncSession = Depends(get_session)):
+    await require_feature(db, user, FEATURE_AI_SMART_REPLY)
+    settings = await load_platform_ai_settings(db, _uid(user))
+    ai = settings.get("ai_settings") or {}
+    try:
+        reply = await test_ai_connection(ai.get("provider_type"), ai.get("base_url"), ai.get("api_key"), ai.get("model_name"))
+        return ok({"tested": True, "reply": reply}, "AI连接测试成功")
+    except Exception as exc:
+        return ok({"tested": False}, f"AI连接测试失败：{str(exc)[:500]}")
 
 
 @router.get("/{account_id}")
 async def get_settings(account_id: int, user=Depends(get_current_user), db: AsyncSession = Depends(get_session)):
+    await require_feature(db, user, FEATURE_AI_SMART_REPLY)
     account = await _account(account_id, user, db)
-    settings = await load_account_settings(db, int(account.user_id), account_id)
-    data = dict(settings.get("ai_settings") or {})
-    data["ai_enabled"] = bool(settings.get("ai_enabled"))
-    return ok(data, "AI设置查询成功")
+    settings = await load_platform_ai_settings(db, int(account.user_id))
+    data = {**dict(settings.get("ai_settings") or {}), "ai_enabled": bool(settings.get("ai_enabled"))}
+    return ok(data, "平台账号 AI 设置查询成功")
 
 
 @router.post("/{account_id}")
@@ -106,14 +148,16 @@ async def put_settings(
     user=Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ):
+    await require_feature(db, user, FEATURE_AI_SMART_REPLY)
     account = await _account(account_id, user, db)
-    return ok(await _save_ai(account, payload or {}, db), "AI设置已保存")
+    return ok(await _save_ai(account, payload or {}, db), "平台账号 AI 设置已保存，所属闲鱼账号共享")
 
 
 @router.post("/{account_id}/test")
 async def test_settings(account_id: int, user=Depends(get_current_user), db: AsyncSession = Depends(get_session)):
+    await require_feature(db, user, FEATURE_AI_SMART_REPLY)
     account = await _account(account_id, user, db)
-    settings = await load_account_settings(db, int(account.user_id), account_id)
+    settings = await load_platform_ai_settings(db, int(account.user_id))
     ai = settings.get("ai_settings") or {}
     try:
         reply = await test_ai_connection(ai.get("provider_type"), ai.get("base_url"), ai.get("api_key"), ai.get("model_name"))

@@ -5,7 +5,7 @@ import { MessageSquare, User, Lock, Mail, KeyRound, Eye, EyeOff } from 'lucide-r
 import { AuthNavbar } from '@/components/common/AuthNavbar'
 import { SafeHtml } from '@/components/common/SafeHtml'
 import { getDefaultAuthFooterAdSettings, getDefaultLoginBrandingSettings } from '@/api/settings'
-import { login, verifyToken, getRegistrationStatus, getLoginInfoStatus, generateCaptcha, verifyCaptcha, sendVerificationCode, getLoginCaptchaStatus, getLoginBrandingSettings, getAuthFooterAdSettings } from '@/api/auth'
+import { login, register, verifyToken, getRegistrationStatus, generateCaptcha, verifyCaptcha, sendVerificationCode, getLoginCaptchaStatus, getLoginBrandingSettings, getAuthFooterAdSettings } from '@/api/auth'
 import { useAuthStore } from '@/store/authStore'
 import { useUIStore } from '@/store/uiStore'
 import { cn } from '@/utils/cn'
@@ -24,10 +24,10 @@ export function Login() {
   const [loading, setLoading] = useState(false)
   const [showPassword, setShowPassword] = useState(false)
   const [registrationEnabled, setRegistrationEnabled] = useState(true)
-  const [showDefaultLogin, setShowDefaultLogin] = useState(true)
   const [loginCaptchaEnabled, setLoginCaptchaEnabled] = useState<boolean | null>(null)
   const [loginBranding, setLoginBranding] = useState(() => getDefaultLoginBrandingSettings())
   const [authFooterAd, setAuthFooterAd] = useState(() => getDefaultAuthFooterAdSettings())
+  const [showRegister, setShowRegister] = useState(false)
 
   // Form states
   const [username, setUsername] = useState('')
@@ -37,6 +37,8 @@ export function Login() {
   const [emailForCode, setEmailForCode] = useState('')
   const [captchaCode, setCaptchaCode] = useState('')
   const [verificationCode, setVerificationCode] = useState('')
+  const [registerInviteCode, setRegisterInviteCode] = useState('')
+  const [registerConfirmPassword, setRegisterConfirmPassword] = useState('')
 
   // Captcha states
   const [captchaImage, setCaptchaImage] = useState('')
@@ -82,10 +84,6 @@ export function Login() {
       .then((result) => setRegistrationEnabled(result.enabled))
       .catch(() => {})
 
-    getLoginInfoStatus()
-      .then((result) => setShowDefaultLogin(result.enabled))
-      .catch(() => {})
-
     getLoginCaptchaStatus()
       .then((result) => setLoginCaptchaEnabled(result.enabled))
       .catch(() => {})
@@ -105,6 +103,10 @@ export function Login() {
       loadCaptcha()
     }
   }, [loginType])
+
+  useEffect(() => {
+    if (showRegister) loadCaptcha()
+  }, [showRegister])
 
   // Countdown timer
   useEffect(() => {
@@ -258,6 +260,9 @@ export function Login() {
           username: result.username!,
           is_admin: result.is_admin!,
           account_limit: result.account_limit,
+          role: result.role,
+          plan_code: result.plan_code,
+          entitlements: result.entitlements,
         })
         addToast({ type: 'success', message: '登录成功' })
         navigate('/dashboard')
@@ -266,8 +271,9 @@ export function Login() {
         // 登录失败，重置滑动验证
         resetGeetest()
       }
-    } catch {
-      addToast({ type: 'error', message: '登录失败，请检查网络连接' })
+    } catch (error: unknown) {
+      const err = error as { response?: { data?: { detail?: string; message?: string } } }
+      addToast({ type: 'error', message: err?.response?.data?.detail || err?.response?.data?.message || '登录失败，请检查网络连接' })
       // 登录失败，重置滑动验证
       resetGeetest()
     } finally {
@@ -275,10 +281,43 @@ export function Login() {
     }
   }
 
-  const fillDefaultCredentials = () => {
-    setLoginType('username')
-    setUsername('admin')
-    setPassword('admin123')
+  const handleRegisterSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!username.trim() || !registerInviteCode.trim() || !password || !registerConfirmPassword) {
+      addToast({ type: 'error', message: '请填写用户名、邀请码和密码' })
+      return
+    }
+    if (password !== registerConfirmPassword) {
+      addToast({ type: 'error', message: '两次输入的密码不一致' })
+      return
+    }
+    if (password.length < 6) {
+      addToast({ type: 'error', message: '密码长度至少6位' })
+      return
+    }
+    if (!captchaVerified) {
+      addToast({ type: 'warning', message: '请先完成图形验证码验证' })
+      return
+    }
+    setLoading(true)
+    try {
+      const result = await register({ username: username.trim(), invite_code: registerInviteCode.trim(), password, session_id: sessionId })
+      if (result.success) {
+        addToast({ type: 'success', message: '注册申请已提交，请等待管理员审核' })
+        setShowRegister(false)
+        setRegisterInviteCode('')
+        setRegisterConfirmPassword('')
+        setPassword('')
+        setCaptchaVerified(false)
+      } else {
+        addToast({ type: 'error', message: result.message || '注册失败' })
+      }
+    } catch (error: unknown) {
+      const err = error as { response?: { data?: { detail?: string; message?: string } } }
+      addToast({ type: 'error', message: err?.response?.data?.detail || err?.response?.data?.message || '注册失败，请检查网络连接' })
+    } finally {
+      setLoading(false)
+    }
   }
 
   return (
@@ -352,12 +391,12 @@ export function Login() {
           {/* Login Card */}
           <div className="bg-white dark:bg-slate-800 rounded-lg shadow-sm border border-slate-200 dark:border-slate-700 p-5 sm:p-8">
             <div className="mb-6">
-              <h2 className="text-xl vben-card-title text-slate-900 dark:text-white">登录</h2>
-              <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">欢迎回来，请登录您的账号</p>
+              <h2 className="text-xl vben-card-title text-slate-900 dark:text-white">{showRegister ? '邀请码注册' : '登录'}</h2>
+              <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">{showRegister ? '提交申请后由管理员审核，审核通过即可登录' : '欢迎回来，请登录您的账号'}</p>
             </div>
 
             {/* Login type tabs */}
-            <div className="flex border-b border-slate-200 dark:border-slate-700 mb-4 sm:mb-6 overflow-x-auto scrollbar-hide">
+            {!showRegister && <div className="flex border-b border-slate-200 dark:border-slate-700 mb-4 sm:mb-6 overflow-x-auto scrollbar-hide">
               {[
                 { type: 'username' as const, label: '账号登录' },
                 { type: 'email-password' as const, label: '邮箱密码' },
@@ -376,9 +415,18 @@ export function Login() {
                   {tab.label}
                 </button>
               ))}
-            </div>
+            </div>}
 
-            <form onSubmit={handleSubmit} className="space-y-3 sm:space-y-4">
+            {showRegister ? (
+              <form onSubmit={handleRegisterSubmit} className="space-y-3 sm:space-y-4">
+                <div className="input-group"><label className="input-label">用户名</label><div className="relative"><User className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" /><input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="请输入用户名" className="input-ios pl-9" /></div></div>
+                <div className="input-group"><label className="input-label">邀请码</label><div className="relative"><KeyRound className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" /><input value={registerInviteCode} onChange={(e) => setRegisterInviteCode(e.target.value.toUpperCase())} placeholder="请输入管理员提供的邀请码" className="input-ios pl-9 tracking-wide" autoComplete="one-time-code" /></div></div>
+                <div className="input-group"><label className="input-label">密码</label><div className="relative"><Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" /><input type={showPassword ? 'text' : 'password'} value={password} onChange={(e) => setPassword(e.target.value)} placeholder="至少6位字符" className="input-ios pl-9 pr-9" /><button type="button" onClick={() => setShowPassword(!showPassword)} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400">{showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}</button></div></div>
+                <div className="input-group"><label className="input-label">确认密码</label><input type={showPassword ? 'text' : 'password'} value={registerConfirmPassword} onChange={(e) => setRegisterConfirmPassword(e.target.value)} placeholder="请再次输入密码" className="input-ios" /></div>
+                <div className="input-group"><label className="input-label">图形验证码</label><div className="flex gap-2"><input value={captchaCode} onChange={(e) => setCaptchaCode(e.target.value)} placeholder="输入验证码" maxLength={4} className="input-ios flex-1" disabled={captchaVerified} /><img src={captchaImage} alt="验证码" onClick={loadCaptcha} className="h-[38px] rounded border border-gray-300 cursor-pointer" /></div><p className="text-xs text-slate-400">{captchaVerified ? '✓ 验证成功' : '点击图片更换验证码'}</p></div>
+                <button type="submit" disabled={loading} className="w-full btn-ios-primary">{loading ? <ButtonLoading /> : '提 交 注 册 申 请'}</button>
+              </form>
+            ) : <form onSubmit={handleSubmit} className="space-y-3 sm:space-y-4">
               {/* Username login */}
               {loginType === 'username' && (
                 <>
@@ -551,7 +599,7 @@ export function Login() {
               >
                 {loading ? <ButtonLoading /> : '登 录'}
               </button>
-            </form>
+            </form>}
 
             {/* Forgot password + Register links */}
             <div className="flex items-center justify-between mt-6 text-sm">
@@ -559,30 +607,12 @@ export function Login() {
                 忘记密码?
               </Link>
               {registrationEnabled && (
-                <Link to="/register" className="text-blue-600 dark:text-blue-400 font-medium hover:text-blue-700 dark:hover:text-blue-300">
-                  立即注册
-                </Link>
+                <button type="button" onClick={() => { setShowRegister((value) => !value); setCaptchaVerified(false); setCaptchaCode('') }} className="text-blue-600 dark:text-blue-400 font-medium hover:text-blue-700 dark:hover:text-blue-300">
+                  {showRegister ? '返回登录' : '立即注册'}
+                </button>
               )}
             </div>
 
-            {/* Default credentials */}
-            {showDefaultLogin && (
-              <div className="mt-6 pt-6 border-t border-slate-100 dark:border-slate-700">
-                <button
-                  type="button"
-                  onClick={fillDefaultCredentials}
-                  className="w-full flex items-center justify-between p-3 rounded-md 
-                             bg-slate-50 dark:bg-slate-700/50 hover:bg-slate-100 dark:hover:bg-slate-700 
-                             transition-colors text-sm"
-                >
-                  <div className="text-left">
-                    <p className="text-slate-500 dark:text-slate-400">演示账号</p>
-                    <p className="text-slate-900 dark:text-white font-medium">admin / admin123</p>
-                  </div>
-                  <span className="text-blue-600 dark:text-blue-400">一键填充 →</span>
-                </button>
-              </div>
-            )}
           </div>
 
           {/* Footer */}

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""登录、注册及风控验证码接口。
+"""登录、找回密码及风控验证码接口。
 
 图形验证码在后端生成并一次性消费；邮箱验证码只有 SMTP 投递成功后才会
 写入待验证状态。远程过滑块接口只转发到已配置的服务，不返回本地伪成功。
@@ -63,13 +63,13 @@ class VerifyCaptchaRequest(CaptchaRequest):
 class SendEmailCodeRequest(BaseModel):
     email: str = Field(min_length=3, max_length=128)
     session_id: str | None = Field(default=None, max_length=128)
-    type: str = Field(default="register", pattern="^(register|login|reset_password)$")
+    type: str = Field(default="login", pattern="^(login|reset_password)$")
 
 
 class VerifyEmailCodeRequest(BaseModel):
     email: str = Field(min_length=3, max_length=128)
     code: str = Field(min_length=4, max_length=8)
-    code_type: str = Field(default="register", pattern="^(register|login|reset_password)$")
+    code_type: str = Field(default="login", pattern="^(login|reset_password)$")
 
 
 class SliderSolveRequest(BaseModel):
@@ -162,6 +162,14 @@ def _verify_captcha(session_id: str) -> tuple[bool, str]:
     return True, "验证成功"
 
 
+def consume_captcha(session_id: str) -> tuple[bool, str]:
+    """校验并消费一次已通过的图形验证码，供注册等业务接口使用。"""
+    valid, message = _verify_captcha(session_id)
+    if valid:
+        _captcha_store.pop(session_id, None)
+    return valid, message
+
+
 def check_email_code(email: str, code: str, code_type: str = "login") -> tuple[bool, str]:
     """供鉴权路由同步调用；校验成功会消费验证码。"""
     _cleanup()
@@ -233,8 +241,6 @@ async def send_email_code(request: SendEmailCodeRequest, db: AsyncSession = Depe
         if not valid:
             return error(message, code="captcha_required")
     user = (await db.execute(select(User).where(User.email == email).limit(1))).scalar_one_or_none()
-    if request.type == "register" and user is not None:
-        return error("该邮箱已被注册", code="email_exists")
     if request.type in {"login", "reset_password"} and user is None:
         return error("该邮箱未注册", code="email_not_found")
     _cleanup()

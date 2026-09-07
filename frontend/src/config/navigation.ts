@@ -48,6 +48,7 @@ export interface NavItem {
   label: string
   path: string
   adminOnly?: boolean
+  requiredFeature?: string
 }
 
 export interface NavGroup {
@@ -55,6 +56,7 @@ export interface NavGroup {
   icon: React.ElementType
   label: string
   adminOnly?: boolean
+  requiredFeature?: string
   children: NavItem[]
 }
 
@@ -142,6 +144,7 @@ export const mainNavItems: NavEntry[] = [
 export const adminNavItems: NavEntry[] = [
   { key: 'settings', icon: Settings, label: '系统设置', path: '/settings', adminOnly: true },
   { key: 'admin-users', icon: UserCog, label: '用户管理', path: '/admin/users', adminOnly: true },
+  { key: 'admin-entitlements', icon: Shield, label: '套餐权限', path: '/admin/entitlements', adminOnly: true },
   {
     key: 'admin-logs',
     icon: ScrollText,
@@ -211,13 +214,16 @@ export function getHideableFirstLevelMenuOptions(excludedMenuKeys: string[] = []
   return hideableFirstLevelMenuOptions.filter((option) => !excludedMenuKeys.includes(option.key))
 }
 
-export function getVisibleNavEntries(entries: NavEntry[], hiddenMenuKeys: string[], isAdmin: boolean, isExeMode: boolean = false): NavEntry[] {
+export function getVisibleNavEntries(entries: NavEntry[], hiddenMenuKeys: string[], isAdmin: boolean, isExeMode: boolean = false, features: Record<string, boolean> = {}): NavEntry[] {
   const forcedHiddenMenuKeys = getExeForcedHiddenMenuKeys(isExeMode)
   return entries.filter((entry) => {
     if (forcedHiddenMenuKeys.includes(entry.key)) {
       return false
     }
     if (entry.adminOnly && !isAdmin) {
+      return false
+    }
+    if (entry.requiredFeature && features[entry.requiredFeature] === false) {
       return false
     }
     if (!isAdmin && hiddenMenuKeys.includes(entry.key)) {
@@ -227,12 +233,12 @@ export function getVisibleNavEntries(entries: NavEntry[], hiddenMenuKeys: string
   })
 }
 
-export function getVisibleBottomNavItems(items: NavItem[], hiddenMenuKeys: string[], isAdmin: boolean, isExeMode: boolean = false): NavItem[] {
+export function getVisibleBottomNavItems(items: NavItem[], hiddenMenuKeys: string[], isAdmin: boolean, isExeMode: boolean = false, features: Record<string, boolean> = {}): NavItem[] {
   const forcedHiddenMenuKeys = getExeForcedHiddenMenuKeys(isExeMode)
   if (isAdmin) {
     return items.filter((item) => !forcedHiddenMenuKeys.includes(item.key))
   }
-  return items.filter((item) => !hiddenMenuKeys.includes(item.key) && !forcedHiddenMenuKeys.includes(item.key))
+    return items.filter((item) => !hiddenMenuKeys.includes(item.key) && !forcedHiddenMenuKeys.includes(item.key) && (!item.requiredFeature || features[item.requiredFeature] !== false))
 }
 
 const routeParentKeyMap: Record<string, string> = {
@@ -282,7 +288,7 @@ export function findTopLevelMenuKeyByPath(path: string): string | null {
   return getTopLevelMenuEntryByPath(path)?.key || null
 }
 
-export function isPathBlockedForUser(path: string, hiddenMenuKeys: string[], isAdmin: boolean, isExeMode: boolean = false): boolean {
+export function isPathBlockedForUser(path: string, hiddenMenuKeys: string[], isAdmin: boolean, isExeMode: boolean = false, features: Record<string, boolean> = {}): boolean {
   if (isExeBlockedPath(path, isExeMode)) {
     return true
   }
@@ -298,6 +304,10 @@ export function isPathBlockedForUser(path: string, hiddenMenuKeys: string[], isA
   }
 
   if (topLevelEntry.adminOnly && !isAdmin) {
+    return true
+  }
+
+  if (topLevelEntry.requiredFeature && features[topLevelEntry.requiredFeature] === false) {
     return true
   }
 

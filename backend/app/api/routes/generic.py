@@ -29,6 +29,7 @@ from common.models import (
 from backend.app.core.dependencies import get_current_user
 from backend.app.core.response import ok
 from backend.app.core.security import hash_password
+from backend.app.services.entitlements import FEATURE_AI_SMART_REPLY, require_feature
 
 
 RESOURCE_MODELS: dict[str, type] = {
@@ -76,8 +77,16 @@ def _is_admin(user: dict[str, Any]) -> bool:
 
 
 def _admin_only_resource(resource: str, user: dict[str, Any]) -> None:
-    if resource in {"users", "system-settings"} and not _is_admin(user):
+    model = RESOURCE_MODELS.get(resource)
+    columns = {column.name for column in model.__table__.columns} if model is not None else set()
+    # 没有租户归属字段的资源无法安全按用户隔离，只允许管理员访问。
+    if (resource in {"users", "system-settings"} or not ({"owner_id", "user_id"} & columns)) and not _is_admin(user):
         raise HTTPException(status_code=403, detail="仅管理员可以访问该资源")
+
+
+async def _require_resource_feature(resource: str, user: dict[str, Any], session: AsyncSession) -> None:
+    if resource == "ai" and not _is_admin(user):
+        await require_feature(session, user, FEATURE_AI_SMART_REPLY)
 
 
 def _defaults(resource: str, payload: dict[str, Any], user_id: int) -> dict[str, Any]:
@@ -149,6 +158,7 @@ def build_resource_router(prefix: str, label: str) -> APIRouter:
     @router.get("/")
     async def list_resource(page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)):
         _admin_only_resource(resource, user)
+        await _require_resource_feature(resource, user, session)
         user_id = _user_id(user)
         result = await session.execute(scope(select(model).order_by(model.id.desc()), user_id).offset((page - 1) * page_size).limit(page_size))
         items = [serialize_model(item) for item in result.scalars().all()]
@@ -159,6 +169,7 @@ def build_resource_router(prefix: str, label: str) -> APIRouter:
     @router.post("/")
     async def create_resource(payload: dict[str, Any] | None = Body(default=None), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)):
         _admin_only_resource(resource, user)
+        await _require_resource_feature(resource, user, session)
         item = model(**_defaults(resource, payload or {}, _user_id(user)))
         session.add(item)
         try:
@@ -170,6 +181,7 @@ def build_resource_router(prefix: str, label: str) -> APIRouter:
     @router.get("/{item_id}")
     async def get_resource(item_id: str, user=Depends(get_current_user), session: AsyncSession = Depends(get_session)):
         _admin_only_resource(resource, user)
+        await _require_resource_feature(resource, user, session)
         if not item_id.isdigit():
             result = await session.execute(scope(select(model).order_by(model.id.desc()).limit(20), _user_id(user)))
             return ok({"path": item_id, "items": [serialize_model(item) for item in result.scalars().all()], "resource": resource})
@@ -180,6 +192,7 @@ def build_resource_router(prefix: str, label: str) -> APIRouter:
     @router.put("/{item_id}")
     async def update_resource(item_id: int, payload: dict[str, Any] | None = Body(default=None), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)):
         _admin_only_resource(resource, user)
+        await _require_resource_feature(resource, user, session)
         item = (await session.execute(scope(select(model).where(model.id == item_id), _user_id(user)))).scalar_one_or_none()
         if item is None: raise HTTPException(404, f"{label}不存在")
         columns = {column.name for column in model.__table__.columns}
@@ -194,6 +207,7 @@ def build_resource_router(prefix: str, label: str) -> APIRouter:
     @router.delete("/{item_id}")
     async def delete_resource(item_id: int, user=Depends(get_current_user), session: AsyncSession = Depends(get_session)):
         _admin_only_resource(resource, user)
+        await _require_resource_feature(resource, user, session)
         item = (await session.execute(scope(select(model).where(model.id == item_id), _user_id(user)))).scalar_one_or_none()
         if item is None: raise HTTPException(404, f"{label}不存在")
         await session.delete(item); await session.commit()
@@ -202,6 +216,7 @@ def build_resource_router(prefix: str, label: str) -> APIRouter:
     @router.get("/{subpath:path}")
     async def nested_resource(subpath: str, user=Depends(get_current_user), session: AsyncSession = Depends(get_session)):
         _admin_only_resource(resource, user)
+        await _require_resource_feature(resource, user, session)
         result = await session.execute(scope(select(model).order_by(model.id.desc()).limit(20), _user_id(user)))
         return ok({"path": subpath, "items": [serialize_model(item) for item in result.scalars().all()], "resource": resource})
 
@@ -209,6 +224,7 @@ def build_resource_router(prefix: str, label: str) -> APIRouter:
     async def nested_action(subpath: str, payload: dict[str, Any] | None = Body(default=None), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)):
         """业务动作入口：动作会落库，外部平台未配置时明确返回待接入状态。"""
         _admin_only_resource(resource, user)
+        await _require_resource_feature(resource, user, session)
         data = payload or {}
         uid = _user_id(user)
         if resource in {"chat", "messages"} and subpath in {"send", "message", "reply"}:

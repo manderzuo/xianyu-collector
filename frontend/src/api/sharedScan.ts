@@ -5,6 +5,7 @@
  * 兼职端：加入会话、轮询扫码状态
  */
 import { get, post, del } from '@/utils/request'
+import { request as clientRequest } from '@/api/client'
 
 const PREFIX = '/api/v1/shared-scan'
 
@@ -84,7 +85,7 @@ export const joinSharedSession = async ({
   visitorToken,
   forceRefresh = false,
 }: JoinSharedSessionParams): Promise<{ success: boolean; message: string; data?: JoinSessionResponse }> => {
-  const response = await fetch(`${PREFIX}/join`, {
+  return clientRequest<JoinSessionResponse>(`${PREFIX}/join`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -93,7 +94,6 @@ export const joinSharedSession = async ({
       force_refresh: forceRefresh,
     }),
   })
-  return response.json()
 }
 
 /** 兼职轮询自己的扫码状态 */

@@ -88,7 +88,7 @@ export function UpdateModal({ info, onClose }: UpdateModalProps) {
 
           <div className="p-3 bg-blue-50 dark:bg-blue-900/20 rounded-lg">
             <p className="text-xs text-blue-600 dark:text-blue-400">
-              <strong>提示：</strong>更新内容由系统服务提供，确认后即可关闭此提示。
+              <strong>提示：</strong>请关闭此提示后重新启动桌面启动器，启动时系统会拉取并应用更新。
             </p>
           </div>
         </div>

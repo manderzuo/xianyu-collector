@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-route
 import { useAuthStore } from '@/store/authStore'
 import { MainLayout } from '@/components/layout/MainLayout'
 import { Toast } from '@/components/common/Toast'
+import { VipContentModal } from '@/components/common/VipContentModal'
 import { DisclaimerModal } from '@/components/common/DisclaimerModal'
 import { verifyToken } from '@/api/auth'
 import { getHiddenMenuKeysFromSettings, getPublicSystemSettings, getSystemSettings, getUserSetting, normalizeDisclaimerSettings, updateUserSetting } from '@/api/settings'
@@ -13,7 +14,6 @@ import type { DisclaimerSettings } from '@/types'
 
 // 登录/注册页面保持同步导入（首屏必需）
 import { Login } from '@/pages/auth/Login'
-import { Register } from '@/pages/auth/Register'
 import { ForgotPassword } from '@/pages/auth/ForgotPassword'
 
 // 页面组件懒加载，按需加载提升首屏速度
@@ -70,6 +70,7 @@ const CollectFallbackAccount = React.lazy(() => import('@/pages/product-monitor/
 
 // 管理员页面懒加载
 const Users = React.lazy(() => import('@/pages/admin/Users').then(m => ({ default: m.Users })))
+const Entitlements = React.lazy(() => import('@/pages/admin/Entitlements').then(m => ({ default: m.Entitlements })))
 const Logs = React.lazy(() => import('@/pages/admin/Logs').then(m => ({ default: m.Logs })))
 const AutoReplyLogs = React.lazy(() => import('@/pages/autoReplyLogs/AutoReplyLogs').then(m => ({ default: m.AutoReplyLogs })))
 const RiskLogs = React.lazy(() => import('@/pages/admin/RiskLogs').then(m => ({ default: m.RiskLogs })))
@@ -155,6 +156,10 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
             username: result.username || '',
             is_admin: result.is_admin || false,
             account_limit: result.account_limit,
+            role: result.role?.toUpperCase() as 'ADMIN' | 'OPERATOR' | 'MEMBER' | undefined,
+            plan_code: result.plan_code,
+            auth_version: result.auth_version,
+            entitlements: result.entitlements,
           })
           setAuthState('authenticated')
           
@@ -266,7 +271,7 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
     )
   }
 
-  if (isPathBlockedForUser(location.pathname, hiddenMenuKeys, Boolean(user?.is_admin), isExeMode)) {
+  if (isPathBlockedForUser(location.pathname, hiddenMenuKeys, Boolean(user?.is_admin), isExeMode, user?.entitlements?.features || {})) {
     return <Navigate to={getMenuAccessFallbackPath(hiddenMenuKeys, Boolean(user?.is_admin), isExeMode)} replace />
   }
 
@@ -307,11 +312,12 @@ function App() {
   return (
     <BrowserRouter>
       <Toast />
+      <VipContentModal />
       <Suspense fallback={<PageLoading />}>
         <Routes>
           {/* Public routes */}
           <Route path="/login" element={<Login />} />
-          <Route path="/register" element={<Register />} />
+          <Route path="/register" element={<Navigate to="/login" replace />} />
           <Route path="/forgot-password" element={<ForgotPassword />} />
           {/* 兼职端扫码页面：无需登录，公开访问 */}
           <Route path="/shared-scan-page" element={<SharedScanPage />} />
@@ -380,6 +386,7 @@ function App() {
 
             {/* Admin routes */}
             <Route path="admin/users" element={<Users />} />
+            <Route path="admin/entitlements" element={<Entitlements />} />
             <Route path="admin/logs" element={<Logs />} />
             <Route path="admin/account-login-logs" element={<AccountLoginLogs />} />
             <Route path="admin/db-backup-logs" element={<DbBackupLogs />} />

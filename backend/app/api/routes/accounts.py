@@ -25,7 +25,8 @@ from common.models.feature_records import FeatureRecord
 from common.models.chat import ChatMessageRecord
 from backend.app.core.dependencies import get_current_user
 from backend.app.core.response import ok
-from backend.app.services.account_settings import load_account_settings_map
+from backend.app.services.account_settings import load_account_settings_map, load_platform_ai_settings
+from backend.app.services.entitlements import FEATURE_ACCOUNT, finalize_quota, reserve_quota
 from common.services.account_identity import display_account_name, extract_account_nickname, is_generated_account_name
 
 router = APIRouter(prefix="/api/v1/accounts", tags=["账号管理"])
@@ -84,21 +85,27 @@ def _is_admin(user: dict) -> bool:
 def _account_scope(statement, user: dict, account_id: int | None = None):
     if account_id is not None:
         statement = statement.where(Account.id == account_id)
-    if not _is_admin(user):
-        statement = statement.where(Account.user_id == _uid(user))
-    return statement
+    # 管理员权限只用于后台管理能力，不扩大业务账号数据范围。
+    # 账号及其下属商品、订单、消息必须始终属于当前登录用户。
+    return statement.where(Account.user_id == _uid(user))
 
 
 async def _settings_for_accounts(session: AsyncSession, user: dict, accounts: list[Account]) -> dict[int, dict]:
     if not accounts:
         return {}
     if not _is_admin(user):
-        return await load_account_settings_map(session, _uid(user), [item.id for item in accounts])
+        result = await load_account_settings_map(session, _uid(user), [item.id for item in accounts])
+        platform_settings = await load_platform_ai_settings(session, _uid(user))
+        for item in accounts:
+            result.setdefault(int(item.id), {})["ai_enabled"] = bool(platform_settings.get("ai_enabled"))
+        return result
     result: dict[int, dict] = {}
     for owner_id in {int(item.user_id) for item in accounts}:
-        result.update(
-            await load_account_settings_map(session, owner_id, [item.id for item in accounts if int(item.user_id) == owner_id])
-        )
+        owner_accounts = [item for item in accounts if int(item.user_id) == owner_id]
+        result.update(await load_account_settings_map(session, owner_id, [item.id for item in owner_accounts]))
+        platform_settings = await load_platform_ai_settings(session, owner_id)
+        for item in owner_accounts:
+            result.setdefault(int(item.id), {})["ai_enabled"] = bool(platform_settings.get("ai_enabled"))
     return result
 
 
@@ -237,6 +244,13 @@ async def list_accounts(user=Depends(get_current_user), session: AsyncSession = 
 @router.post("")
 @router.post("/")
 async def create_account(payload: AccountCreate, user=Depends(get_current_user), session: AsyncSession = Depends(get_session)):
+    reservation = await reserve_quota(
+        session,
+        user,
+        FEATURE_ACCOUNT,
+        resource_key=payload.goofish_id or payload.account_name,
+        idempotency_key=f"account:create:{payload.goofish_id or payload.account_name}",
+    )
     account = Account(
         user_id=int(user.get("sub", 1)),
         account_name=payload.account_name.strip(),
@@ -250,6 +264,7 @@ async def create_account(payload: AccountCreate, user=Depends(get_current_user),
         account.account_name = nickname
     session.add(account)
     try:
+        finalize_quota(reservation)
         await session.commit()
         await session.refresh(account)
     except SQLAlchemyError as exc:

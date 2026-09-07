@@ -16,6 +16,7 @@ import {
 import { getCards, updateCard, deleteCard, batchDeleteCards, type CardData, type CardPaginatedResult } from '@/api/cards'
 import { useUIStore } from '@/store/uiStore'
 import { useAuthStore } from '@/store/authStore'
+import { useLiveRefresh } from '@/utils/liveRefresh'
 import { PageLoading } from '@/components/common/Loading'
 import { ConfirmModal } from '@/components/common/ConfirmModal'
 import { CardDetailModal } from './CardDetailModal'
@@ -72,14 +73,14 @@ export function Cards() {
   const [pageSize, setPageSize] = useState(20)
 
   // 加载卡券列表（后端分页）
-  const loadCards = async (p?: number, ps?: number, s?: string, t?: string) => {
+  const loadCards = async (p?: number, ps?: number, s?: string, t?: string, silent = false) => {
     if (!_hasHydrated || !isAuthenticated || !token) return
     const currentPage = p ?? page
     const currentPageSize = ps ?? pageSize
     const currentSearch = s ?? searchText
     const currentType = t ?? typeFilter
     try {
-      setLoading(true)
+      if (!silent) setLoading(true)
       const result: CardPaginatedResult = await getCards({
         page: currentPage,
         page_size: currentPageSize,
@@ -92,9 +93,22 @@ export function Cards() {
     } catch {
       addToast({ type: 'error', message: '加载卡券列表失败' })
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
   }
+
+  useLiveRefresh(
+    () => {
+      if (_hasHydrated && isAuthenticated && token) {
+        return loadCards(page, pageSize, searchText, typeFilter, true)
+      }
+    },
+    {
+      topics: ['all'],
+      intervalMs: 30000,
+      enabled: _hasHydrated && isAuthenticated && Boolean(token),
+    },
+  )
 
   useEffect(() => {
     loadCards()

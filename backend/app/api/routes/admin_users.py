@@ -20,7 +20,8 @@ from backend.app.core.dependencies import get_current_user
 from backend.app.core.response import ok
 from backend.app.core.security import hash_password
 from common.db.session import get_session
-from common.models import Account, User
+from common.models import Account, Plan, User
+from common.services.cloud_auth import cloud_auth_request, cloud_auth_url
 
 router = APIRouter(prefix="/api/v1/admin/users", tags=["管理员用户管理"])
 
@@ -75,6 +76,8 @@ def _db_status(value: Any, default: int = 1) -> int:
     if value in (None, ""):
         return default
     text_value = str(value).strip().upper()
+    if text_value in {"2", "PENDING", "待审核"}:
+        return 2
     return 1 if text_value in {"1", "ACTIVE", "ENABLED", "正常"} else 0
 
 
@@ -94,6 +97,8 @@ async def _account_counts(db: AsyncSession, user_ids: list[int]) -> dict[int, in
 def _serialize(user: User, account_count: int = 0) -> dict[str, Any]:
     role = str(user.role or "user").lower()
     balance = user.balance if user.balance is not None else Decimal("0")
+    status_value = int(user.status or 0)
+    status_label = {1: "ACTIVE", 2: "PENDING"}.get(status_value, "INACTIVE")
     return {
         "id": user.id,
         "user_id": user.id,
@@ -102,9 +107,11 @@ def _serialize(user: User, account_count: int = 0) -> dict[str, Any]:
         "email": user.email,
         "phone": user.phone,
         "role": ROLE_TO_UI.get(role, "MEMBER"),
-        "status": "ACTIVE" if user.status else "INACTIVE",
+        "status": status_label,
         "is_admin": role in {"admin", "administrator"},
         "account_limit": user.account_limit,
+        "plan_code": user.plan_code or "NORMAL",
+        "plan_expires_at": user.plan_expires_at.isoformat() if user.plan_expires_at else None,
         "balance": f"{Decimal(str(balance)):.2f}",
         "expire_at": user.expire_at.isoformat() if user.expire_at else None,
         "account_count": account_count,
@@ -135,17 +142,38 @@ def _apply_payload(user: User, payload: dict[str, Any], *, creating: bool) -> No
         user.phone = str(payload.get("phone") or "").strip() or None
     if "role" in payload:
         user.role = _db_role(payload.get("role"))
+        user.auth_version = int(user.auth_version or 1) + 1
     if "status" in payload:
         user.status = _db_status(payload.get("status"), user.status)
+        user.auth_version = int(user.auth_version or 1) + 1
     if "account_limit" in payload:
         user.account_limit = _parse_account_limit(payload.get("account_limit"))
     if "expire_at" in payload:
         user.expire_at = _parse_datetime(payload.get("expire_at"))
+    if "plan_code" in payload or "plan" in payload:
+        plan_code = str(payload.get("plan_code") or payload.get("plan") or "NORMAL").strip().upper()
+        if not plan_code or len(plan_code) > 32:
+            raise HTTPException(status_code=422, detail="套餐编码无效")
+        user.plan_code = plan_code
+        user.auth_version = int(user.auth_version or 1) + 1
+    if "plan_expires_at" in payload:
+        user.plan_expires_at = _parse_datetime(payload.get("plan_expires_at"))
+        user.auth_version = int(user.auth_version or 1) + 1
     password = payload.get("password")
     if not creating and password:
         if len(str(password)) < 6:
             raise HTTPException(status_code=422, detail="密码至少需要 6 个字符")
         user.password_hash = hash_password(str(password))
+        user.auth_version = int(user.auth_version or 1) + 1
+
+
+async def _validate_plan(db: AsyncSession, payload: dict[str, Any]) -> None:
+    if "plan_code" not in payload and "plan" not in payload:
+        return
+    plan_code = str(payload.get("plan_code") or payload.get("plan") or "NORMAL").strip().upper()
+    plan = (await db.execute(select(Plan).where(Plan.code == plan_code, Plan.status == "active"))).scalar_one_or_none()
+    if plan is None:
+        raise HTTPException(status_code=422, detail="套餐不存在或已停用")
 
 
 @router.get("")
@@ -183,8 +211,27 @@ async def create_user(
     db: AsyncSession = Depends(get_session),
 ):
     _require_admin(user)
-    item = User(username="", password_hash="", role="user", status=1)
-    _apply_payload(item, payload or {}, creating=True)
+    if cloud_auth_url() and user.get("cloud_session_token"):
+        remote = await cloud_auth_request("list_users", {}, str(user.get("cloud_session_token")))
+        remote_items = []
+        for item in (remote or {}).get("items", []):
+            remote_items.append({
+                "id": item.get("id"), "user_id": item.get("id"), "username": item.get("username"),
+                "nickname": item.get("employee_name"), "email": None, "phone": None,
+                "role": "ADMIN" if item.get("role") == "admin" else "MEMBER",
+                "status": {"approved": "ACTIVE", "pending": "PENDING", "rejected": "INACTIVE", "disabled": "INACTIVE"}.get(item.get("status"), "INACTIVE"),
+                "is_admin": item.get("role") == "admin", "account_limit": None, "plan_code": "NORMAL",
+                "plan_expires_at": None, "balance": "0.00", "expire_at": None, "account_count": 0,
+                "created_at": item.get("created_at"), "updated_at": item.get("approved_at"),
+            })
+        term = (username or "").strip().lower()
+        if term:
+            remote_items = [item for item in remote_items if term in str(item.get("username") or "").lower()]
+        return ok({"items": remote_items[offset:offset + limit], "total": len(remote_items), "offset": offset, "limit": limit}, "用户查询成功")
+    values = payload or {}
+    await _validate_plan(db, values)
+    item = User(username="", password_hash="", role="user", plan_code="NORMAL", status=1)
+    _apply_payload(item, values, creating=True)
     db.add(item)
     try:
         await db.commit()
@@ -209,6 +256,7 @@ async def update_user(
     values = payload or {}
     if user_id == operator_id and "status" in values and _db_status(values.get("status"), item.status) == 0:
         raise HTTPException(status_code=400, detail="不能停用当前登录管理员")
+    await _validate_plan(db, values)
     _apply_payload(item, values, creating=False)
     try:
         await db.commit()
@@ -232,8 +280,54 @@ async def disable_user(
     if item is None:
         raise HTTPException(status_code=404, detail="用户不存在")
     item.status = 0
+    item.auth_version = int(item.auth_version or 1) + 1
     await db.commit()
     return ok({"user": _serialize(item), "disabled": True}, "用户已停用")
+
+
+async def _get_pending_user(user_id: int, db: AsyncSession) -> User:
+    item = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+    if item is None:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    if int(item.status or 0) != 2:
+        raise HTTPException(status_code=409, detail="该用户当前不是待审核状态")
+    return item
+
+
+@router.post("/{user_id}/approve")
+async def approve_user(
+    user_id: int,
+    user=Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+):
+    _require_admin(user)
+    if cloud_auth_url() and user.get("cloud_session_token"):
+        remote = await cloud_auth_request("approve_user", {"user_id": user_id}, str(user.get("cloud_session_token")))
+        return ok({"user": remote.get("user") if remote else {}, "approved": True}, "注册申请已通过")
+    item = await _get_pending_user(user_id, db)
+    item.status = 1
+    item.auth_version = int(item.auth_version or 1) + 1
+    await db.commit()
+    await db.refresh(item)
+    return ok({"user": _serialize(item), "approved": True}, "注册申请已通过")
+
+
+@router.post("/{user_id}/reject")
+async def reject_user(
+    user_id: int,
+    user=Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+):
+    _require_admin(user)
+    if cloud_auth_url() and user.get("cloud_session_token"):
+        remote = await cloud_auth_request("reject_user", {"user_id": user_id}, str(user.get("cloud_session_token")))
+        return ok({"user": remote.get("user") if remote else {}, "rejected": True}, "注册申请已拒绝")
+    item = await _get_pending_user(user_id, db)
+    item.status = 0
+    item.auth_version = int(item.auth_version or 1) + 1
+    await db.commit()
+    await db.refresh(item)
+    return ok({"user": _serialize(item), "rejected": True}, "注册申请已拒绝")
 
 
 @router.post("/{user_id}/recharge")

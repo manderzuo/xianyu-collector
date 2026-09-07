@@ -13,10 +13,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.api.routes.qr_login import _uid as qr_uid
 from backend.app.core.dependencies import get_current_user
 from backend.app.core.response import ok
+from backend.app.services.entitlements import FEATURE_ACCOUNT, ensure_quota, finalize_quota, reserve_quota
 from backend.app.services.qr_login import qr_login_manager
 from common.config import settings
 from common.db.session import get_session
-from common.models import Account, AccountCookie, SharedScanSession, SharedScanWorker
+from common.models import Account, AccountCookie, SharedScanSession, SharedScanWorker, User
 from common.services.account_identity import extract_account_nickname, is_generated_account_name
 
 router = APIRouter(prefix="/api/v1/shared-scan", tags=["共享扫码"])
@@ -117,6 +118,7 @@ async def _notify_runtime(account: Account, cookie_value: str, user_id: int, is_
 
 @router.post("/create")
 async def create_session(request: Request, user=Depends(get_current_user), db: AsyncSession = Depends(get_session)):
+    await ensure_quota(db, user, FEATURE_ACCOUNT)
     item = SharedScanSession(
         owner_id=_uid(user),
         session_token=uuid4().hex,
@@ -167,6 +169,14 @@ async def join_session(payload: dict, db: AsyncSession = Depends(get_session)):
     visitor_token = str(payload.get("visitor_token") or "").strip()
     lock_key = f"{token}:{visitor_token}" if visitor_token else f"{token}:{uuid4().hex}"
     async with _lock(_session_locks, lock_key):
+        owner = await db.get(User, session.owner_id)
+        principal = {
+            "sub": str(session.owner_id),
+            "role": owner.role if owner is not None else "user",
+            "plan_code": owner.plan_code if owner is not None else "NORMAL",
+        }
+        # 共享扫码也是新增闲鱼账号入口，必须在生成二维码前拦截耗尽配额的用户。
+        await ensure_quota(db, principal, FEATURE_ACCOUNT)
         if not force_refresh and visitor_token:
             safe_prefix = visitor_token[:24].replace("%", "").replace("_", "")
             existing = (await db.execute(select(SharedScanWorker).where(SharedScanWorker.shared_session_id == token, SharedScanWorker.sub_session_id.like(f"{safe_prefix}:%")).order_by(SharedScanWorker.id.desc()).limit(1))).scalar_one_or_none()
@@ -201,9 +211,23 @@ async def _finish_worker(worker: SharedScanWorker, session: SharedScanSession, d
     nickname = str(cookies.get("nickname") or "").strip() or extract_account_nickname(cookie_value)
     login_expire_at = _now() + timedelta(days=30)
     account = None
+    reservation = None
     if unb:
         account = (await db.execute(select(Account).where(Account.user_id == session.owner_id, Account.goofish_id == unb))).scalar_one_or_none()
     if account is None:
+        owner = await db.get(User, session.owner_id)
+        principal = {
+            "sub": str(session.owner_id),
+            "role": owner.role if owner is not None else "user",
+            "plan_code": owner.plan_code if owner is not None else "NORMAL",
+        }
+        reservation = await reserve_quota(
+            db,
+            principal,
+            FEATURE_ACCOUNT,
+            resource_key=f"shared-scan:{worker.sub_session_id}",
+            idempotency_key=f"account:shared-scan:{worker.sub_session_id}",
+        )
         account = Account(
             user_id=session.owner_id,
             account_name=nickname or f"闲鱼账号-{unb or worker.sub_session_id[:8]}",
@@ -227,6 +251,7 @@ async def _finish_worker(worker: SharedScanWorker, session: SharedScanSession, d
     worker.cookie_saved = True
     worker.account_id = str(account.id)
     worker.error = None
+    finalize_quota(reservation if account is not None and is_new else None)
     await db.commit()
     runtime = await _notify_runtime(account, cookie_value, session.owner_id, is_new)
     return {**_worker_data(worker), "runtime": runtime}

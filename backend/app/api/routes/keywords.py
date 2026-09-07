@@ -15,6 +15,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.dependencies import get_current_user
 from backend.app.core.response import ok
+from backend.app.services.entitlements import (
+    FEATURE_KEYWORD_REPLY,
+    get_effective_entitlement,
+    quota_error,
+    reserved_usage,
+    split_keywords,
+)
 from common.config import settings
 from common.db.session import get_session
 from common.models.accounts import Account
@@ -35,6 +42,41 @@ def _serialize(item: FeatureRecord) -> dict[str, Any]:
     data = dict(item.payload or {})
     data.update({"id": str(item.id), "created_at": item.created_at, "updated_at": item.updated_at})
     return data
+
+
+async def _ensure_owned_account(account_id: str, user: dict[str, Any], db: AsyncSession) -> Account:
+    try:
+        account_pk = int(account_id)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail="所属账号无效") from exc
+    account = (await db.execute(select(Account).where(Account.id == account_pk, Account.user_id == _uid(user)))).scalar_one_or_none()
+    if account is None:
+        raise HTTPException(status_code=404, detail="所属账号不存在或无权使用")
+    return account
+
+
+async def _ensure_keyword_quota(
+    user: dict[str, Any],
+    db: AsyncSession,
+    incoming: set[str],
+    *,
+    exclude_ids: set[int] | None = None,
+) -> None:
+    """校验最终逻辑关键词集合，避免替换保存时重复计算或误拦截。"""
+    entitlement = await get_effective_entitlement(db, user, FEATURE_KEYWORD_REPLY)
+    if not entitlement.enabled:
+        raise HTTPException(status_code=403, detail={"code": "feature_not_allowed", "feature_key": FEATURE_KEYWORD_REPLY, "message": "当前套餐未开通关键词回复"})
+    rows = (await db.execute(select(FeatureRecord).where(FeatureRecord.owner_id == _uid(user), FeatureRecord.feature == FEATURE, FeatureRecord.status == "active"))).scalars().all()
+    excluded = exclude_ids or set()
+    existing = {
+        " ".join(str((row.payload or {}).get("keyword") or "").strip().lower().split())
+        for row in rows
+        if row.id not in excluded and str((row.payload or {}).get("keyword") or "").strip()
+    }
+    final_count = len(existing | {value for value in incoming if value})
+    reserved = await reserved_usage(db, user, FEATURE_KEYWORD_REPLY)
+    if not entitlement.unlimited and final_count + reserved > int(entitlement.limit_value or 0):
+        raise quota_error(FEATURE_KEYWORD_REPLY, "关键词数量已达到当前套餐上限", entitlement.as_dict(final_count, reserved))
 
 
 async def _account_rows(account_id: str | None, user: dict[str, Any], db: AsyncSession):
@@ -62,6 +104,7 @@ async def list_keywords(account_id: str, user=Depends(get_current_user), db: Asy
 
 @router.post("/{account_id}")
 async def save_keywords(account_id: str, payload: dict[str, Any] | None = Body(default=None), user=Depends(get_current_user), db: AsyncSession = Depends(get_session)):
+    await _ensure_owned_account(account_id, user, db)
     values = payload or {}
     keywords = values.get("keywords")
     if not isinstance(keywords, list):
@@ -70,12 +113,19 @@ async def save_keywords(account_id: str, payload: dict[str, Any] | None = Body(d
     # 前端保存文本规则时会刻意过滤图片规则；只替换文本规则，
     # 否则新增/编辑文本关键词会把该账号已有的图片关键词一并删除。
     old_text_rows = [row for row in old_rows if str((row.payload or {}).get("type") or "text") != "image"]
+    incoming_values: list[dict[str, Any]] = []
+    incoming_keywords: set[str] = set()
+    for value in keywords:
+        if not isinstance(value, dict):
+            continue
+        for keyword in split_keywords(value.get("keyword")):
+            incoming_keywords.add(keyword)
+            incoming_values.append({**value, "keyword": keyword})
+    await _ensure_keyword_quota(user, db, incoming_keywords, exclude_ids={row.id for row in old_text_rows})
     for old_row in old_text_rows:
         await db.delete(old_row)
     created = []
-    for value in keywords:
-        if not isinstance(value, dict) or not str(value.get("keyword") or "").strip():
-            continue
+    for value in incoming_values:
         item = FeatureRecord(owner_id=_uid(user), feature=FEATURE, external_id=uuid4().hex, status="active", payload={"account_id": str(account_id), "keyword": str(value.get("keyword") or ""), "reply": str(value.get("reply") or ""), "item_id": str(value.get("item_id") or ""), "type": str(value.get("type") or "text")})
         db.add(item)
         created.append(item)
@@ -90,6 +140,7 @@ async def save_keywords(account_id: str, payload: dict[str, Any] | None = Body(d
 
 @router.put("/{account_id}/{keyword}")
 async def update_keyword(account_id: str, keyword: str, old_item_id: str | None = Query(None), payload: dict[str, Any] | None = Body(default=None), user=Depends(get_current_user), db: AsyncSession = Depends(get_session)):
+    await _ensure_owned_account(account_id, user, db)
     rows = await _account_rows(account_id, user, db)
     decoded = keyword
     item = next((row for row in rows if str((row.payload or {}).get("keyword")) == decoded and (old_item_id is None or str((row.payload or {}).get("item_id") or "") == str(old_item_id))), None)
@@ -132,6 +183,7 @@ async def update_keyword(account_id: str, keyword: str, old_item_id: str | None 
 
     data = dict(item.payload or {})
     data.update({key: value for key, value in values.items() if key in {"keyword", "reply", "item_id", "type"}})
+    await _ensure_keyword_quota(user, db, set(split_keywords(data.get("keyword"))), exclude_ids={item.id})
     # 编辑时切换所属账号必须迁移规则，而不是只返回成功但继续留在原账号。
     data["account_id"] = target_account_id
     item.payload = data
@@ -174,6 +226,8 @@ async def add_image_keyword(
     user=Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ):
+    await _ensure_owned_account(account_id, user, db)
+    await _ensure_keyword_quota(user, db, set(split_keywords(keyword)))
     upload_dir = Path(settings.static_dir) / "uploads" / "keywords"
     upload_dir.mkdir(parents=True, exist_ok=True)
     safe_name = Path(image.filename or "keyword-image.bin").name
@@ -192,20 +246,31 @@ async def add_image_keyword(
 
 @router.post("/{account_id}/import")
 async def import_keywords(account_id: str, file: UploadFile = File(...), user=Depends(get_current_user), db: AsyncSession = Depends(get_session)):
+    await _ensure_owned_account(account_id, user, db)
     raw = await file.read()
     try:
         text = raw.decode("utf-8-sig")
     except UnicodeDecodeError as exc:
         raise HTTPException(status_code=422, detail="导入文件必须是 UTF-8 CSV") from exc
     reader = csv.DictReader(io.StringIO(text))
-    existing = {str((row.payload or {}).get("keyword")): row for row in await _account_rows(account_id, user, db)}
+    existing_rows = await _account_rows(account_id, user, db)
+    existing = {str((row.payload or {}).get("keyword")): row for row in existing_rows}
+    incoming_keywords: set[str] = set()
+    parsed_rows: list[dict[str, Any]] = []
+    for value in reader:
+        for keyword in split_keywords(value.get("keyword") or value.get("关键词")):
+            incoming_keywords.add(keyword)
+            parsed_rows.append({
+                "keyword": keyword,
+                "reply": str(value.get("reply") or value.get("回复") or ""),
+                "item_id": str(value.get("item_id") or value.get("商品ID") or ""),
+            })
+    await _ensure_keyword_quota(user, db, incoming_keywords)
     added = 0
     updated = 0
-    for value in reader:
-        keyword = str(value.get("keyword") or value.get("关键词") or "").strip()
-        if not keyword:
-            continue
-        payload = {"account_id": str(account_id), "keyword": keyword, "reply": str(value.get("reply") or value.get("回复") or ""), "item_id": str(value.get("item_id") or value.get("商品ID") or ""), "type": "text"}
+    for value in parsed_rows:
+        keyword = value["keyword"]
+        payload = {"account_id": str(account_id), "keyword": keyword, "reply": value["reply"], "item_id": value["item_id"], "type": "text"}
         item = existing.get(keyword)
         if item is None:
             db.add(FeatureRecord(owner_id=_uid(user), feature=FEATURE, external_id=uuid4().hex, status="active", payload=payload))

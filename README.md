@@ -53,7 +53,28 @@ cd frontend && npm ci && npm run dev   # http://127.0.0.1:9000
 # 或打包预览（等同 CF 线上）
 npm run build && npm run preview -- --host 0.0.0.0 --port 9001
 ```
-默认账号：`admin / admin123`（首次启动自动初始化）
+管理员账号由首次部署初始化，登录后请立即修改密码。
+
+## Windows 自动部署
+
+将整个项目目录复制到目标电脑并启动 Docker Desktop 后，双击项目根目录的
+`install-xianyu.bat`。脚本会以自身目录为项目根目录，自动创建 `.env`、选择未占用端口、
+构建并启动前后端及依赖服务，并在当前用户桌面创建 `Xianyu System` 启动器。
+
+脚本不会写死盘符或用户目录，不会执行删除数据卷的操作，也不会覆盖旧稳定端口 19000。
+后续双击桌面启动器或 `start-xianyu.bat` 即可启动已有部署；需要停止服务时使用
+`stop-xianyu.bat`。详细说明见 `docs/Windows-Docker-自动部署说明.md`。
+
+## GitHub 免费镜像更新
+
+项目支持本地构建和远程镜像两种模式。GitHub Actions 使用 GitHub Container Registry（GHCR）
+构建并发布四个公开镜像，腾讯云服务器只托管更新清单。客户电脑可以在 `.env` 中设置
+`XR_DEPLOY_MODE=remote`，无需 Docker 登录即可拉取镜像。桌面启动器会检查
+`UPDATE_MANIFEST_URL`，发现新版本后提示确认，再拉取新镜像并重启，不会删除本地数据卷。
+GitHub Actions 配置见 `.github/workflows/build-and-publish.yml`。
+
+公开镜像不需要额外购买腾讯云 TCR，但镜像内的程序文件可以被公开拉取；如果后续需要保护镜像内容，
+再切换到私有镜像仓库并为客户端配置只读访问权限。
 
 ## Cloudflare 隔离部署（前端上 CF Pages，后端走临时托管）
 - 构建：`frontend` Root=`frontend` Build=`npm ci && npm run build` Output=`dist`

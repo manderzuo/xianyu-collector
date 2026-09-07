@@ -7,6 +7,8 @@ COPY backend/requirements.txt /app/backend/requirements.txt
 RUN pip install --no-cache-dir -r /app/backend/requirements.txt
 COPY common /app/common
 COPY backend /app/backend
+COPY VERSION.txt /app/VERSION.txt
+COPY BUILD_ID.txt /app/BUILD_ID.txt
 RUN mkdir -p /app/static/uploads /app/backups
 ENV PYTHONPATH=/app
 EXPOSE 8089

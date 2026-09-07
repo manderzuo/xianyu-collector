@@ -29,6 +29,7 @@ from common.models.users import User
 from common.services.account_sync import sync_account_products
 from common.services.xianyu_platform import XianyuPlatformError, delete_items, offline_items
 from backend.app.services.card_delivery import auto_deliver_orders
+from backend.app.services.entitlements import FEATURE_ACCOUNT, get_effective_entitlement, reserved_usage
 from backend.app.services.order_status import reconcile_cached_chat_orders
 
 router = APIRouter(prefix="/api/v1", tags=["账号内容同步"])
@@ -46,14 +47,12 @@ def _is_admin(user: dict[str, Any]) -> bool:
 
 
 def _owner_scope(user: dict[str, Any]) -> int | None:
-    """管理员查看全量账号，普通用户只查看自己的账号。"""
-    return None if _is_admin(user) else _uid(user)
+    """账号内容始终只属于当前登录用户；管理员全局统计另行实现。"""
+    return _uid(user)
 
 
 def _account_scope(statement, user: dict[str, Any]):
-    if not _is_admin(user):
-        statement = statement.where(Account.user_id == _uid(user))
-    return statement
+    return statement.where(Account.user_id == _uid(user))
 
 
 async def _recover_cached_orders_after_permission_error(
@@ -119,8 +118,7 @@ async def _account_by_identifier(identifier: Any, user: dict[str, Any], db: Asyn
     statement = select(Account).where((Account.goofish_id == value) | (Account.account_name == value))
     if value.isdigit():
         statement = select(Account).where(Account.id == int(value))
-    if not _is_admin(user):
-        statement = statement.where(Account.user_id == _uid(user))
+    statement = statement.where(Account.user_id == _uid(user))
     account = (await db.execute(statement)).scalar_one_or_none()
     if account is None:
         raise HTTPException(status_code=404, detail="账号不存在或无权操作")
@@ -164,20 +162,20 @@ async def _persist_platform_cookie(account: Account, current_cookie: str, db: As
     db.add(AccountCookie(account_id=account.id, cookie_value=current_cookie, status="active"))
 
 
-async def _count_keyword_rules(db: AsyncSession, user: dict[str, Any]) -> int:
+async def _count_keyword_rules(db: AsyncSession, user: dict[str, Any], *, include_all: bool = False) -> int:
     """统计重写版实际使用的关键词规则，兼容旧规则表回退。"""
     feature_statement = select(func.count()).select_from(FeatureRecord).where(
         FeatureRecord.feature == "keywords-with-item-id",
         FeatureRecord.status == "active",
     )
-    if not _is_admin(user):
+    if not include_all:
         feature_statement = feature_statement.where(FeatureRecord.owner_id == _uid(user))
     feature_count = int((await db.execute(feature_statement)).scalar_one() or 0)
     if feature_count:
         return feature_count
 
     legacy_statement = select(func.count()).select_from(KeywordRule)
-    if not _is_admin(user):
+    if not include_all:
         legacy_statement = legacy_statement.where(KeywordRule.owner_id == _uid(user))
     return int((await db.execute(legacy_statement)).scalar_one() or 0)
 
@@ -198,7 +196,7 @@ async def _online_account_ids() -> set[str]:
         return set()
 
 
-async def _count_chat_replies(db: AsyncSession, user: dict[str, Any], day: date) -> int:
+async def _count_chat_replies(db: AsyncSession, user: dict[str, Any], day: date, *, include_all: bool = False) -> int:
     """统计聊天流中的卖家发送消息，包含自动回复和人工回复。"""
     beijing = timezone(timedelta(hours=8))
     start = datetime.combine(day, datetime.min.time(), tzinfo=beijing)
@@ -213,7 +211,7 @@ async def _count_chat_replies(db: AsyncSession, user: dict[str, Any], day: date)
             ChatMessageRecord.message_time < int(end.timestamp() * 1000),
         )
     )
-    if not _is_admin(user):
+    if not include_all:
         statement = statement.where(Account.user_id == _uid(user))
     return int((await db.execute(statement)).scalar_one() or 0)
 
@@ -222,7 +220,7 @@ async def _count_chat_replies(db: AsyncSession, user: dict[str, Any], day: date)
 async def account_stats(user=Depends(get_current_user), db: AsyncSession = Depends(get_session)):
     """为旧版仪表盘提供真实账号表的统计数据。"""
     user_id = _uid(user)
-    account_filter = () if _is_admin(user) else (Account.user_id == user_id,)
+    account_filter = (Account.user_id == user_id,)
     total_accounts = int((await db.execute(select(func.count()).select_from(Account).where(*account_filter))).scalar_one() or 0)
     active_accounts = int((await db.execute(select(func.count()).select_from(Account).where(Account.status == "active", *account_filter))).scalar_one() or 0)
     account_ids = {
@@ -250,6 +248,9 @@ async def account_stats(user=Depends(get_current_user), db: AsyncSession = Depen
     yesterday = today - timedelta(days=1)
     today_replies = await _count_chat_replies(db, user, today)
     yesterday_replies = await _count_chat_replies(db, user, yesterday)
+    account_entitlement = await get_effective_entitlement(db, user, FEATURE_ACCOUNT)
+    account_reserved = await reserved_usage(db, user, FEATURE_ACCOUNT)
+    account_quota = account_entitlement.as_dict(total_accounts, account_reserved)
     return ok(
         {
             "total_accounts": total_accounts,
@@ -258,12 +259,10 @@ async def account_stats(user=Depends(get_current_user), db: AsyncSession = Depen
             "total_orders": total_orders,
             "today_reply_count": today_replies,
             "yesterday_reply_count": yesterday_replies,
-            "account_limit": None,
+            "account_limit": account_quota["limit"],
             "used_account_count": total_accounts,
-            "remaining_account_count": (
-                max(int(user.get("account_limit")) - total_accounts, 0)
-                if user.get("account_limit") is not None else None
-            ),
+            "remaining_account_count": account_quota["remaining"],
+            "account_quota": account_quota,
             "online_account_count": online_count,
         },
         "账号统计查询成功",
@@ -297,11 +296,16 @@ async def account_order_trend(user=Depends(get_current_user), db: AsyncSession =
 @router.get("/admin/stats")
 async def admin_stats(user=Depends(get_current_user), db: AsyncSession = Depends(get_session)):
     """管理员首页统计，字段与旧版仪表盘保持一致。"""
+    if not _is_admin(user):
+        raise HTTPException(status_code=403, detail="仅管理员可以查看全局统计")
     user_id = _uid(user)
+    account_entitlement = await get_effective_entitlement(db, user, FEATURE_ACCOUNT)
+    account_reserved = await reserved_usage(db, user, FEATURE_ACCOUNT)
+    account_quota = account_entitlement.as_dict(0, account_reserved)
     total_users = int((await db.execute(select(func.count()).select_from(User))).scalar_one() or 0)
     total_accounts = int((await db.execute(select(func.count()).select_from(Account))).scalar_one() or 0)
     active_accounts = int((await db.execute(select(func.count()).select_from(Account).where(Account.status == "active"))).scalar_one() or 0)
-    total_keywords = await _count_keyword_rules(db, user)
+    total_keywords = await _count_keyword_rules(db, user, include_all=True)
     total_orders = int((await db.execute(select(func.count()).select_from(Order))).scalar_one() or 0)
     account_ids = {str(value) for value in (await db.execute(select(Account.id))).scalars().all()}
     online_account_count = len(account_ids & await _online_account_ids())
@@ -322,8 +326,8 @@ async def admin_stats(user=Depends(get_current_user), db: AsyncSession = Depends
         )
     )).scalar_one() or 0)
     today = datetime.now(timezone(timedelta(hours=8))).date()
-    today_reply_count = await _count_chat_replies(db, user, today)
-    yesterday_reply_count = await _count_chat_replies(db, user, today - timedelta(days=1))
+    today_reply_count = await _count_chat_replies(db, user, today, include_all=True)
+    yesterday_reply_count = await _count_chat_replies(db, user, today - timedelta(days=1), include_all=True)
     return ok({
         "total_users": total_users,
         "total_cookies": total_accounts,
@@ -335,17 +339,17 @@ async def admin_stats(user=Depends(get_current_user), db: AsyncSession = Depends
         "total_orders": total_orders,
         "today_reply_count": today_reply_count,
         "yesterday_reply_count": yesterday_reply_count,
-        "current_user_account_limit": None,
+        "current_user_account_limit": account_quota["limit"],
         "current_user_used_account_count": int((await db.execute(select(func.count()).select_from(Account).where(Account.user_id == user_id))).scalar_one() or 0),
-        "current_user_remaining_account_count": (
-            max(int(user.get("account_limit")) - int((await db.execute(select(func.count()).select_from(Account).where(Account.user_id == user_id))).scalar_one() or 0), 0)
-            if user.get("account_limit") is not None else None
-        ),
+        "current_user_remaining_account_count": account_quota["remaining"],
+        "current_user_account_quota": account_quota,
     }, "管理员统计查询成功")
 
 
 @router.get("/admin/stats/today")
 async def admin_today_stats(user=Depends(get_current_user), db: AsyncSession = Depends(get_session)):
+    if not _is_admin(user):
+        raise HTTPException(status_code=403, detail="仅管理员可以查看全局统计")
     today = datetime.now(timezone.utc).replace(tzinfo=None).date()
     start = datetime.combine(today, datetime.min.time())
     end = start + timedelta(days=1)
@@ -723,7 +727,7 @@ async def delete_item_unified(
     if account_value:
         account = await _account_by_identifier(account_value, user, db)
         statement = statement.where(AccountContent.account_id == account.id)
-    elif not _is_admin(user):
+    else:
         statement = statement.where(Account.user_id == _uid(user))
     rows = list((await db.execute(statement)).scalars().all())
     if len(rows) > 1 and not account_value:

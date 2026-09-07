@@ -40,9 +40,7 @@ def _is_admin(user: dict) -> bool:
 
 
 def _account_scope(statement, user: dict):
-    if not _is_admin(user):
-        statement = statement.where(Account.user_id == _uid(user))
-    return statement
+    return statement.where(Account.user_id == _uid(user))
 
 
 def serialize(order: Order) -> dict:
@@ -216,8 +214,7 @@ async def fetch_xianyu_orders(payload: dict[str, Any] | None = Body(default=None
         raise HTTPException(status_code=422, detail="同步账号无效，请重新选择账号")
     if cookie_id not in (None, ""):
         statement = statement.where(Account.id == int(cookie_id))
-    if not _is_admin(user):
-        statement = statement.where(Account.user_id == _uid(user))
+    statement = statement.where(Account.user_id == _uid(user))
     accounts = (await db.execute(statement.order_by(Account.id.asc()))).scalars().all()
     if not accounts:
         raise HTTPException(status_code=404, detail="没有找到可同步的账号")

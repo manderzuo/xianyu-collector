@@ -471,27 +471,27 @@ export interface AIModelListResponse {
 }
 
 // 获取AI回复设置
-export const getAIReplySettings = async (cookieId: string): Promise<AIReplySettings> => {
-  const result = await get<ApiResponse<{ ai_settings?: AIReplySettings } & Partial<AIReplySettings>>>(`${COOKIE_PREFIX}/${cookieId}/settings`)
-  const data = result.data || {}
+export const getAIReplySettings = async (): Promise<AIReplySettings> => {
+  const result = await get<ApiResponse<AIReplySettings>>(AI_SETTINGS_PREFIX)
+  const data = result.data ?? ({} as AIReplySettings)
   return {
-    ai_enabled: data.ai_settings?.ai_enabled ?? data.ai_enabled ?? false,
-    enabled: data.ai_settings?.enabled ?? data.ai_enabled ?? false,
-    provider_type: data.ai_settings?.provider_type,
-    model_name: data.ai_settings?.model_name,
-    api_key: data.ai_settings?.api_key,
-    base_url: data.ai_settings?.base_url,
-    max_discount_percent: data.ai_settings?.max_discount_percent,
-    max_discount_amount: data.ai_settings?.max_discount_amount,
-    max_bargain_rounds: data.ai_settings?.max_bargain_rounds,
-    custom_prompts: data.ai_settings?.custom_prompts,
-    ai_time_range_start: data.ai_settings?.ai_time_range_start,
-    ai_time_range_end: data.ai_settings?.ai_time_range_end,
+    ai_enabled: data.ai_enabled ?? false,
+    enabled: data.ai_enabled ?? false,
+    provider_type: data.provider_type,
+    model_name: data.model_name,
+    api_key: data.api_key,
+    base_url: data.base_url,
+    max_discount_percent: data.max_discount_percent,
+    max_discount_amount: data.max_discount_amount,
+    max_bargain_rounds: data.max_bargain_rounds,
+    custom_prompts: data.custom_prompts,
+    ai_time_range_start: data.ai_time_range_start,
+    ai_time_range_end: data.ai_time_range_end,
   }
 }
 
 // 更新AI回复设置
-export const updateAIReplySettings = (cookieId: string, settings: Partial<AIReplySettings>): Promise<ApiResponse> => {
+export const updateAIReplySettings = (settings: Partial<AIReplySettings>): Promise<ApiResponse> => {
   const payload: Record<string, unknown> = {}
   if (settings.ai_enabled !== undefined || settings.enabled !== undefined) {
     payload.ai_enabled = settings.ai_enabled ?? settings.enabled ?? false
@@ -506,17 +506,17 @@ export const updateAIReplySettings = (cookieId: string, settings: Partial<AIRepl
   if (settings.custom_prompts !== undefined) payload.custom_prompts = settings.custom_prompts
   if (settings.ai_time_range_start !== undefined) payload.ai_time_range_start = settings.ai_time_range_start
   if (settings.ai_time_range_end !== undefined) payload.ai_time_range_end = settings.ai_time_range_end
-  return put(`${COOKIE_PREFIX}/${cookieId}/settings`, { ai_enabled: payload.ai_enabled, ai_settings: payload })
+  return put(AI_SETTINGS_PREFIX, { ai_enabled: payload.ai_enabled, ai_settings: payload })
 }
 
-// 获取所有账号的AI回复设置
-export const getAllAIReplySettings = (): Promise<Record<string, AIReplySettings>> => {
+// 获取当前平台账号的共享AI回复设置
+export const getAllAIReplySettings = (): Promise<AIReplySettings> => {
   return get(AI_SETTINGS_PREFIX)
 }
 
 // 测试AI连接
-export const testAIConnection = (cookieId: string): Promise<ApiResponse> => {
-  return post(`${COOKIE_PREFIX}/${cookieId}/ai-test`)
+export const testAIConnection = (): Promise<ApiResponse> => {
+  return post(`${AI_SETTINGS_PREFIX}/test`)
 }
 
 // 按服务商手动获取模型列表

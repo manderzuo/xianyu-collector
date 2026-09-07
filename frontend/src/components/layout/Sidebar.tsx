@@ -44,17 +44,18 @@ export function Sidebar({ systemName = '闲鱼管理系统' }: SidebarProps) {
   const location = useLocation()
   const navRef = useRef<HTMLElement>(null)
   const isAdmin = Boolean(user?.is_admin)
+  const features = user?.entitlements?.features || {}
   const visibleMainNavItems = useMemo(
-    () => getVisibleNavEntries(mainNavItems, hiddenMenuKeys, isAdmin, isExeMode),
-    [hiddenMenuKeys, isAdmin, isExeMode]
+    () => getVisibleNavEntries(mainNavItems, hiddenMenuKeys, isAdmin, isExeMode, features),
+    [hiddenMenuKeys, isAdmin, isExeMode, features]
   )
   const visibleAdminNavItems = useMemo(
-    () => getVisibleNavEntries(adminNavItems, hiddenMenuKeys, isAdmin, isExeMode),
-    [hiddenMenuKeys, isAdmin, isExeMode]
+    () => getVisibleNavEntries(adminNavItems, hiddenMenuKeys, isAdmin, isExeMode, features),
+    [hiddenMenuKeys, isAdmin, isExeMode, features]
   )
   const visibleBottomNavItems = useMemo(
-    () => getVisibleBottomNavItems(bottomNavItems, hiddenMenuKeys, isAdmin, isExeMode),
-    [hiddenMenuKeys, isAdmin, isExeMode]
+    () => getVisibleBottomNavItems(bottomNavItems, hiddenMenuKeys, isAdmin, isExeMode, features),
+    [hiddenMenuKeys, isAdmin, isExeMode, features]
   )
 
   // 展开的分组菜单 - 使用 Set 来避免重复添加触发重渲染

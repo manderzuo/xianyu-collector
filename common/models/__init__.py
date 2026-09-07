@@ -6,6 +6,10 @@
 """
 from common.db.base import Base
 from common.models.users import User
+from common.models.registration_invites import RegistrationInvite
+from common.models.entitlements import (
+    Plan, PlanEntitlement, UserEntitlementOverride, QuotaReservation, EntitlementAuditLog,
+)
 from common.models.accounts import Account
 from common.models.messages import Message
 from common.models.products import Product
@@ -35,6 +39,8 @@ from common.models.extended import (
 __all__ = [
     "Base",
     "User",
+    "RegistrationInvite",
+    "Plan", "PlanEntitlement", "UserEntitlementOverride", "QuotaReservation", "EntitlementAuditLog",
     "Account",
     "Message",
     "Product",

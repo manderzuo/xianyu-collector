@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import BigInteger, DateTime, Numeric, String, func
+from sqlalchemy import BigInteger, DateTime, Integer, Numeric, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from common.db.base import Base
@@ -23,8 +23,11 @@ class User(Base):
     email: Mapped[str | None] = mapped_column(String(128))
     phone: Mapped[str | None] = mapped_column(String(32))
     role: Mapped[str] = mapped_column(String(16), default="user", nullable=False)
-    status: Mapped[int] = mapped_column(default=1, nullable=False)  # 1 正常 / 0 禁用
+    status: Mapped[int] = mapped_column(default=1, nullable=False)  # 1 正常 / 0 停用 / 2 待审核
     account_limit: Mapped[int | None] = mapped_column(default=None)
+    plan_code: Mapped[str] = mapped_column(String(32), default="NORMAL", nullable=False)
+    plan_expires_at: Mapped[datetime | None] = mapped_column(DateTime)
+    auth_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     balance: Mapped[Decimal] = mapped_column(Numeric(18, 2), default=0, nullable=False)
     expire_at: Mapped[datetime | None] = mapped_column(DateTime)
     created_at: Mapped[datetime] = mapped_column(

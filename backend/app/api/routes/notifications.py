@@ -45,9 +45,10 @@ def _channel_data(item: NotificationChannel) -> dict[str, Any]:
 
 
 async def _channel(channel_id: int, user: dict[str, Any], db: AsyncSession) -> NotificationChannel:
-    statement = select(NotificationChannel).where(NotificationChannel.id == channel_id)
-    if not _is_admin(user):
-        statement = statement.where(NotificationChannel.owner_id == _uid(user))
+    statement = select(NotificationChannel).where(
+        NotificationChannel.id == channel_id,
+        NotificationChannel.owner_id == _uid(user),
+    )
     item = (await db.execute(statement)).scalar_one_or_none()
     if item is None:
         raise HTTPException(404, "通知渠道不存在或无权访问")
@@ -58,8 +59,7 @@ async def _channel(channel_id: int, user: dict[str, Any], db: AsyncSession) -> N
 @router.get("/notification-channels/")
 async def list_notification_channels(user=Depends(get_current_user), db: AsyncSession = Depends(get_session)):
     statement = select(NotificationChannel).order_by(NotificationChannel.id.desc())
-    if not _is_admin(user):
-        statement = statement.where(NotificationChannel.owner_id == _uid(user))
+    statement = statement.where(NotificationChannel.owner_id == _uid(user))
     rows = list((await db.execute(statement)).scalars().all())
     return ok([_channel_data(item) for item in rows], "查询成功")
 
@@ -206,9 +206,7 @@ async def test_notification_channel(channel_id: int, user=Depends(get_current_us
 
 
 async def _account(account_id: int, user: dict[str, Any], db: AsyncSession) -> Account:
-    statement = select(Account).where(Account.id == account_id)
-    if not _is_admin(user):
-        statement = statement.where(Account.user_id == _uid(user))
+    statement = select(Account).where(Account.id == account_id, Account.user_id == _uid(user))
     item = (await db.execute(statement)).scalar_one_or_none()
     if item is None:
         raise HTTPException(404, "账号不存在或无权访问")
@@ -219,8 +217,7 @@ async def _binding_rows(user: dict[str, Any], db: AsyncSession, account_id: int 
     statement = select(MessageNotificationBinding, NotificationChannel).join(NotificationChannel, NotificationChannel.id == MessageNotificationBinding.channel_id).order_by(MessageNotificationBinding.id.desc())
     if account_id is not None:
         statement = statement.where(MessageNotificationBinding.account_id == account_id)
-    if not _is_admin(user):
-        statement = statement.where(MessageNotificationBinding.owner_id == _uid(user))
+    statement = statement.where(MessageNotificationBinding.owner_id == _uid(user))
     return list((await db.execute(statement)).all())
 
 
@@ -263,8 +260,7 @@ async def set_message_notification(account_id: int, payload: dict[str, Any] = Bo
 @router.put("/message-notifications/{binding_id}")
 async def update_message_notification(binding_id: int, payload: dict[str, Any] = Body(default_factory=dict), user=Depends(get_current_user), db: AsyncSession = Depends(get_session)):
     statement = select(MessageNotificationBinding).where(MessageNotificationBinding.id == binding_id)
-    if not _is_admin(user):
-        statement = statement.where(MessageNotificationBinding.owner_id == _uid(user))
+    statement = statement.where(MessageNotificationBinding.owner_id == _uid(user))
     binding = (await db.execute(statement)).scalar_one_or_none()
     if binding is None:
         raise HTTPException(404, "消息通知不存在")
@@ -277,8 +273,7 @@ async def update_message_notification(binding_id: int, payload: dict[str, Any] =
 @router.delete("/message-notifications/{binding_id}")
 async def delete_message_notification(binding_id: int, user=Depends(get_current_user), db: AsyncSession = Depends(get_session)):
     statement = select(MessageNotificationBinding).where(MessageNotificationBinding.id == binding_id)
-    if not _is_admin(user):
-        statement = statement.where(MessageNotificationBinding.owner_id == _uid(user))
+    statement = statement.where(MessageNotificationBinding.owner_id == _uid(user))
     item = (await db.execute(statement)).scalar_one_or_none()
     if item is None:
         raise HTTPException(404, "消息通知不存在")
@@ -290,9 +285,10 @@ async def delete_message_notification(binding_id: int, user=Depends(get_current_
 @router.delete("/message-notifications/account/{account_id}")
 async def delete_account_message_notifications(account_id: int, user=Depends(get_current_user), db: AsyncSession = Depends(get_session)):
     account = await _account(account_id, user, db)
-    statement = delete(MessageNotificationBinding).where(MessageNotificationBinding.account_id == account_id)
-    if not _is_admin(user):
-        statement = statement.where(MessageNotificationBinding.owner_id == _uid(user))
+    statement = delete(MessageNotificationBinding).where(
+        MessageNotificationBinding.account_id == account_id,
+        MessageNotificationBinding.owner_id == _uid(user),
+    )
     result = await db.execute(statement)
     await db.commit()
     return ok({"account_id": account.id, "deleted": int(result.rowcount or 0)}, "账号通知已清理")

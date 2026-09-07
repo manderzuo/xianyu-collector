@@ -10,6 +10,7 @@ import { getApiErrorMessage } from '@/utils/request'
 import { dismissTokenModeHint, isTokenModeHintDismissed } from '@/utils/tokenModeHint'
 import { useUIStore } from '@/store/uiStore'
 import { useAuthStore } from '@/store/authStore'
+import { useLiveRefresh } from '@/utils/liveRefresh'
 import { useMenuVisibilityStore } from '@/store/menuVisibilityStore'
 import { PageLoading } from '@/components/common/Loading'
 import { ConfirmModal } from '@/components/common/ConfirmModal'
@@ -266,6 +267,7 @@ export function Accounts() {
   const allVisibleSelected = accounts.length > 0 && accounts.every(account => selectedAccountIds.includes(account.id))
   // 是否管理员：管理员可查看全量账号，需展示账号所属用户列
   const isAdmin = Boolean(user?.is_admin)
+  const canUseAI = isAdmin || user?.entitlements?.features?.['ai.smart_reply'] === true
 
   const openContentDetail = async (account: AccountWithKeywordCount) => {
     setContentDetailAccount(account)
@@ -300,10 +302,10 @@ export function Accounts() {
     }
   }
 
-  const loadAccounts = async (page: number = pagination.page, pageSize: number = pagination.pageSize, currentFilters: AccountFilters = filters) => {
+  const loadAccounts = async (page: number = pagination.page, pageSize: number = pagination.pageSize, currentFilters: AccountFilters = filters, silent = false) => {
     if (!_hasHydrated || !isAuthenticated || !token) return
     try {
-      setAccountsLoading(true)
+      if (!silent) setAccountsLoading(true)
       
       // 构建筛选参数
       const filterParams: AccountFilterParams = {}
@@ -338,10 +340,23 @@ export function Accounts() {
     } catch {
       addToast({ type: 'error', message: '加载账号列表失败' })
     } finally {
-      setAccountsLoading(false)
+      if (!silent) setAccountsLoading(false)
       setLoading(false)
     }
   }
+
+  useLiveRefresh(
+    () => {
+      if (_hasHydrated && isAuthenticated && token) {
+        return loadAccounts(pagination.page, pagination.pageSize, filters, true)
+      }
+    },
+    {
+      topics: ['accounts', 'all'],
+      intervalMs: 30000,
+      enabled: _hasHydrated && isAuthenticated && Boolean(token),
+    },
+  )
 
   // 分页切换
   const handlePageChange = (newPage: number) => {
@@ -1249,10 +1264,14 @@ export function Accounts() {
 
   // ==================== AI回复开关 ====================
   const handleToggleAI = async (account: AccountWithKeywordCount) => {
+    if (!canUseAI) {
+      addToast({ type: 'warning', message: '当前套餐未开通AI智能回复' })
+      return
+    }
     const newEnabled = !account.aiEnabled
     try {
       if (newEnabled) {
-        const settings = await getAIReplySettings(account.id)
+        const settings = await getAIReplySettings()
         const missingItems = getAIConfigMissingItems({
           provider_type: settings.provider_type,
           base_url: settings.base_url,
@@ -1264,14 +1283,12 @@ export function Accounts() {
           return
         }
       }
-      const result = await updateAIReplySettings(account.id, { ai_enabled: newEnabled })
+      const result = await updateAIReplySettings({ ai_enabled: newEnabled })
       if (!result.success) {
         addToast({ type: 'warning', message: result.message || 'AI配置未填写完整，无法开启AI回复' })
         return
       }
-      setAccounts(prev => prev.map(a =>
-        a.id === account.id ? { ...a, aiEnabled: newEnabled } : a,
-      ))
+      setAccounts(prev => prev.map(a => ({ ...a, aiEnabled: newEnabled })))
       addToast({ type: 'success', message: `AI回复已${newEnabled ? '开启' : '关闭'}` })
       await loadAccounts()
     } catch (error) {
@@ -1453,12 +1470,16 @@ export function Accounts() {
 
   // ==================== AI设置管理 ====================
   const openAISettings = async (account: AccountWithKeywordCount) => {
+    if (!canUseAI) {
+      addToast({ type: 'warning', message: '当前套餐未开通AI智能回复' })
+      return
+    }
     setAiSettingsAccount(account)
     setActiveModal('ai-settings')
     setAiSettingsLoading(true)
     setAiModelOptions([])
     try {
-      const settings = await getAIReplySettings(account.id)
+      const settings = await getAIReplySettings()
       const providerType = (settings.provider_type as AIProviderType) || 'openai_compatible'
       setAiProviderType(providerType)
       setAiEnabled(settings.ai_enabled ?? settings.enabled ?? false)
@@ -1570,7 +1591,7 @@ export function Accounts() {
     }
     try {
       setAiSettingsSaving(true)
-      const result = await updateAIReplySettings(aiSettingsAccount.id, {
+      const result = await updateAIReplySettings({
         ai_enabled: aiEnabled,
         provider_type: aiProviderType,
         base_url: aiApiUrl,
@@ -1588,9 +1609,7 @@ export function Accounts() {
         return
       }
       // 更新本地状态
-      setAccounts(prev => prev.map(a =>
-        a.id === aiSettingsAccount.id ? { ...a, aiEnabled } : a,
-      ))
+      setAccounts(prev => prev.map(a => ({ ...a, aiEnabled })))
       addToast({ type: 'success', message: 'AI设置已保存' })
       closeModal()
       await loadAccounts()
@@ -1613,7 +1632,7 @@ export function Accounts() {
     // 先保存设置再测试
     try {
       setAiTesting(true)
-      const saveResult = await updateAIReplySettings(aiSettingsAccount.id, {
+      const saveResult = await updateAIReplySettings({
         ai_enabled: aiEnabled,
         provider_type: aiProviderType,
         base_url: aiApiUrl,
@@ -1630,7 +1649,7 @@ export function Accounts() {
         addToast({ type: 'warning', message: saveResult.message || 'AI配置未填写完整，无法测试AI连接' })
         return
       }
-      const result = await testAIConnection(aiSettingsAccount.id)
+      const result = await testAIConnection()
       const testData = result.data as { tested?: boolean } | undefined
       if (result.success && testData?.tested !== false) {
         addToast({ type: 'success', message: result.message || 'AI连接测试成功' })
@@ -2207,19 +2226,20 @@ export function Accounts() {
                 </select>
               </div>
               
-              {/* AI回复筛选 */}
-              <div className="flex flex-col gap-1">
-                <label className="text-xs text-gray-500 dark:text-gray-400">AI回复</label>
-                <select
-                  value={filters.ai_reply === null ? '' : String(filters.ai_reply)}
-                  onChange={(e) => handleFilterChange('ai_reply', e.target.value === '' ? null : e.target.value === 'true')}
-                  className="px-2 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                >
-                  <option value="">全部</option>
-                  <option value="true">开启</option>
-                  <option value="false">关闭</option>
-                </select>
-              </div>
+              {canUseAI && (
+                <div className="flex flex-col gap-1">
+                  <label className="text-xs text-gray-500 dark:text-gray-400">AI回复</label>
+                  <select
+                    value={filters.ai_reply === null ? '' : String(filters.ai_reply)}
+                    onChange={(e) => handleFilterChange('ai_reply', e.target.value === '' ? null : e.target.value === 'true')}
+                    className="px-2 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    <option value="">全部</option>
+                    <option value="true">开启</option>
+                    <option value="false">关闭</option>
+                  </select>
+                </div>
+              )}
               
               {/* 定时补发货筛选 */}
               <div className="flex flex-col gap-1">
@@ -2508,18 +2528,19 @@ export function Accounts() {
                     {/* 功能开关组：图标按钮点击切换，hover 查看说明 */}
                     <td>
                       <div className="flex items-center gap-1 [&>button]:shrink-0">
-                        {/* AI回复 */}
-                        <button
-                          onClick={() => handleToggleAI(account)}
-                          className={`inline-flex items-center justify-center w-7 h-7 rounded transition-colors ${
-                            account.aiEnabled
-                              ? 'bg-purple-100 text-purple-700 hover:bg-purple-200 dark:bg-purple-900/30 dark:text-purple-300 dark:hover:bg-purple-900/50'
-                              : 'bg-slate-100 text-slate-400 hover:bg-slate-200 dark:bg-slate-700 dark:text-slate-500 dark:hover:bg-slate-600'
-                          }`}
-                          title={`AI回复：${account.aiEnabled ? '已开启（点击关闭）' : '已关闭（点击开启）'}`}
-                        >
-                          <Bot className="w-3.5 h-3.5" />
-                        </button>
+                        {canUseAI && (
+                          <button
+                            onClick={() => handleToggleAI(account)}
+                            className={`inline-flex items-center justify-center w-7 h-7 rounded transition-colors ${
+                              account.aiEnabled
+                                ? 'bg-purple-100 text-purple-700 hover:bg-purple-200 dark:bg-purple-900/30 dark:text-purple-300 dark:hover:bg-purple-900/50'
+                                : 'bg-slate-100 text-slate-400 hover:bg-slate-200 dark:bg-slate-700 dark:text-slate-500 dark:hover:bg-slate-600'
+                            }`}
+                            title={`平台账号共享AI回复：${account.aiEnabled ? '已开启（点击关闭）' : '已关闭（点击开启）'}`}
+                          >
+                            <Bot className="w-3.5 h-3.5" />
+                          </button>
+                        )}
                         {/* 定时补发货 */}
                         <button
                           onClick={() => handleToggleScheduledRedelivery(account)}
@@ -2669,14 +2690,16 @@ export function Accounts() {
                           <Eye className="w-3.5 h-3.5 text-emerald-500" />
                           <span className="text-emerald-600 dark:text-emerald-400">内容</span>
                         </button>
-                        <button
-                          onClick={() => void openAISettings(account)}
-                          className="inline-flex items-center gap-1 px-2 py-1 text-xs rounded hover:bg-purple-50 dark:hover:bg-purple-900/30 transition-colors"
-                          title="配置AI回复"
-                        >
-                          <Bot className="w-3.5 h-3.5 text-purple-500" />
-                          <span className="text-purple-600 dark:text-purple-400">AI设置</span>
-                        </button>
+                        {canUseAI && (
+                          <button
+                            onClick={() => void openAISettings(account)}
+                            className="inline-flex items-center gap-1 px-2 py-1 text-xs rounded hover:bg-purple-50 dark:hover:bg-purple-900/30 transition-colors"
+                            title="配置平台账号共享AI回复"
+                          >
+                            <Bot className="w-3.5 h-3.5 text-purple-500" />
+                            <span className="text-purple-600 dark:text-purple-400">平台AI设置</span>
+                          </button>
+                        )}
                         <button
                           onClick={() => setDeleteAccountConfirm({ open: true, id: account.id })}
                           className="inline-flex items-center gap-1 px-2 py-1 text-xs rounded hover:bg-red-50 dark:hover:bg-red-900/30 transition-colors"
@@ -2741,7 +2764,7 @@ export function Accounts() {
                       className="w-full flex items-center gap-2 px-3 py-2 text-xs hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors"
                     >
                       <Bot className="w-3.5 h-3.5 text-purple-500" />
-                      <span className="text-slate-700 dark:text-slate-300">AI设置</span>
+                          <span className="text-slate-700 dark:text-slate-300">平台AI设置</span>
                     </button>
                     <button
                       onClick={() => { openDefaultReplyModal(account); setMoreMenuAccountId(null) }}
@@ -3543,7 +3566,7 @@ export function Accounts() {
         <div className="modal-overlay">
           <div className="modal-content max-w-lg">
             <div className="modal-header">
-              <h2 className="modal-title">AI回复设置</h2>
+              <h2 className="modal-title">平台账号 AI 回复设置</h2>
               <button onClick={closeModal} className="modal-close">
                 <X className="w-4 h-4" />
               </button>
@@ -3556,10 +3579,10 @@ export function Accounts() {
               ) : (
                 <>
                   <div className="input-group">
-                    <label className="input-label">账号</label>
+                    <label className="input-label">配置归属</label>
                     <input
                       type="text"
-                      value={aiSettingsAccount.id}
+                      value="当前登录的平台账号（所有闲鱼账号共享）"
                       disabled
                       className="input-ios bg-slate-100 dark:bg-slate-700"
                     />
@@ -3569,7 +3592,7 @@ export function Accounts() {
                   <div className="flex items-center justify-between py-3 border-b border-slate-100 dark:border-slate-700">
                     <div>
                       <p className="font-medium text-slate-900 dark:text-slate-100">启用AI回复</p>
-                      <p className="text-xs text-slate-500 dark:text-slate-400">开启后将使用AI自动回复消息</p>
+                        <p className="text-xs text-slate-500 dark:text-slate-400">开启后，该平台账号下所有闲鱼账号都将使用AI自动回复消息</p>
                     </div>
                     <button
                       type="button"

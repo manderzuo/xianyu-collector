@@ -8,6 +8,7 @@ import { getItems } from '@/api/items'
 import { useUIStore } from '@/store/uiStore'
 import { PageLoading } from '@/components/common/Loading'
 import { useAuthStore } from '@/store/authStore'
+import { useLiveRefresh } from '@/utils/liveRefresh'
 import { Select } from '@/components/common/Select'
 import { ConfirmModal } from '@/components/common/ConfirmModal'
 import type { Keyword, Account, Item } from '@/types'
@@ -111,24 +112,37 @@ export function Keywords() {
     setCurrentPage(1)
   }
 
-  const loadKeywords = async () => {
+  const loadKeywords = async (silent = false) => {
     if (!_hasHydrated || !isAuthenticated || !token) {
       return
     }
     try {
-      setLoading(true)
+      if (!silent) setLoading(true)
       // selectedAccount为空字符串时查询全部账号
       const data = await getKeywords(selectedAccount || undefined)
       // 确保 data 是数组，防止后端返回非数组或请求失败时出错
       setKeywords(Array.isArray(data) ? data : [])
       setCurrentPage(1) // 重置分页
     } catch {
-      setKeywords([])
+      if (!silent) setKeywords([])
       addToast({ type: 'error', message: '加载关键词列表失败' })
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
   }
+
+  useLiveRefresh(
+    () => {
+      if (_hasHydrated && isAuthenticated && token) {
+        return loadKeywords(true)
+      }
+    },
+    {
+      topics: ['all'],
+      intervalMs: 30000,
+      enabled: _hasHydrated && isAuthenticated && Boolean(token),
+    },
+  )
 
   const loadAccounts = async () => {
     if (!_hasHydrated || !isAuthenticated || !token) {
@@ -649,7 +663,7 @@ export function Keywords() {
             <Upload className="w-4 h-4" />
             导入
           </button>
-          <button onClick={loadKeywords} className="btn-ios-secondary ">
+          <button onClick={() => loadKeywords()} className="btn-ios-secondary ">
             <RefreshCw className="w-4 h-4" />
             刷新
           </button>

@@ -13,12 +13,13 @@ import inspect
 import re
 from typing import Any
 
-from fastapi import APIRouter, Depends, Path as FastApiPath, Request
+from fastapi import APIRouter, Depends, HTTPException, Path as FastApiPath, Request
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.dependencies import get_current_user
 from backend.app.core.response import error, ok
+from backend.app.services.entitlements import FEATURE_AI_SMART_REPLY, require_feature
 from common.db.session import get_session
 from common.models import FeatureRecord
 
@@ -50,6 +51,10 @@ def _is_platform_action(path: str) -> bool:
         marker in clean
         for marker in ("/fetch-xianyu", "/send-message", "/send-image", "/connect/", "/disconnect/")
     )
+
+
+def _is_admin(user: dict[str, Any]) -> bool:
+    return str(user.get("role") or "").lower() in {"admin", "administrator"} or bool(user.get("is_admin"))
 
 
 def _now() -> str:
@@ -91,6 +96,10 @@ async def legacy_surface(
     """执行旧路径对应的本地记录动作，保留旧前端需要的通用返回字段。"""
     method = request.method.upper()
     path = full_path.strip("/")
+    if (path.startswith("api/v1/admin/") or path.startswith("admin/")) and not _is_admin(user):
+        raise HTTPException(status_code=403, detail="仅管理员可以访问该兼容接口")
+    if (path.startswith("api/v1/ai") or path.startswith("ai/")) and not _is_admin(user):
+        await require_feature(db, user, FEATURE_AI_SMART_REPLY)
     feature = _feature(path)
     owner_id = _uid(user)
     body = await _json_body(request) if method in {"POST", "PUT", "PATCH"} else {}

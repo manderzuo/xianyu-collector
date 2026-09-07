@@ -6,7 +6,10 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import re
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -19,11 +22,12 @@ from backend.app.core.dependencies import get_current_user
 from backend.app.core.response import error, ok
 from common.config import settings
 from common.db.session import async_session_maker, get_session
-from common.models import Account, AccountCookie, FeatureRecord, SystemSetting
+from common.models import Account, AccountCookie, FeatureRecord, SystemSetting, User
 from common.services.account_identity import extract_account_nickname
 from common.services.account_renewal import renew_account_session
 from common.services.goofish_mtop import parse_cookie_string
 from backend.app.services.account_settings import save_account_settings
+from backend.app.services.entitlements import FEATURE_ACCOUNT, ensure_quota, finalize_quota, reserve_quota
 
 router = APIRouter(prefix="/api/v1", tags=["旧版功能兼容"])
 
@@ -48,9 +52,22 @@ def serialize(item: FeatureRecord) -> dict[str, Any]:
     return data
 
 
-async def records(feature: str, user: dict, db: AsyncSession, limit: int = 100) -> list[FeatureRecord]:
+def _require_admin_compat(path: str, user: dict[str, Any]) -> None:
+    if path.startswith("/admin/") and not is_admin(user):
+        raise HTTPException(status_code=403, detail="仅管理员可以访问该兼容接口")
+
+
+async def records(
+    feature: str,
+    user: dict,
+    db: AsyncSession,
+    limit: int = 100,
+    *,
+    include_all: bool = False,
+) -> list[FeatureRecord]:
     statement = select(FeatureRecord).where(FeatureRecord.feature == feature)
-    if not is_admin(user): statement = statement.where(FeatureRecord.owner_id == uid(user))
+    if not include_all:
+        statement = statement.where(FeatureRecord.owner_id == uid(user))
     return list((await db.execute(statement.order_by(FeatureRecord.id.desc()).limit(limit))).scalars().all())
 
 
@@ -64,37 +81,42 @@ async def create_record(feature: str, payload: dict[str, Any], user: dict, db: A
 def register_crud(path: str, feature: str) -> None:
     @router.get(path)
     async def list_feature(page: int = Query(1, ge=1), page_size: int = Query(50, ge=1, le=200), user=Depends(get_current_user), db: AsyncSession = Depends(get_session)):
-        items = await records(feature, user, db, page * page_size)
+        _require_admin_compat(path, user)
+        include_all = path.startswith("/admin/")
+        items = await records(feature, user, db, page * page_size, include_all=include_all)
         sliced = items[(page - 1) * page_size: page * page_size]
         total_statement = select(func.count()).select_from(FeatureRecord).where(FeatureRecord.feature == feature)
-        if not is_admin(user): total_statement = total_statement.where(FeatureRecord.owner_id == uid(user))
+        if not include_all: total_statement = total_statement.where(FeatureRecord.owner_id == uid(user))
         total = int((await db.execute(total_statement)).scalar_one())
         return ok({"items": [serialize(item) for item in sliced], "total": total, "page": page, "page_size": page_size}, "查询成功")
 
     @router.post(path)
     async def create_feature(payload: dict[str, Any] | None = Body(default=None), user=Depends(get_current_user), db: AsyncSession = Depends(get_session)):
+        _require_admin_compat(path, user)
         item = await create_record(feature, payload or {}, user, db)
         return ok(serialize(item), "记录已创建")
 
     @router.get(f"{path}/{{record_id}}")
     async def get_feature(record_id: str, user=Depends(get_current_user), db: AsyncSession = Depends(get_session)):
+        _require_admin_compat(path, user)
         # 旧版不少列表接口挂在资源名下，例如 /cards/selectable、
         # /chat-new/accounts。不能让字符串被 FastAPI 强转 int 后直接返回 422。
         if not record_id.isdigit():
-            items = await records(feature, user, db)
+            items = await records(feature, user, db, include_all=path.startswith("/admin/"))
             values = [serialize(item) for item in items]
             return ok({"items": values, "list": values, "total": len(values), "path": f"{path}/{record_id}"}, "查询成功")
         record_id = int(record_id)
         statement = select(FeatureRecord).where(FeatureRecord.id == record_id, FeatureRecord.feature == feature)
-        if not is_admin(user): statement = statement.where(FeatureRecord.owner_id == uid(user))
+        if not path.startswith("/admin/"): statement = statement.where(FeatureRecord.owner_id == uid(user))
         item = (await db.execute(statement)).scalar_one_or_none()
         if item is None: raise HTTPException(404, "记录不存在")
         return ok(serialize(item), "查询成功")
 
     @router.put(f"{path}/{{record_id}}")
     async def update_feature(record_id: int, payload: dict[str, Any] | None = Body(default=None), user=Depends(get_current_user), db: AsyncSession = Depends(get_session)):
+        _require_admin_compat(path, user)
         statement = select(FeatureRecord).where(FeatureRecord.id == record_id, FeatureRecord.feature == feature)
-        if not is_admin(user): statement = statement.where(FeatureRecord.owner_id == uid(user))
+        if not path.startswith("/admin/"): statement = statement.where(FeatureRecord.owner_id == uid(user))
         item = (await db.execute(statement)).scalar_one_or_none()
         if item is None: raise HTTPException(404, "记录不存在")
         data = dict(payload or {})
@@ -107,8 +129,9 @@ def register_crud(path: str, feature: str) -> None:
 
     @router.delete(f"{path}/{{record_id}}")
     async def delete_feature(record_id: int, user=Depends(get_current_user), db: AsyncSession = Depends(get_session)):
+        _require_admin_compat(path, user)
         statement = select(FeatureRecord).where(FeatureRecord.id == record_id, FeatureRecord.feature == feature)
-        if not is_admin(user): statement = statement.where(FeatureRecord.owner_id == uid(user))
+        if not path.startswith("/admin/"): statement = statement.where(FeatureRecord.owner_id == uid(user))
         item = (await db.execute(statement)).scalar_one_or_none()
         if item is None: raise HTTPException(404, "记录不存在")
         await db.delete(item); await db.commit()
@@ -221,7 +244,17 @@ async def _run_password_login(
                     )
                 ).scalar_one_or_none()
             is_new = account is None
+            reservation = None
             if account is None:
+                owner = await session.get(User, owner_id)
+                principal = {"sub": str(owner_id), "role": owner.role if owner is not None else "user", "plan_code": owner.plan_code if owner is not None else "NORMAL"}
+                reservation = await reserve_quota(
+                    session,
+                    principal,
+                    FEATURE_ACCOUNT,
+                    resource_key=f"password-login:{session_id}",
+                    idempotency_key=f"account:password-login:{session_id}",
+                )
                 account = Account(
                     user_id=owner_id,
                     account_name=nickname or username[:64],
@@ -239,6 +272,7 @@ async def _run_password_login(
                 if nickname and (not account.account_name or account.account_name.isdigit()):
                     account.account_name = nickname
             session.add(AccountCookie(account_id=account.id, cookie_value=new_cookie, status="active", expires_at=now))
+            finalize_quota(reservation)
             await save_account_settings(
                 session,
                 owner_id,
@@ -277,13 +311,15 @@ async def _run_password_login(
 
 
 @router.post("/password-login")
-async def password_login(payload: dict[str, Any] | None = Body(default=None), user=Depends(get_current_user)):
+async def password_login(payload: dict[str, Any] | None = Body(default=None), user=Depends(get_current_user), db: AsyncSession = Depends(get_session)):
     data = payload or {}
     account_key = str(data.get("account_id") or data.get("account") or "").strip()
     username = str(data.get("account") or data.get("username") or account_key).strip()
     password = str(data.get("password") or "")
     if not account_key or not username or not password:
         return error("请输入账号和密码", code="invalid_request", data={"status": "failed"})
+    # 密码登录同样可能创建新闲鱼账号，配额耗尽时在启动外部登录任务前直接拒绝。
+    await ensure_quota(db, user, FEATURE_ACCOUNT)
     session_id = f"pwd-{uuid4().hex}"
     _password_login_sessions[session_id] = {"status": "processing", "message": "密码登录任务已启动"}
     task = asyncio.create_task(
@@ -330,9 +366,7 @@ async def cookie_refresh_action(
     """兼容旧版单账号 Cookie 续期按钮，并执行真实续期。"""
     if action not in {"renew", "refresh", "login", "renew-login", "start", "trigger"}:
         raise HTTPException(status_code=404, detail="不支持的 Cookie 续期动作")
-    statement = select(Account).where(Account.id == account_id)
-    if not is_admin(user):
-        statement = statement.where(Account.user_id == uid(user))
+    statement = select(Account).where(Account.id == account_id, Account.user_id == uid(user))
     account = (await db.execute(statement)).scalar_one_or_none()
     if account is None:
         raise HTTPException(status_code=404, detail="账号不存在")
@@ -358,10 +392,64 @@ async def analysis_action(action: str, payload: dict[str, Any] | None = Body(def
     return ok(serialize(item), "分析任务已完成")
 
 
+def _local_version() -> str:
+    for candidate in (Path("/app/VERSION.txt"), Path(__file__).resolve().parents[4] / "VERSION.txt"):
+        try:
+            value = candidate.read_text(encoding="utf-8").strip()
+            if value:
+                return value
+        except OSError:
+            continue
+    return os.getenv("APP_VERSION", "1.0.0").strip() or "1.0.0"
+
+
+def _version_parts(value: str) -> tuple[int, ...]:
+    parts = tuple(int(item) for item in re.findall(r"\d+", value))
+    return parts or (0,)
+
+
 @router.get("/version/current")
 @router.get("/version/check")
 async def version_info():
-    return ok({"version": "rewrite-1.0.0", "update_available": False, "source": "local"}, "版本信息来自本地构建")
+    current = _local_version()
+    payload: dict[str, Any] = {
+        "version": current,
+        "current_version": current,
+        "remote_version": current,
+        "has_update": False,
+        "update_available": False,
+        "description": "",
+        "filename": "",
+        "download_url": "",
+        "source": "local",
+    }
+    manifest_url = settings.update_manifest_url.strip()
+    if not manifest_url:
+        return ok(payload, "版本信息来自本地构建")
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(connect=2.5, read=5, write=5, pool=5)) as client:
+            response = await client.get(
+                manifest_url,
+                headers={"Cache-Control": "no-cache"},
+                params={"_client_check": int(datetime.now(timezone.utc).timestamp())},
+            )
+        response.raise_for_status()
+        manifest = response.json()
+        remote = str(manifest.get("version") or "").strip()
+        if remote:
+            has_update = _version_parts(remote) > _version_parts(current)
+            payload.update({
+                "remote_version": remote,
+                "has_update": has_update,
+                "update_available": has_update,
+                "description": str(manifest.get("notes") or "").strip(),
+                "filename": str(manifest.get("image_tag") or "").strip(),
+                "download_url": manifest_url,
+                "source": "tencent-release-manifest",
+            })
+        return ok(payload, "版本检查完成")
+    except (httpx.HTTPError, ValueError, TypeError):
+        return ok(payload, "暂时无法连接更新服务器，当前版本仍可正常使用")
 
 
 async def _probe_service(url: str) -> bool:
@@ -450,6 +538,7 @@ async def public_settings(db: AsyncSession = Depends(get_session)):
     }
     rows = (await db.execute(select(SystemSetting).where(SystemSetting.setting_key.in_(public_keys)))).scalars().all()
     values = {row.setting_key: row.setting_value for row in rows}
+    values.setdefault("registration_enabled", "true")
     values.setdefault("login.system_name", settings.brand_name)
     values.setdefault("brand_name", settings.brand_name)
     values.setdefault("brand_domain", settings.brand_domain)

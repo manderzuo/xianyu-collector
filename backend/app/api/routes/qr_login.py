@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.dependencies import get_current_user
 from backend.app.core.response import ok
+from backend.app.services.entitlements import FEATURE_ACCOUNT, ensure_quota, finalize_quota, reserve_quota
 from common.config import settings
 from common.db.session import get_session
 from common.models import Account, AccountCookie, QrLoginSession
@@ -98,6 +99,9 @@ async def generate_qr_code(
     db: AsyncSession = Depends(get_session),
 ):
     """向闲鱼登录服务申请二维码，并启动后台状态轮询。"""
+    # 配额必须在请求闲鱼之前校验，避免普通用户已用完次数仍拿到二维码，
+    # 扫码后才在创建账号阶段失败并长期停留在“等待确认”。
+    await ensure_quota(db, user, FEATURE_ACCOUNT)
     qr_login_manager.cleanup()
     result = await qr_login_manager.generate_qr_code((payload or QRGenerateRequest()).proxy)
     if not result.get("success"):
@@ -163,7 +167,15 @@ async def get_qr_status(
                         item.unb = unb
                 if item.status == "success":
                     is_new = existing is None
+                    reservation = None
                     if existing is None:
+                        reservation = await reserve_quota(
+                            db,
+                            user,
+                            FEATURE_ACCOUNT,
+                            resource_key=f"qr:{session_id}",
+                            idempotency_key=f"account:qr:{session_id}",
+                        )
                         account = Account(
                             user_id=_uid(user),
                             account_name=nickname or f"闲鱼账号-{unb or session_id[:8]}",
@@ -186,6 +198,7 @@ async def get_qr_status(
                     item.account_id = account.id
                     item.is_new_account = is_new
                     item.status = "success"
+                    finalize_quota(reservation)
                     await db.commit()
                     runtime = await _notify_account_runtime(account, cookie_value, _uid(user), is_new)
                     return ok({**_serialize_session(item, include_qr=False), "account_info": {"account_id": account.id, "is_new_account": is_new}, "runtime": runtime}, "扫码登录成功")

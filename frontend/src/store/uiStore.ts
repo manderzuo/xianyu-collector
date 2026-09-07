@@ -12,10 +12,13 @@ interface UIState {
   sidebarMobileOpen: boolean
   loading: boolean
   toasts: Toast[]
+  vipContentModalOpen: boolean
   toggleSidebar: () => void
   setSidebarCollapsed: (collapsed: boolean) => void
   setSidebarMobileOpen: (open: boolean) => void
   setLoading: (loading: boolean) => void
+  showVipContentModal: () => void
+  hideVipContentModal: () => void
   addToast: (toast: Omit<Toast, 'id'>) => void
   removeToast: (id: string) => void
 }
@@ -25,6 +28,7 @@ export const useUIStore = create<UIState>((set) => ({
   sidebarMobileOpen: false,
   loading: false,
   toasts: [],
+  vipContentModalOpen: false,
 
   toggleSidebar: () => {
     set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed }))
@@ -40,6 +44,14 @@ export const useUIStore = create<UIState>((set) => ({
 
   setLoading: (loading) => {
     set({ loading })
+  },
+
+  showVipContentModal: () => {
+    set({ vipContentModalOpen: true })
+  },
+
+  hideVipContentModal: () => {
+    set({ vipContentModalOpen: false })
   },
 
   addToast: (toast) => {

@@ -190,7 +190,8 @@ export function TabsBar() {
   })
   const menuRef = useRef<HTMLDivElement>(null)
   const isAdmin = Boolean(user?.is_admin)
-  const visibleTabs = tabs.filter((tab) => !hiddenAliasPaths.has(tab.path) && !isPathBlockedForUser(tab.path, hiddenMenuKeys, isAdmin, isExeMode))
+  const features = user?.entitlements?.features || {}
+  const visibleTabs = tabs.filter((tab) => !hiddenAliasPaths.has(tab.path) && !isPathBlockedForUser(tab.path, hiddenMenuKeys, isAdmin, isExeMode, features))
 
   // 监听路由变化，自动添加标签
   useEffect(() => {
@@ -207,7 +208,7 @@ export function TabsBar() {
   }, [location.pathname])
 
   useEffect(() => {
-    const blockedTabs = tabs.filter((tab) => tab.path !== '/dashboard' && (hiddenAliasPaths.has(tab.path) || isPathBlockedForUser(tab.path, hiddenMenuKeys, isAdmin, isExeMode)))
+    const blockedTabs = tabs.filter((tab) => tab.path !== '/dashboard' && (hiddenAliasPaths.has(tab.path) || isPathBlockedForUser(tab.path, hiddenMenuKeys, isAdmin, isExeMode, features)))
     if (blockedTabs.length === 0) {
       return
     }

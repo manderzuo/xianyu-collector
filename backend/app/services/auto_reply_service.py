@@ -22,14 +22,15 @@ from sqlalchemy import select
 
 from common.config import settings
 from common.db.session import async_session_maker
-from common.models import Account, FeatureRecord
+from common.models import Account, FeatureRecord, User
 from common.services.ai_provider_service import (
     generate_ai_reply,
     get_ai_settings_missing_fields,
     provider_name,
     read_ai_enabled,
 )
-from backend.app.services.account_settings import load_account_settings
+from backend.app.services.account_settings import load_account_settings, load_platform_ai_settings
+from backend.app.services.entitlements import FEATURE_AI_SMART_REPLY, get_effective_entitlement
 
 logger = logging.getLogger("xr.backend.auto_reply")
 
@@ -271,15 +272,29 @@ async def _match_ai_or_default_reply(account: Account, message: dict[str, Any]) 
     """关键词未命中时按 AI > 账号默认回复的顺序生成回复。"""
     async with async_session_maker() as db:
         account_settings = await load_account_settings(db, int(account.user_id), int(account.id))
+        platform_ai_settings = await load_platform_ai_settings(db, int(account.user_id))
+        owner = await db.get(User, int(account.user_id))
+        principal = {
+            "sub": str(account.user_id),
+            "role": owner.role if owner is not None else "user",
+            "plan_code": owner.plan_code if owner is not None else "NORMAL",
+        }
+        try:
+            ai_entitlement = await get_effective_entitlement(db, principal, FEATURE_AI_SMART_REPLY)
+            ai_allowed = ai_entitlement.enabled
+        except Exception as exc:  # fail closed when entitlement storage is unavailable
+            ai_allowed = False
+            logger.warning("账号 %s AI授权读取失败，按禁用处理：%s", account.id, str(exc)[:300])
 
     item_id = _message_item_id(message)
     text = str(message.get("text") or "").strip()
-    ai = dict(account_settings.get("ai_settings") or {})
-    if account_settings.get("ai_enabled"):
+    # AI 配置属于平台账号；关键词、过滤词和默认回复仍然属于当前闲鱼账号。
+    ai = dict(platform_ai_settings.get("ai_settings") or {})
+    if platform_ai_settings.get("ai_enabled"):
         ai["ai_enabled"] = True
     else:
         ai.setdefault("ai_enabled", False)
-    if read_ai_enabled(ai) and _time_in_range(ai.get("ai_time_range_start"), ai.get("ai_time_range_end")):
+    if ai_allowed and read_ai_enabled(ai) and _time_in_range(ai.get("ai_time_range_start"), ai.get("ai_time_range_end")):
         missing = get_ai_settings_missing_fields(ai)
         if not missing:
             custom_prompt = str(ai.get("custom_prompts") or "").strip()
@@ -459,8 +474,8 @@ async def _record_auto_reply_log(
     }
     if match.rule_type == "ai":
         async with async_session_maker() as db:
-            account_settings = await load_account_settings(db, int(account.user_id), int(account.id))
-        ai = account_settings.get("ai_settings") or {}
+            platform_ai_settings = await load_platform_ai_settings(db, int(account.user_id))
+        ai = platform_ai_settings.get("ai_settings") or {}
         payload["ai_model_name"] = ai.get("model_name") or None
         payload["ai_provider_name"] = provider_name(ai.get("provider_type"), ai.get("base_url"), ai.get("model_name"))
     try:

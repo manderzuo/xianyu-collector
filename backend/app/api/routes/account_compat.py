@@ -24,7 +24,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.dependencies import get_current_user
 from backend.app.core.response import ok
-from backend.app.services.account_settings import load_account_settings, load_account_settings_map, save_account_settings
+from backend.app.services.account_settings import (
+    load_account_settings,
+    load_account_settings_map,
+    load_platform_ai_settings,
+    save_account_settings,
+    save_platform_ai_settings,
+)
+from backend.app.services.entitlements import FEATURE_ACCOUNT, FEATURE_AI_SMART_REPLY, finalize_quota, require_feature, reserve_quota
 from common.db.session import get_session
 from common.config import settings as app_settings
 from common.models.account_cookies import AccountCookie
@@ -225,9 +232,7 @@ def _is_admin(user: dict[str, Any]) -> bool:
 
 
 async def _account(account_id: int, user: dict[str, Any], db: AsyncSession) -> Account:
-    statement = select(Account).where(Account.id == account_id)
-    if not _is_admin(user):
-        statement = statement.where(Account.user_id == _uid(user))
+    statement = select(Account).where(Account.id == account_id, Account.user_id == _uid(user))
     account = (await db.execute(statement)).scalar_one_or_none()
     if account is None:
         raise HTTPException(status_code=404, detail="账号不存在")
@@ -241,7 +246,26 @@ async def _save_action(
     values: dict[str, Any],
 ) -> dict[str, Any]:
     account = await _account(account_id, user, db)
-    return await save_account_settings(db, int(account.user_id), account_id, values)
+    nested_ai = values.get("ai_settings") if isinstance(values.get("ai_settings"), dict) else {}
+    if bool(values.get("ai_enabled")) or bool(nested_ai.get("ai_enabled")) or "ai_settings" in values:
+        await require_feature(db, user, FEATURE_AI_SMART_REPLY)
+    account_values = dict(values)
+    platform_values: dict[str, Any] = {}
+    if "ai_enabled" in account_values:
+        platform_values["ai_enabled"] = bool(account_values.pop("ai_enabled"))
+    if isinstance(account_values.get("ai_settings"), dict):
+        platform_values["ai_settings"] = account_values.pop("ai_settings")
+
+    settings = (
+        await save_account_settings(db, int(account.user_id), account_id, account_values)
+        if account_values
+        else await load_account_settings(db, int(account.user_id), account_id)
+    )
+    if platform_values:
+        platform = await save_platform_ai_settings(db, int(account.user_id), platform_values)
+        settings["ai_enabled"] = bool(platform.get("ai_enabled"))
+        settings["ai_settings"] = dict(platform.get("ai_settings") or {})
+    return settings
 
 
 @router.put("/status/batch")
@@ -464,6 +488,7 @@ async def export_accounts(
             or account_keyword in item.account_name
         ]
     settings_map = await load_account_settings_map(db, _uid(user), [item.id for item in accounts])
+    platform_ai = await load_platform_ai_settings(db, _uid(user))
     has_password = values.get("has_password")
     if has_password is not None:
         expected = bool(has_password)
@@ -486,7 +511,7 @@ async def export_accounts(
             account_settings.get("username", ""),
             account_settings.get("login_password", ""),
             "是" if account_settings.get("show_browser") else "否",
-            "是" if account_settings.get("ai_enabled") else "否",
+            "是" if platform_ai.get("ai_enabled") else "否",
             "是" if account_settings.get("scheduled_redelivery") else "否",
             "是" if account_settings.get("scheduled_rate") else "否",
             "是" if account_settings.get("auto_polish") else "否",
@@ -572,7 +597,15 @@ async def import_accounts(
             if account is None:
                 account = by_name.get(account_name)
 
+            reservation = None
             if account is None:
+                reservation = await reserve_quota(
+                    db,
+                    user,
+                    FEATURE_ACCOUNT,
+                    resource_key=f"import:{row_number}:{platform_id or account_name}",
+                    idempotency_key=f"account:import:{owner_id}:{row_number}",
+                )
                 account = Account(
                     user_id=owner_id,
                     account_name=account_name,
@@ -620,6 +653,12 @@ async def import_accounts(
             }.items():
                 if _row_has(row, *names):
                     settings_values[field] = _as_int(_row_value(row, *names))
+            finalize_quota(reservation)
+            if "ai_enabled" in settings_values:
+                ai_enabled = bool(settings_values.pop("ai_enabled"))
+                if ai_enabled:
+                    await require_feature(db, user, FEATURE_AI_SMART_REPLY)
+                await save_platform_ai_settings(db, owner_id, {"ai_enabled": ai_enabled})
             if settings_values:
                 await save_account_settings(db, owner_id, account.id, settings_values)
             else:
@@ -649,8 +688,12 @@ async def import_accounts(
 
 @router.get("/{account_id}/settings")
 async def get_settings(account_id: int, user=Depends(get_current_user), db: AsyncSession = Depends(get_session)):
-    await _account(account_id, user, db)
-    return ok(await load_account_settings(db, _uid(user), account_id), "账号设置查询成功")
+    account = await _account(account_id, user, db)
+    settings = await load_account_settings(db, int(account.user_id), account_id)
+    platform = await load_platform_ai_settings(db, int(account.user_id))
+    settings["ai_enabled"] = bool(platform.get("ai_enabled"))
+    settings["ai_settings"] = dict(platform.get("ai_settings") or {})
+    return ok(settings, "账号设置查询成功（AI配置按平台账号共享）")
 
 
 @router.put("/{account_id}/settings")
@@ -838,8 +881,10 @@ async def upload_default_reply_image(
 
 @router.post("/{account_id}/ai-test")
 async def test_ai(account_id: int, user=Depends(get_current_user), db: AsyncSession = Depends(get_session)):
-    settings = await _save_action(account_id, user, db, {})
-    ai_settings = settings.get("ai_settings") or {}
+    await require_feature(db, user, FEATURE_AI_SMART_REPLY)
+    account = await _account(account_id, user, db)
+    platform = await load_platform_ai_settings(db, int(account.user_id))
+    ai_settings = platform.get("ai_settings") or {}
     try:
         reply = await test_ai_connection(
             ai_settings.get("provider_type"),

@@ -1,4 +1,5 @@
 import { API_PREFIX } from '../config'
+import { getStructuredErrorMessage, notifyVipContentIfNeeded } from '@/utils/vipContent'
 
 export type ApiResult<T = unknown> = { success: boolean; code: string; message: string; data: T }
 
@@ -9,7 +10,10 @@ export async function request<T = unknown>(path: string, init?: RequestInit): Pr
   if (token) headers.set('Authorization', `Bearer ${token}`)
   const response = await fetch(path.startsWith('/api') ? path : `${API_PREFIX}${path}`, { ...init, headers })
   const body = await response.json().catch(() => ({ success: false, message: '服务返回异常', data: null }))
-  if (!response.ok) throw new Error(body.detail || body.message || `请求失败（${response.status}）`)
+  if (!response.ok) {
+    notifyVipContentIfNeeded(response.status, body)
+    throw new Error(getStructuredErrorMessage(body, `请求失败（${response.status}）`))
+  }
   return body as ApiResult<T>
 }
 

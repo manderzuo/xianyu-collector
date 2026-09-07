@@ -16,10 +16,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.dependencies import get_current_user
 from backend.app.core.response import error, ok
+from backend.app.services.entitlements import FEATURE_PRODUCT_AUTO_PUBLISH, finalize_quota, release_quota, reserve_quota
 from common.db.session import async_session_maker, get_session
 from common.models import Account, AccountContent, AccountCookie, CapabilityCheck, FeatureRecord
+from common.services.account_renewal import renew_account_session
 from common.services.account_sync import sync_account_products
 from common.services.amap_inputtips import AmapInputTipsError, search_input_tips
+from common.services.cookie_renewal import is_session_expired_message
 from common.services.goofish_mtop import mtop_call
 from common.services.goofish_publish import GoofishPublishError, detect_publish_capability, publish_item
 from common.services.goofish_client import GoofishClient
@@ -42,9 +45,7 @@ def _is_admin(user: dict[str, Any]) -> bool:
 
 
 async def _owned_account(account_id: int, user: dict[str, Any], db: AsyncSession) -> Account:
-    statement = select(Account).where(Account.id == account_id)
-    if not _is_admin(user):
-        statement = statement.where(Account.user_id == _uid(user))
+    statement = select(Account).where(Account.id == account_id, Account.user_id == _uid(user))
     account = (await db.execute(statement)).scalar_one_or_none()
     if account is None:
         raise HTTPException(status_code=404, detail="发布账号不存在或无权使用")
@@ -135,11 +136,20 @@ async def _find_service_template(
     current_cookie = str(account.cookie or "")
     if not _is_service_payload(item_data) or not current_cookie.strip():
         return None, current_cookie
-    target_category = str(
-        item_data.get("platform_category_id")
-        or item_data.get("platform_tb_category_id")
-        or ""
-    ).strip()
+    # 闲鱼服务类目同时存在 catId、tbCatId、channelCatId 三套 ID。
+    # 表单和同步商品不一定保存同一套 ID：例如表单可能只有 tbCatId，
+    # 而 AccountContent.cardData.categoryId 保存的是 catId。只比较一个
+    # ID 会把真实的同类服务商品误判为“没有模板”，从而退回 APP 扫码草稿。
+    target_category_ids = {
+        str(item_data.get(key) or "").strip()
+        for key in (
+            "platform_category_id",
+            "platform_tb_category_id",
+            "platform_channel_category_id",
+            "platform_leaf_id",
+        )
+        if str(item_data.get(key) or "").strip()
+    }
     rows = list(
         (
             await db.execute(
@@ -155,14 +165,38 @@ async def _find_service_template(
         payload = row.payload if isinstance(row.payload, dict) else {}
         card = payload.get("cardData") if isinstance(payload.get("cardData"), dict) else payload
         detail_url = str(card.get("detailUrl") or payload.get("detail_url") or "")
-        category_id = str(card.get("categoryId") or payload.get("category_id") or "").strip()
-        is_skill = "isskill=true" in detail_url.lower() or str(payload.get("attribute_product") or "").lower() == "skill"
-        if not is_skill or not row.external_id:
+        category_ids = {
+            str(card.get(key) or payload.get(key) or "").strip()
+            for key in ("categoryId", "catId", "tbCatId", "channelCatId", "leafId")
+            if str(card.get(key) or payload.get(key) or "").strip()
+        }
+        category_ids.update(
+            str(payload.get(key) or "").strip()
+            for key in ("category_id", "platform_category_id", "platform_tb_category_id", "platform_channel_category_id", "platform_leaf_id")
+            if str(payload.get(key) or "").strip()
+        )
+        item_skill = (
+            card.get("itemSkillDTO")
+            or payload.get("itemSkillDTO")
+            or payload.get("item_skill_dto")
+        )
+        attribute_product = str(
+            card.get("attribute_product") or payload.get("attribute_product") or ""
+        ).lower()
+        is_skill = (
+            "isskill=true" in detail_url.lower()
+            or attribute_product == "skill"
+            or isinstance(item_skill, dict)
+        )
+        same_category = bool(target_category_ids.intersection(category_ids))
+        # 同类商品即使同步卡片没有 isSkill 标记也要尝试读取编辑详情，
+        # 由闲鱼返回的 itemSkillDTO/attribute_product 决定是否确实为服务商品。
+        if not is_skill and not same_category:
             continue
-        if target_category and category_id and category_id != target_category:
+        if not row.external_id:
             continue
         # 在售商品优先；同类分类优先；最后才使用其它已同步服务商品。
-        score = (0 if row.status == "on_sale" else 10) + (0 if target_category and category_id == target_category else 5)
+        score = (0 if row.status == "on_sale" else 10) + (0 if same_category else 5) + (0 if is_skill else 2)
         candidates.append((score, row))
     candidates.sort(key=lambda value: (value[0], -int(value[1].id or 0)))
 
@@ -185,12 +219,23 @@ async def _find_service_template(
             continue
         skill = detail.get("itemSkillDTO")
         item_cat = detail.get("itemCatDTO") if isinstance(detail.get("itemCatDTO"), dict) else {}
-        actual_category = str(item_cat.get("catId") or "").strip()
+        actual_category_ids = {
+            str(item_cat.get(key) or "").strip()
+            for key in ("catId", "tbCatId", "channelCatId", "leafId")
+            if str(item_cat.get(key) or "").strip()
+        }
+        attribute_product = str(detail.get("attribute_product") or "").lower()
+        skill_confirmed = attribute_product == "skill" or (
+            isinstance(skill, dict) and str(skill.get("skillCategoryId") or "").strip()
+        )
+        category_confirmed = not target_category_ids or not actual_category_ids or bool(
+            target_category_ids.intersection(actual_category_ids)
+        )
         if (
-            str(detail.get("attribute_product") or "").lower() == "skill"
+            skill_confirmed
             and isinstance(skill, dict)
             and str(skill.get("skillCategoryId") or "").strip()
-            and (not target_category or not actual_category or actual_category == target_category)
+            and category_confirmed
         ):
             return {
                 "itemSkillDTO": dict(skill),
@@ -208,8 +253,7 @@ async def list_publish_materials(
     user=Depends(get_current_user), db: AsyncSession = Depends(get_session),
 ):
     statement = select(FeatureRecord).where(FeatureRecord.feature == "product-materials")
-    if not _is_admin(user):
-        statement = statement.where(FeatureRecord.owner_id == _uid(user))
+    statement = statement.where(FeatureRecord.owner_id == _uid(user))
     rows = [_material_data(row) for row in (await db.execute(statement.order_by(FeatureRecord.id.desc()))).scalars().all()]
     if title: rows = [row for row in rows if title.lower() in str(row.get("title") or "").lower()]
     if category: rows = [row for row in rows if str(row.get("category") or "") == category]
@@ -232,7 +276,7 @@ async def create_publish_material(payload: dict[str, Any] = Body(default_factory
 @router.get("/materials/{material_id}")
 async def get_publish_material(material_id: int, user=Depends(get_current_user), db: AsyncSession = Depends(get_session)):
     statement = select(FeatureRecord).where(FeatureRecord.id == material_id, FeatureRecord.feature == "product-materials")
-    if not _is_admin(user): statement = statement.where(FeatureRecord.owner_id == _uid(user))
+    statement = statement.where(FeatureRecord.owner_id == _uid(user))
     row = (await db.execute(statement)).scalar_one_or_none()
     if row is None: raise HTTPException(404, "素材不存在")
     return ok(_material_data(row), "查询成功")
@@ -241,7 +285,7 @@ async def get_publish_material(material_id: int, user=Depends(get_current_user),
 @router.put("/materials/{material_id}")
 async def update_publish_material(material_id: int, payload: dict[str, Any] = Body(default_factory=dict), user=Depends(get_current_user), db: AsyncSession = Depends(get_session)):
     statement = select(FeatureRecord).where(FeatureRecord.id == material_id, FeatureRecord.feature == "product-materials")
-    if not _is_admin(user): statement = statement.where(FeatureRecord.owner_id == _uid(user))
+    statement = statement.where(FeatureRecord.owner_id == _uid(user))
     row = (await db.execute(statement)).scalar_one_or_none()
     if row is None: raise HTTPException(404, "素材不存在")
     row.payload = {**(row.payload or {}), **payload}; await db.commit(); await db.refresh(row)
@@ -251,7 +295,7 @@ async def update_publish_material(material_id: int, payload: dict[str, Any] = Bo
 @router.delete("/materials/{material_id}")
 async def delete_publish_material(material_id: int, user=Depends(get_current_user), db: AsyncSession = Depends(get_session)):
     statement = select(FeatureRecord).where(FeatureRecord.id == material_id, FeatureRecord.feature == "product-materials")
-    if not _is_admin(user): statement = statement.where(FeatureRecord.owner_id == _uid(user))
+    statement = statement.where(FeatureRecord.owner_id == _uid(user))
     row = (await db.execute(statement)).scalar_one_or_none()
     if row is None: raise HTTPException(404, "素材不存在")
     await db.delete(row); await db.commit()
@@ -262,7 +306,7 @@ async def delete_publish_material(material_id: int, user=Depends(get_current_use
 async def batch_delete_publish_materials(payload: dict[str, Any] = Body(default_factory=dict), user=Depends(get_current_user), db: AsyncSession = Depends(get_session)):
     ids = [int(value) for value in payload.get("ids") or [] if str(value).isdigit()]
     statement = select(FeatureRecord).where(FeatureRecord.feature == "product-materials", FeatureRecord.id.in_(ids))
-    if not _is_admin(user): statement = statement.where(FeatureRecord.owner_id == _uid(user))
+    statement = statement.where(FeatureRecord.owner_id == _uid(user))
     rows = list((await db.execute(statement)).scalars().all()) if ids else []
     for row in rows: await db.delete(row)
     await db.commit()
@@ -281,6 +325,51 @@ async def _detect_for_account(account: Account, db: AsyncSession) -> dict[str, A
             )
         except Exception as exc:  # 外部平台异常必须转成页面可读错误
             result = {"success": False, "account_invalid": False, "message": f"账号发布能力检测失败：{exc}", "cookies_str": account.cookie}
+
+    # 能力检测是发布页进入时的第一条真实闲鱼请求。若这里已经确认
+    # Session 失效，只标记 expired 会让用户一直看到“检测失败”，而不会
+    # 触发已有的 Cookie/API/浏览器续期链路。现在立即强制续期一次，成功后
+    # 重新检测；续期失败才让前端提示重新扫码，避免把可恢复会话误判成必须
+    # 手工登录。
+    if is_session_expired_message(str(result.get("message") or "")):
+        try:
+            renewal = await renew_account_session(
+                db,
+                account,
+                source="publish_capability_session_expired",
+                force=True,
+                notify_runtime=True,
+                observed_session_expired=True,
+            )
+        except Exception as exc:  # 续期异常不能阻断能力记录与页面返回
+            renewal = {
+                "success": False,
+                "message": f"自动续期执行异常：{str(exc)[:300]}",
+            }
+        if renewal.get("success") and (account.cookie or "").strip():
+            try:
+                refreshed = await detect_publish_capability(
+                    cookie=account.cookie,
+                    platform_account_id=str(account.goofish_id or account.id),
+                    proxy=account.proxy,
+                )
+                if not refreshed.get("success"):
+                    refreshed["message"] = f"自动续期后能力检测仍失败：{refreshed.get('message') or '闲鱼未返回有效结果'}"
+                result = refreshed
+            except Exception as exc:  # noqa: BLE001
+                result = {
+                    "success": False,
+                    "account_invalid": False,
+                    "message": f"自动续期后能力检测失败：{str(exc)[:500]}",
+                    "cookies_str": account.cookie,
+                }
+        else:
+            result = {
+                **result,
+                "message": f"{result.get('message') or '闲鱼登录态已失效'}；自动续期失败：{renewal.get('message') or '请重新扫码登录账号'}",
+                "account_invalid": True,
+                "cookies_str": account.cookie,
+            }
     if result.get("account_invalid") and any(marker in str(result.get("message") or "").upper() for marker in ("SESSION", "COOKIE", "登录态")):
         # 让账号列表与真实平台状态一致；扫码登录成功后 qr_login 会恢复 active。
         account.status = "expired"
@@ -345,8 +434,7 @@ async def recommend_category(
         accounts = [account]
     else:
         statement = select(Account).where(Account.cookie.is_not(None)).order_by(Account.id.desc())
-        if not _is_admin(user):
-            statement = statement.where(Account.user_id == _uid(user))
+        statement = statement.where(Account.user_id == _uid(user))
         accounts = [item for item in (await db.execute(statement)).scalars().all() if (item.cookie or "").strip()]
         accounts.sort(key=lambda item: (str(item.status or "").lower() != "active", -int(item.id)))
 
@@ -401,6 +489,8 @@ def _new_publish_record(account: Account, payload: dict[str, Any], status: str, 
             "price": payload.get("price"),
             "item_id": None,
             "item_url": None,
+            "auto_publish": bool(payload.get("auto_publish")),
+            "auto_target_id": str(payload.get("auto_target_id") or "") or None,
             "error_message": note if status == "failed" else None,
         },
         note=note,
@@ -592,9 +682,8 @@ async def publish_batch(
         return error("请至少选择一个账号和一条素材", code="batch_selection_required")
     account_statement = select(Account).where(Account.id.in_(account_ids))
     material_statement = select(FeatureRecord).where(FeatureRecord.feature == "product-materials", FeatureRecord.id.in_(material_ids))
-    if not _is_admin(user):
-        account_statement = account_statement.where(Account.user_id == _uid(user))
-        material_statement = material_statement.where(FeatureRecord.owner_id == _uid(user))
+    account_statement = account_statement.where(Account.user_id == _uid(user))
+    material_statement = material_statement.where(FeatureRecord.owner_id == _uid(user))
     accounts = list((await db.execute(account_statement)).scalars().all())
     materials = list((await db.execute(material_statement)).scalars().all())
     if len(accounts) != len(account_ids):
@@ -603,10 +692,26 @@ async def publish_batch(
         return error("部分素材不存在或无权使用，请重新选择素材", code="material_invalid")
     batch_id = f"batch-{uuid4().hex}"
     snapshots = [_material_snapshot(item) for item in materials]
-    owner_id = _uid(user) if not _is_admin(user) else int(accounts[0].user_id)
+    owner_id = _uid(user)
+    reservation = None
+    if bool(payload.get("auto_publish")):
+        reservation = await reserve_quota(
+            db,
+            user,
+            FEATURE_PRODUCT_AUTO_PUBLISH,
+            resource_key=f"batch:{batch_id}",
+            idempotency_key=f"product-auto-publish:batch:{batch_id}",
+        )
     parent = FeatureRecord(
         owner_id=owner_id, feature=BATCH_FEATURE, external_id=batch_id, status="pending",
-        payload={"batch_id": batch_id, "account_ids": account_ids, "material_ids": material_ids, "total": len(account_ids) * len(materials)},
+        payload={
+            "batch_id": batch_id,
+            "account_ids": account_ids,
+            "material_ids": material_ids,
+            "total": len(account_ids) * len(materials),
+            "auto_publish": bool(payload.get("auto_publish")),
+            "auto_target_id": str(payload.get("auto_target_id") or batch_id),
+        },
         note="批量发布任务已创建",
     )
     db.add(parent)
@@ -616,8 +721,11 @@ async def publish_batch(
                 "batch_id": batch_id, "account_id": str(account.id), "material_id": material["id"],
                 "title": material.get("title") or "未命名商品", "description": material.get("description"),
                 "price": material.get("price"), "item_id": None, "item_url": None, "error_message": None,
+                "auto_publish": bool(payload.get("auto_publish")),
+                "auto_target_id": str(payload.get("auto_target_id") or batch_id),
             }
             db.add(FeatureRecord(owner_id=int(account.user_id), feature="product-publish-jobs", external_id=uuid4().hex, status="pending", payload=child_payload, note="等待发布"))
+    finalize_quota(reservation)
     await db.commit()
     background_tasks.add_task(_run_batch_publish_background, batch_id, owner_id, account_ids, snapshots)
     return ok({"batch_id": batch_id, "total": len(account_ids) * len(materials)}, "批量发布任务已提交")
@@ -626,8 +734,7 @@ async def publish_batch(
 @router.get("/publish/batch/{batch_id}/status")
 async def publish_batch_status(batch_id: str, user=Depends(get_current_user), db: AsyncSession = Depends(get_session)):
     parent_statement = select(FeatureRecord).where(FeatureRecord.feature == BATCH_FEATURE, FeatureRecord.external_id == batch_id)
-    if not _is_admin(user):
-        parent_statement = parent_statement.where(FeatureRecord.owner_id == _uid(user))
+    parent_statement = parent_statement.where(FeatureRecord.owner_id == _uid(user))
     parent = (await db.execute(parent_statement)).scalar_one_or_none()
     if parent is None:
         raise HTTPException(status_code=404, detail="批量发布任务不存在")
@@ -667,14 +774,33 @@ async def publish_single(payload: dict[str, Any] = Body(default_factory=dict), u
     if not (account.cookie or "").strip():
         return error("账号没有有效 Cookie，请先扫码登录", code="account_invalid", data={"account_id": str(account.id)})
 
+    reservation = None
+    if bool(payload.get("auto_publish")):
+        # 配额拒绝必须发生在能力探测和外部平台调用之前。
+        reservation = await reserve_quota(
+            db,
+            user,
+            FEATURE_PRODUCT_AUTO_PUBLISH,
+            resource_key=f"single:{account_id}:{payload.get('auto_target_id') or payload.get('title') or 'item'}",
+            idempotency_key=f"product-auto-publish:single:{uuid4().hex}",
+        )
+
     # 发布前重新探测一次，避免前端缓存的能力与实际账号状态不一致。
-    capability = await _detect_for_account(account, db)
+    try:
+        capability = await _detect_for_account(account, db)
+    except Exception:
+        release_quota(reservation)
+        await db.commit()
+        raise
     if not capability.get("success"):
+        release_quota(reservation)
+        await db.commit()
         code = "account_invalid" if capability.get("account_invalid") else "capability_unavailable"
         return error(capability.get("message") or "账号发布能力检测失败", code=code, data={"account_id": str(account.id)})
 
     record = _new_publish_record(account, payload, "publishing", "正在调用闲鱼发布接口")
     db.add(record)
+    finalize_quota(reservation)
     await db.commit()
     await db.refresh(record)
     try:
@@ -706,14 +832,38 @@ async def publish_single(payload: dict[str, Any] = Body(default_factory=dict), u
         "error_message": None if result.get("success") else record.note,
     }
     await db.commit()
+    sync_status = "skipped"
+    sync_message = None
+    sync_total_count = 0
+    sync_saved_count = 0
+    if result.get("success") and not result.get("requires_app"):
+        try:
+            sync_result = await sync_account_products(
+                db,
+                account,
+                page_size=30,
+                max_pages=100,
+                sync_products=True,
+                sync_orders=False,
+            )
+            sync_status = "success" if sync_result.get("status") == "success" else "failed"
+            sync_message = sync_result.get("message") or ("发布成功，商品已自动同步" if sync_status == "success" else "发布成功但商品同步失败")
+            sync_total_count = int(sync_result.get("fetched_count") or sync_result.get("total_count") or 0)
+            sync_saved_count = int(sync_result.get("saved_count") or 0)
+        except Exception as exc:  # noqa: BLE001
+            sync_status = "failed"
+            sync_message = f"发布成功但商品同步失败：{str(exc)[:800]}"
+    elif result.get("success") and result.get("requires_app"):
+        sync_message = "商品草稿已生成，等待闲鱼 APP 完成确认后再同步"
+    await db.commit()
     data = {
         "item_url": result.get("item_url"),
         "item_id": result.get("item_id"),
         "log_id": record.id,
-        "sync_status": "skipped",
-        "sync_message": "发布成功后商品同步将在下一次账号同步时执行" if result.get("success") else None,
-        "sync_total_count": 0,
-        "sync_saved_count": 0,
+        "sync_status": sync_status,
+        "sync_message": sync_message,
+        "sync_total_count": sync_total_count,
+        "sync_saved_count": sync_saved_count,
         "requires_app": bool(result.get("requires_app")),
         "draft_id": result.get("draft_id"),
         "qr_content": result.get("qr_content"),
@@ -734,8 +884,7 @@ async def list_publish_logs(
     db: AsyncSession = Depends(get_session),
 ):
     statement = select(FeatureRecord).where(FeatureRecord.feature == "product-publish-jobs")
-    if not _is_admin(user):
-        statement = statement.where(FeatureRecord.owner_id == _uid(user))
+    statement = statement.where(FeatureRecord.owner_id == _uid(user))
     rows = list((await db.execute(statement.order_by(FeatureRecord.id.desc()))).scalars().all())
     if account_id:
         rows = [row for row in rows if str((row.payload or {}).get("account_id")) == str(account_id)]
@@ -754,8 +903,7 @@ async def list_publish_logs(
 @router.delete("/logs/clear")
 async def clear_publish_logs(user=Depends(get_current_user), db: AsyncSession = Depends(get_session)):
     statement = delete(FeatureRecord).where(FeatureRecord.feature == "product-publish-jobs")
-    if not _is_admin(user):
-        statement = statement.where(FeatureRecord.owner_id == _uid(user))
+    statement = statement.where(FeatureRecord.owner_id == _uid(user))
     result = await db.execute(statement)
     await db.commit()
     return ok({"deleted": int(result.rowcount or 0)}, "发布日志已清理")

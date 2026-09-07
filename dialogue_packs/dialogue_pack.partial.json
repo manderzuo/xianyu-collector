@@ -1,0 +1,2161 @@
+{
+  "format": "xianyu-local-dialogue-pack/v1",
+  "status": "running",
+  "created_at": "2026-09-04T12:39:02+08:00",
+  "product": {
+    "id": "",
+    "title": "自动发货商品",
+    "facts": "【商品基本信息】\n商品类型：数字商品 / CDKey / 课件（请按实际情况修改）\n商品名称：请在上方“商品名称”填写\n商品版本或规格：待填写；未填写时不得自行猜测\n商品包含内容：待填写；不能把未列出的内容说成已包含\n\n【价格与库存】\n售价：待填写；运行时优先读取商品实时售价\n原价：待填写；没有原价时不要主动提及\n库存来源：CDKey 使用本地未使用卡密数量；课件使用本地可交付资源数量\n库存变量：优先使用 {sellable_stock}，不要把平台展示库存当作卡密真实库存\n库存为 0 时：不要承诺可发货，建议回复“当前库存不足，请联系客服确认”\n是否公开具体库存：待填写；未填写时只回复“目前有货/库存以系统为准”\n\n【交付规则】\n交付方式：买家付款后自动发送 / 人工发送（请按实际情况修改）\n发货时间：待填写；未填写不得承诺具体分钟数\n交付变量：{DELIVERY_CONTENT}\n一笔订单发放数量：待填写；未填写不得承诺多份\n自动发货失败：先核验订单状态和库存，再转人工处理\n\n【激活与使用】\n激活地址：待填写；未填写不得编造链接\n激活步骤：待填写；建议按“打开地址 → 登录/输入卡密 → 确认激活”补充真实步骤\n有效期：待填写；不能承诺永久有效\n使用次数：待填写；不能承诺无限次使用\n支持设备或系统：待填写；不确定时必须先核实\n账号绑定规则：待填写；不能承诺可解绑、可转让或多设备使用\n\n【售后与退款】\n卡密无效处理：保留订单号和错误截图，核验后按实际情况换卡或人工处理\n重复卡密处理：禁止直接再次发送库存，先查询发货记录\n文件缺失或打不开：先核对订单和文件版本，再补发或转人工\n退款规则：待填写；未填写时不要承诺一定可以退款\n换卡规则：待填写；只有核验通过后才允许换卡\n人工客服时间：待填写；未填写时不要承诺具体在线时间\n\n【安全与合规】\n不索要买家的密码、短信验证码、支付密码、Cookie 或身份证信息\n不引导买家绕过平台交易或私下转账\n不承诺平台无法确认的结果，不编造订单、库存、价格或激活状态\n遇到纠纷、投诉、异常退款或事实不足时，标记 needs_human=true 并转人工\n\n【模板变量】\n可使用：{buyer_name} {item_title} {price} {original_price} {stock} {sellable_stock}\n{platform_stock} {card_stock} {delivery_method} {delivery_time} {order_id} {DELIVERY_CONTENT}\n带“待填写”的字段视为未知，回复中不得原样输出“待填写”。"
+  },
+  "generation": {
+    "total_sessions": 1700,
+    "completed_sessions": 16,
+    "scenario_count": 34,
+    "sessions_per_scenario": 50,
+    "max_turns": 6,
+    "uses_organizer_ai": true,
+    "max_output_tokens": {
+      "buyer": 1024,
+      "seller": 1536,
+      "organizer": 2048
+    }
+  },
+  "templates": [
+    {
+      "scene": "售前咨询",
+      "intent": "打招呼与确认在线",
+      "keywords": [
+        "你好",
+        "在吗",
+        "在不在",
+        "有人吗",
+        "咨询"
+      ],
+      "reply": "你好，在的呀，是咨询{item_title}吗？有什么可以帮您？",
+      "variables": [
+        "buyer_name",
+        "item_title"
+      ],
+      "needs_human": false,
+      "priority": 60,
+      "notes": "售前首问打招呼确认在线",
+      "source": "synthetic"
+    },
+    {
+      "scene": "售前咨询",
+      "intent": "确认是否有货",
+      "keywords": [
+        "还有货吗",
+        "有货吗",
+        "有库存吗",
+        "能买吗",
+        "没货"
+      ],
+      "reply": "目前可以购买，库存以系统为准，下单后按规则发货哦",
+      "variables": [
+        "item_title"
+      ],
+      "needs_human": false,
+      "priority": 55,
+      "notes": "不承诺具体库存数",
+      "source": "synthetic"
+    },
+    {
+      "scene": "售前咨询",
+      "intent": "确认发货方式与到账",
+      "keywords": [
+        "自动发吗",
+        "秒发吗",
+        "多久收到",
+        "什么时候发",
+        "人工发"
+      ],
+      "reply": "是设置自动发货的哦，具体到账以系统为准，如没收到可联系客服核实",
+      "variables": [
+        "delivery_method"
+      ],
+      "needs_human": false,
+      "priority": 55,
+      "notes": "不承诺具体分钟数",
+      "source": "synthetic"
+    },
+    {
+      "scene": "售前咨询",
+      "intent": "确认包含内容需核实",
+      "keywords": [
+        "发什么",
+        "卡密还是文件",
+        "包含什么",
+        "内容是什么",
+        "帮我确认"
+      ],
+      "reply": "这个具体包含内容我这边还没确认，已帮您记录核实，稍等一下，有结果马上回复您哦",
+      "variables": [],
+      "needs_human": true,
+      "priority": 50,
+      "notes": "事实不足转人工核实",
+      "source": "synthetic"
+    },
+    {
+      "scene": "售前咨询",
+      "intent": "打招呼与确认在线",
+      "keywords": [
+        "你好",
+        "在吗",
+        "在不在",
+        "有人吗"
+      ],
+      "reply": "你好，在的呀，欢迎咨询，有什么可以帮您的吗？",
+      "variables": [],
+      "needs_human": false,
+      "priority": 50,
+      "notes": "打招呼通用回复",
+      "source": "synthetic"
+    },
+    {
+      "scene": "售前咨询",
+      "intent": "确认是否自动发货",
+      "keywords": [
+        "自动发货",
+        "拍了就发吗",
+        "付款就发吗",
+        "人工发货"
+      ],
+      "reply": "亲，具体发货方式以商品页面为准，付款后请留意订单消息，没收到请联系客服核实哦",
+      "variables": [],
+      "needs_human": false,
+      "priority": 50,
+      "notes": "不承诺具体方式，以页面为准",
+      "source": "synthetic"
+    },
+    {
+      "scene": "售前咨询",
+      "intent": "咨询发货到账时间",
+      "keywords": [
+        "多久收到",
+        "多久到账",
+        "什么时候发",
+        "发货慢吗"
+      ],
+      "reply": "亲，具体到账时间还需核实哦，付款后请留意订单消息，没收到联系客服帮您看下",
+      "variables": [],
+      "needs_human": false,
+      "priority": 50,
+      "notes": "未填写发货时间不得承诺分钟数",
+      "source": "synthetic"
+    },
+    {
+      "scene": "售前咨询",
+      "intent": "确认是否有货可拍",
+      "keywords": [
+        "有货吗",
+        "有库存吗",
+        "能直接拍吗",
+        "可以拍吗"
+      ],
+      "reply": "亲，目前有货，库存以系统为准，可以直接拍，付款后请留意订单消息哦",
+      "variables": [],
+      "needs_human": false,
+      "priority": 50,
+      "notes": "未公开具体库存只说有货",
+      "source": "synthetic"
+    },
+    {
+      "scene": "售前咨询",
+      "intent": "确认收到是否能用",
+      "keywords": [
+        "直接能用吗",
+        "怎么用",
+        "能用吗",
+        "使用方式"
+      ],
+      "reply": "亲，具体使用方式还需核实哦，收到后如有问题请联系客服帮您看下",
+      "variables": [],
+      "needs_human": false,
+      "priority": 50,
+      "notes": "不编造激活步骤",
+      "source": "synthetic"
+    },
+    {
+      "scene": "售前咨询",
+      "intent": "咨询用不了是否处理",
+      "keywords": [
+        "用不了怎么办",
+        "无效怎么办",
+        "能处理吗",
+        "找谁"
+      ],
+      "reply": "亲，可以的哦，如用不了请保留订单号和截图，联系客服帮您核实处理",
+      "variables": [
+        "order_id"
+      ],
+      "needs_human": false,
+      "priority": 50,
+      "notes": "引导保留凭证转核实",
+      "source": "synthetic"
+    },
+    {
+      "scene": "售前咨询",
+      "intent": "打招呼_确认在线",
+      "keywords": [
+        "在吗",
+        "在不在",
+        "老板在吗",
+        "在么",
+        "有人吗"
+      ],
+      "reply": "在的亲，我在的，请问想咨询{item_title}哪方面呢",
+      "variables": [
+        "item_title"
+      ],
+      "needs_human": false,
+      "priority": 50,
+      "notes": "打招呼首答，不承诺库存价格",
+      "source": "synthetic"
+    },
+    {
+      "scene": "售前咨询",
+      "intent": "确认是否有货",
+      "keywords": [
+        "还有货吗",
+        "有货吗",
+        "有库存吗",
+        "现在能拍吗",
+        "能下单吗"
+      ],
+      "reply": "在的亲，目前有货，库存以系统显示为准，现在拍下可正常发货",
+      "variables": [],
+      "needs_human": false,
+      "priority": 50,
+      "notes": "未填写是否公开库存，只说有货不给具体数",
+      "source": "synthetic"
+    },
+    {
+      "scene": "售前咨询",
+      "intent": "确认是否自动发货",
+      "keywords": [
+        "自动发货吗",
+        "拍下就发吗",
+        "自动发吗",
+        "人工发吗",
+        "怎么发货"
+      ],
+      "reply": "是的亲，拍下付款后自动发送，请留意消息查收",
+      "variables": [],
+      "needs_human": false,
+      "priority": 50,
+      "notes": "交付方式按自动发送表述",
+      "source": "synthetic"
+    },
+    {
+      "scene": "售前咨询",
+      "intent": "咨询多久收到",
+      "keywords": [
+        "多久收到",
+        "多久到账",
+        "什么时候发",
+        "发货快吗",
+        "几分钟到"
+      ],
+      "reply": "亲，付款后系统自动发送，一般很快到账，没收到请联系客服帮您核实",
+      "variables": [],
+      "needs_human": false,
+      "priority": 50,
+      "notes": "未填写发货时间，不承诺具体分钟数",
+      "source": "synthetic"
+    },
+    {
+      "scene": "售前咨询",
+      "intent": "确认发货渠道",
+      "keywords": [
+        "发到哪里",
+        "发闲鱼吗",
+        "闲鱼消息",
+        "怎么收",
+        "哪里查收"
+      ],
+      "reply": "是的亲，付款后自动发到闲鱼消息里，请注意查收",
+      "variables": [],
+      "needs_human": false,
+      "priority": 50,
+      "notes": "只确认闲鱼消息渠道",
+      "source": "synthetic"
+    },
+    {
+      "scene": "售前咨询",
+      "intent": "没收到怎么办",
+      "keywords": [
+        "没收到",
+        "没到账",
+        "没发",
+        "找不到",
+        "联系谁"
+      ],
+      "reply": "对的亲，没收到请带上订单号找我，我帮您核实处理",
+      "variables": [
+        "order_id"
+      ],
+      "needs_human": false,
+      "priority": 50,
+      "notes": "引导提供订单号核验，不直接承诺补发",
+      "source": "synthetic"
+    },
+    {
+      "scene": "【售前咨询】打招呼与确认在线",
+      "intent": "【售前咨询】打招呼与确认在线",
+      "keywords": [
+        "【售前咨询】打招呼与确认在线",
+        "老板在吗"
+      ],
+      "reply": "亲，客服在线时间还需确认，有问题留言即可，看到后会尽快帮您核实处理哦",
+      "variables": [],
+      "needs_human": false,
+      "priority": 50,
+      "notes": "AI 整理失败，保留最后一条卖家回复；请人工审核后启用。",
+      "source": "synthetic_fallback"
+    },
+    {
+      "scene": "售前咨询",
+      "intent": "打招呼_确认在线",
+      "keywords": [
+        "在吗",
+        "在吗老板",
+        "有人吗",
+        "在不在",
+        "客服在吗"
+      ],
+      "reply": "在的亲，我在线呢，是想咨询{item_title}吗？有问题可以直接问我哦。",
+      "variables": [
+        "item_title"
+      ],
+      "needs_human": false,
+      "priority": 50,
+      "notes": "打招呼首问，不承诺库存价格发货",
+      "source": "synthetic"
+    },
+    {
+      "scene": "售前咨询",
+      "intent": "确认是否自动发货",
+      "keywords": [
+        "自动发货吗",
+        "马上发货吗",
+        "拍完就发吗",
+        "现在拍马上发吗",
+        "秒发吗"
+      ],
+      "reply": "亲，正常是付款后系统自动发送，具体以系统为准，有问题随时联系客服帮你核实。",
+      "variables": [],
+      "needs_human": false,
+      "priority": 50,
+      "notes": "不承诺具体分钟数，以系统为准",
+      "source": "synthetic"
+    },
+    {
+      "scene": "售前咨询",
+      "intent": "确认是否有货",
+      "keywords": [
+        "有货吗",
+        "现在有货吗",
+        "还有货吗",
+        "有库存吗",
+        "能拍吗"
+      ],
+      "reply": "亲，目前有货，库存以系统为准，可以放心拍。",
+      "variables": [],
+      "needs_human": false,
+      "priority": 50,
+      "notes": "未填写是否公开具体库存，只回有货不给数字",
+      "source": "synthetic"
+    },
+    {
+      "scene": "售前咨询",
+      "intent": "确认下单方式",
+      "keywords": [
+        "直接拍就行",
+        "怎么拍",
+        "可以拍了吗",
+        "直接下单吗",
+        "现在能拍吗"
+      ],
+      "reply": "可以的亲，直接拍就行，付款后按系统提示收货，有问题联系客服。",
+      "variables": [],
+      "needs_human": false,
+      "priority": 50,
+      "notes": "引导正常下单，不承诺多份",
+      "source": "synthetic"
+    },
+    {
+      "scene": "售前咨询",
+      "intent": "确认收货查看位置",
+      "keywords": [
+        "哪里看卡密",
+        "订单里看吗",
+        "拍完怎么收货",
+        "怎么查看收货",
+        "没收到找你吗"
+      ],
+      "reply": "亲，拍完按订单页提示查看收货就行，先看下订单状态，没收到再联系客服帮你核实处理。",
+      "variables": [],
+      "needs_human": false,
+      "priority": 50,
+      "notes": "不编造交付内容，异常先核验订单",
+      "source": "synthetic"
+    },
+    {
+      "scene": "售前咨询_打招呼与确认在线",
+      "intent": "打招呼确认在线",
+      "keywords": [
+        "在吗",
+        "在不在",
+        "有人吗",
+        "亲在吗",
+        "在线吗"
+      ],
+      "reply": "在的亲，我在线哦，有什么可以帮您？欢迎咨询~",
+      "variables": [],
+      "needs_human": false,
+      "priority": 50,
+      "notes": "打招呼通用回复",
+      "source": "synthetic"
+    },
+    {
+      "scene": "售前咨询_打招呼与确认在线",
+      "intent": "是否自动发货",
+      "keywords": [
+        "自动发货吗",
+        "拍下就发吗",
+        "马上发货吗",
+        "秒发吗",
+        "付款就发吗"
+      ],
+      "reply": "亲，发货方式以商品页面显示为准，付款后请留意订单消息，没收到请联系客服帮您核实~",
+      "variables": [],
+      "needs_human": false,
+      "priority": 50,
+      "notes": "不承诺自动发货，以页面为准",
+      "source": "synthetic"
+    },
+    {
+      "scene": "售前咨询_打招呼与确认在线",
+      "intent": "确认是否有货可拍",
+      "keywords": [
+        "有货吗",
+        "有库存吗",
+        "能拍吗",
+        "直接拍吗",
+        "现在能买吗"
+      ],
+      "reply": "亲，目前有货，库存以系统为准，可以直接拍下，付款后留意订单消息哦~",
+      "variables": [],
+      "needs_human": false,
+      "priority": 50,
+      "notes": "不公开具体库存数",
+      "source": "synthetic"
+    },
+    {
+      "scene": "售前咨询_打招呼与确认在线",
+      "intent": "询问到账时间",
+      "keywords": [
+        "多久收到",
+        "多久发货",
+        "什么时候到",
+        "到账时间",
+        "发货慢吗"
+      ],
+      "reply": "亲，具体到账时间以系统实际发送为准，付款后请留意订单消息，没收到请联系客服核实~",
+      "variables": [],
+      "needs_human": false,
+      "priority": 50,
+      "notes": "未填写时不承诺分钟数",
+      "source": "synthetic"
+    },
+    {
+      "scene": "售前咨询_打招呼与确认在线",
+      "intent": "没收到能否补发",
+      "keywords": [
+        "没收到",
+        "没发货",
+        "补发",
+        "没到账",
+        "没消息"
+      ],
+      "reply": "亲，若没收到请联系客服，提供订单号帮您核实，核实后按实际情况处理哦~",
+      "variables": [
+        "order_id"
+      ],
+      "needs_human": false,
+      "priority": 50,
+      "notes": "需先核验再处理，不直接承诺补发",
+      "source": "synthetic"
+    },
+    {
+      "scene": "售前咨询_打招呼与确认在线",
+      "intent": "客服在线时间",
+      "keywords": [
+        "客服在线吗",
+        "几点在线",
+        "什么时候回复",
+        "人工客服",
+        "客服时间"
+      ],
+      "reply": "亲，客服在线时间暂不确定哦，您留言后会尽快回复，请留意消息~",
+      "variables": [],
+      "needs_human": false,
+      "priority": 50,
+      "notes": "未填写不承诺具体时间",
+      "source": "synthetic"
+    },
+    {
+      "scene": "售前咨询-打招呼与确认在线",
+      "intent": "打招呼_确认在线",
+      "keywords": [
+        "在吗",
+        "在不在",
+        "老板在吗",
+        "有人吗",
+        "咨询一下"
+      ],
+      "reply": "在的老板，请问想咨询哪方面？我帮您看下",
+      "variables": [],
+      "needs_human": false,
+      "priority": 50,
+      "notes": "售前首问通用招呼",
+      "source": "synthetic"
+    },
+    {
+      "scene": "售前咨询-打招呼与确认在线",
+      "intent": "确认是否自动发货",
+      "keywords": [
+        "自动发吗",
+        "拍了就发吗",
+        "现在拍能发吗",
+        "自动发货吗"
+      ],
+      "reply": "在的，拍下后以系统显示为准，有货一般会自动发送，异常请联系客服帮您处理",
+      "variables": [],
+      "needs_human": false,
+      "priority": 50,
+      "notes": "不承诺具体发货结果",
+      "source": "synthetic"
+    },
+    {
+      "scene": "售前咨询-打招呼与确认在线",
+      "intent": "询问交付方式和到账时间",
+      "keywords": [
+        "发到哪里",
+        "发这儿吗",
+        "多久收到",
+        "什么时候发",
+        "怎么发货"
+      ],
+      "reply": "在的，付款后一般是系统自动发送，具体以订单显示为准，没收到请联系客服帮您核实",
+      "variables": [],
+      "needs_human": false,
+      "priority": 50,
+      "notes": "未填写发货时间不承诺分钟数",
+      "source": "synthetic"
+    },
+    {
+      "scene": "售前咨询-打招呼与确认在线",
+      "intent": "询问包含内容",
+      "keywords": [
+        "包含啥",
+        "都有啥",
+        "带啥",
+        "里面有啥",
+        "是cdk吗",
+        "发的是卡密吗"
+      ],
+      "reply": "在的，包含内容以商品描述为准，建议您先看下描述，描述不清楚的请联系客服核实",
+      "variables": [
+        "item_title"
+      ],
+      "needs_human": true,
+      "priority": 50,
+      "notes": "包含内容未知需核实转人工",
+      "source": "synthetic"
+    },
+    {
+      "scene": "售前咨询-打招呼与确认在线",
+      "intent": "询问客服在线时间",
+      "keywords": [
+        "客服什么时候在线",
+        "客服在吗",
+        "几点在线",
+        "联系客服"
+      ],
+      "reply": "在的，您留言后看到会尽快回复您，也可以先留下订单问题帮您核实",
+      "variables": [],
+      "needs_human": false,
+      "priority": 50,
+      "notes": "在线时间未知不承诺具体时间",
+      "source": "synthetic"
+    },
+    {
+      "scene": "售前咨询-打招呼与确认在线",
+      "intent": "打招呼_确认在线",
+      "keywords": [
+        "在吗",
+        "在不在",
+        "老板在吗",
+        "吱一声",
+        "有人吗"
+      ],
+      "reply": "在的在的，我在呢，想了解{item_title}随时问我呀",
+      "variables": [
+        "item_title"
+      ],
+      "needs_human": false,
+      "priority": 90,
+      "notes": "通用在线回应，不承诺库存和发货时间",
+      "source": "synthetic"
+    },
+    {
+      "scene": "售前咨询-打招呼与确认在线",
+      "intent": "确认是否有货_能否直接拍",
+      "keywords": [
+        "有货吗",
+        "还有货吗",
+        "能直接拍吗",
+        "可以直接拍吗",
+        "能拍不"
+      ],
+      "reply": "在的，目前有货，库存以系统为准，可以直接拍下哦",
+      "variables": [],
+      "needs_human": false,
+      "priority": 80,
+      "notes": "未填写是否公开具体库存，只回复有货，不使用具体库存数字",
+      "source": "synthetic"
+    },
+    {
+      "scene": "售前咨询-打招呼与确认在线",
+      "intent": "确认是否自动发货_多久收到",
+      "keywords": [
+        "自动发货吗",
+        "是自动发货不",
+        "多久能收到",
+        "什么时候发货",
+        "拍完多久到"
+      ],
+      "reply": "是自动发货的，付款后系统会自动发送，到账时间以系统为准，没收到随时找我",
+      "variables": [],
+      "needs_human": false,
+      "priority": 75,
+      "notes": "发货时间待填写，不得承诺具体分钟数",
+      "source": "synthetic"
+    },
+    {
+      "scene": "售前咨询-打招呼与确认在线",
+      "intent": "确认交付内容是卡密还是网盘",
+      "keywords": [
+        "是卡密吗",
+        "发卡密吗",
+        "网盘发货吗",
+        "收到的是什么",
+        "怎么发货"
+      ],
+      "reply": "亲，具体是卡密还是网盘我这边需要核实下，麻烦稍等或联系客服确认哦",
+      "variables": [],
+      "needs_human": true,
+      "priority": 70,
+      "notes": "交付方式和包含内容待填写，转人工核实，不编造",
+      "source": "synthetic"
+    },
+    {
+      "scene": "售前咨询-打招呼与确认在线",
+      "intent": "着急要_催促核实等待时间",
+      "keywords": [
+        "急着要",
+        "挺急的",
+        "要等多久",
+        "快点",
+        "马上要"
+      ],
+      "reply": "好的我帮您核实下，麻烦稍等一下，有结果马上回复您哦",
+      "variables": [],
+      "needs_human": true,
+      "priority": 65,
+      "notes": "等待时间和库存未知，不承诺时效，标记转人工",
+      "source": "synthetic"
+    },
+    {
+      "scene": "【售前咨询】打招呼与确认在线",
+      "intent": "【售前咨询】打招呼与确认在线",
+      "keywords": [
+        "【售前咨询】打招呼与确认在线",
+        "在吗老板"
+      ],
+      "reply": "对的亲，没收到请带上订单号联系客服，我们核验后帮您人工处理",
+      "variables": [],
+      "needs_human": false,
+      "priority": 50,
+      "notes": "AI 整理失败，保留最后一条卖家回复；请人工审核后启用。",
+      "source": "synthetic_fallback"
+    },
+    {
+      "scene": "售前咨询-打招呼与确认在线",
+      "intent": "打招呼与确认在线",
+      "keywords": [
+        "在吗",
+        "在不在",
+        "老板在吗",
+        "还在卖吗",
+        "直接拍就行吗",
+        "是自动发货吗",
+        "多久到账",
+        "没收到找你"
+      ],
+      "reply": "在的老板，我在线的，需要了解{item_title}可以问我。目前有货，库存以系统为准，可以直接拍，具体以页面提示为准。这款付款后系统会自动处理，具体以订单页面显示为准，到账以系统显示为准，没收到请提供订单号联系我帮你核实处理。",
+      "variables": [
+        "item_title",
+        "order_id"
+      ],
+      "needs_human": false,
+      "priority": 50,
+      "notes": "未填写价格库存发货时间有效期等均未承诺，仅确认在线、有货以系统为准、自动处理以订单页为准",
+      "source": "synthetic"
+    },
+    {
+      "scene": "售前咨询",
+      "intent": "打招呼_确认在线",
+      "keywords": [
+        "在吗",
+        "在不在",
+        "有人吗",
+        "客服在吗",
+        "在么"
+      ],
+      "reply": "在的亲~欢迎咨询，有什么可以帮您呀？",
+      "variables": [],
+      "needs_human": false,
+      "priority": 50,
+      "notes": "通用打招呼回复，不承诺商品信息",
+      "source": "synthetic"
+    },
+    {
+      "scene": "售前咨询",
+      "intent": "确认是否自动发货",
+      "keywords": [
+        "自动发货吗",
+        "是自动发货",
+        "拍了自动发吗",
+        "自动发卡吗"
+      ],
+      "reply": "亲，具体发货方式以商品页面显示为准，付款后可以查看订单消息，有问题随时联系客服帮您核实~",
+      "variables": [],
+      "needs_human": false,
+      "priority": 50,
+      "notes": "不确定交付方式时不做承诺，以页面为准",
+      "source": "synthetic"
+    },
+    {
+      "scene": "售前咨询",
+      "intent": "咨询发货时间多久收到",
+      "keywords": [
+        "多久收到",
+        "多久发货",
+        "什么时候发",
+        "几分钟到",
+        "发货时间"
+      ],
+      "reply": "亲，付款后请留意订单消息，超时没收到请带订单号联系客服帮您核实~",
+      "variables": [
+        "order_id"
+      ],
+      "needs_human": false,
+      "priority": 50,
+      "notes": "未填写发货时间，不得承诺具体分钟数",
+      "source": "synthetic"
+    },
+    {
+      "scene": "售前咨询",
+      "intent": "没收到货求助",
+      "keywords": [
+        "没收到",
+        "没发货",
+        "没收到货",
+        "没收到卡密",
+        "没收到消息"
+      ],
+      "reply": "可以的亲，付款后没收到请带订单号联系客服，帮您核实处理~",
+      "variables": [
+        "order_id"
+      ],
+      "needs_human": false,
+      "priority": 50,
+      "notes": "需核验订单状态和库存后再处理",
+      "source": "synthetic"
+    },
+    {
+      "scene": "售前咨询",
+      "intent": "咨询是否有货库存",
+      "keywords": [
+        "有货吗",
+        "有库存吗",
+        "现在能拍吗",
+        "还有货吗"
+      ],
+      "reply": "亲，目前库存以系统页面显示为准，可以直接查看下单，有问题联系客服帮您确认~",
+      "variables": [],
+      "needs_human": false,
+      "priority": 50,
+      "notes": "未明确是否公开库存，只按系统显示回复",
+      "source": "synthetic"
+    },
+    {
+      "scene": "售前咨询",
+      "intent": "确认直接拍下单流程",
+      "keywords": [
+        "直接拍",
+        "怎么拍",
+        "可以拍了吗",
+        "直接下单"
+      ],
+      "reply": "可以的亲，按页面提示直接拍下就行，付款后留意订单消息，有问题随时找我~",
+      "variables": [],
+      "needs_human": false,
+      "priority": 50,
+      "notes": "引导按页面下单，不承诺结果",
+      "source": "synthetic"
+    },
+    {
+      "scene": "售前咨询_打招呼与确认在线",
+      "intent": "打招呼_确认在线",
+      "keywords": [
+        "在吗",
+        "在吗老板",
+        "有人吗",
+        "在不在",
+        "在线吗"
+      ],
+      "reply": "在的，我在线的，有什么想咨询的可以直接说哦",
+      "variables": [],
+      "needs_human": false,
+      "priority": 50,
+      "notes": "打招呼确认在线，不承诺其他信息",
+      "source": "synthetic"
+    },
+    {
+      "scene": "售前咨询_打招呼与确认在线",
+      "intent": "确认是否自动发货",
+      "keywords": [
+        "自动发货吗",
+        "是自动发货不",
+        "自动发吗",
+        "拍了自动发吗",
+        "人工还是自动"
+      ],
+      "reply": "亲，这个发货方式我帮您核实下，具体以系统显示为准，拍下后留意消息哦",
+      "variables": [],
+      "needs_human": false,
+      "priority": 50,
+      "notes": "交付方式待填写，不得承诺自动或人工",
+      "source": "synthetic"
+    },
+    {
+      "scene": "售前咨询_打招呼与确认在线",
+      "intent": "咨询发货时间是否秒发",
+      "keywords": [
+        "几分钟收到",
+        "多久收到",
+        "秒发吗",
+        "马上发吗",
+        "发货快吗"
+      ],
+      "reply": "亲，这个发货时间还不能确定哦，不敢保证秒发，拍下后留意消息，有问题随时联系客服",
+      "variables": [],
+      "needs_human": false,
+      "priority": 50,
+      "notes": "发货时间未知，不得承诺分钟数",
+      "source": "synthetic"
+    },
+    {
+      "scene": "售前咨询_打招呼与确认在线",
+      "intent": "咨询晚上是否可拍",
+      "keywords": [
+        "晚上拍",
+        "半夜能拍吗",
+        "晚上发货吗",
+        "晚上有人发吗",
+        "现在拍一样吗"
+      ],
+      "reply": "亲，晚上拍也是一样的哦，具体发货方式需要核实，以系统为准，有问题随时联系客服",
+      "variables": [],
+      "needs_human": false,
+      "priority": 50,
+      "notes": "不承诺夜间人工在线",
+      "source": "synthetic"
+    },
+    {
+      "scene": "售前咨询_打招呼与确认在线",
+      "intent": "确认是否有货可直接拍",
+      "keywords": [
+        "还有货吧",
+        "有货吗",
+        "能直接拍吗",
+        "现在能拍吗",
+        "有库存吗"
+      ],
+      "reply": "亲，可以直接拍的哦，目前有货，库存以系统为准，下单前看下页面显示就行",
+      "variables": [],
+      "needs_human": false,
+      "priority": 50,
+      "notes": "未填写具体库存，只回复有货且以系统为准",
+      "source": "synthetic"
+    },
+    {
+      "scene": "售前咨询_打招呼与确认在线",
+      "intent": "确认下单是否需要备注",
+      "keywords": [
+        "要备注吗",
+        "还用备注啥",
+        "备注什么",
+        "直接拍就行了吧",
+        "怎么拍"
+      ],
+      "reply": "可以直接拍的哦，亲，不用特别备注，下单后留意消息，有问题随时联系客服",
+      "variables": [],
+      "needs_human": false,
+      "priority": 50,
+      "notes": "不要求备注，不承诺发货结果",
+      "source": "synthetic"
+    },
+    {
+      "scene": "【售前咨询】打招呼与确认在线",
+      "intent": "【售前咨询】打招呼与确认在线",
+      "keywords": [
+        "【售前咨询】打招呼与确认在线",
+        "在吗老板",
+        "还在不"
+      ],
+      "reply": "亲，包含内容和使用次数暂时无法确认，以商品页面为准，需要帮您核实一下哦~",
+      "variables": [],
+      "needs_human": false,
+      "priority": 50,
+      "notes": "AI 整理失败，保留最后一条卖家回复；请人工审核后启用。",
+      "source": "synthetic_fallback"
+    },
+    {
+      "scene": "售前咨询-打招呼与确认在线",
+      "intent": "打招呼_确认在线",
+      "keywords": [
+        "在吗",
+        "在不在",
+        "老板在吗",
+        "在么",
+        "有人吗"
+      ],
+      "reply": "在的老板，我在的，有什么关于这款{item_title}想了解的，随时问我",
+      "variables": [
+        "item_title"
+      ],
+      "needs_human": false,
+      "priority": 90,
+      "notes": "售前首问打招呼，不承诺库存价格",
+      "source": "synthetic"
+    },
+    {
+      "scene": "售前咨询-打招呼与确认在线",
+      "intent": "确认是否自动发货",
+      "keywords": [
+        "自动发货吗",
+        "是自动发货不",
+        "自动发吗",
+        "拍完自动发",
+        "人工还是自动"
+      ],
+      "reply": "是自动发货的，付款后系统会自动发送，注意查收订单和系统消息，有问题随时联系我",
+      "variables": [],
+      "needs_human": false,
+      "priority": 80,
+      "notes": "只确认自动发货方式，不承诺分钟数",
+      "source": "synthetic"
+    },
+    {
+      "scene": "售前咨询-打招呼与确认在线",
+      "intent": "咨询发货到账时间",
+      "keywords": [
+        "几分钟收到",
+        "多久到账",
+        "什么时候发货",
+        "多久能收到",
+        "发货快吗"
+      ],
+      "reply": "付款后是系统自动发送的，到账时间以系统为准，付款后稍等刷新查看，有问题随时找我",
+      "variables": [],
+      "needs_human": false,
+      "priority": 75,
+      "notes": "未填写具体分钟数，不得承诺",
+      "source": "synthetic"
+    },
+    {
+      "scene": "售前咨询-打招呼与确认在线",
+      "intent": "确认发货位置_在哪里查收",
+      "keywords": [
+        "发到哪里",
+        "聊天里发吗",
+        "在哪查收",
+        "怎么收货",
+        "发我吗"
+      ],
+      "reply": "付款后系统会自动发送，请注意查收订单和系统消息，有问题随时找我",
+      "variables": [],
+      "needs_human": false,
+      "priority": 75,
+      "notes": "不编造交付渠道",
+      "source": "synthetic"
+    },
+    {
+      "scene": "售前咨询-打招呼与确认在线",
+      "intent": "确认是否有货能否直接拍",
+      "keywords": [
+        "有货吗",
+        "有库存吗",
+        "现在能拍吗",
+        "直接拍就行",
+        "没货了吧"
+      ],
+      "reply": "老板，目前库存以系统显示为准，有货可以直接拍，付款后自动发货，有问题随时找我",
+      "variables": [],
+      "needs_human": false,
+      "priority": 70,
+      "notes": "不承诺具体库存数",
+      "source": "synthetic"
+    },
+    {
+      "scene": "售前咨询-打招呼与确认在线",
+      "intent": "确认按标价拍",
+      "keywords": [
+        "按标价拍",
+        "多少钱",
+        "什么价格",
+        "标价拍就行",
+        "价格是多少"
+      ],
+      "reply": "对的老板，按商品页面标价拍就行，实际价格以系统显示为准",
+      "variables": [],
+      "needs_human": false,
+      "priority": 70,
+      "notes": "不编造具体价格，以系统为准",
+      "source": "synthetic"
+    },
+    {
+      "scene": "售前咨询-打招呼与确认在线",
+      "intent": "买家打招呼问在吗",
+      "keywords": [
+        "在吗",
+        "在不在",
+        "有人吗",
+        "在么"
+      ],
+      "reply": "在的呢，有什么需要了解的吗，随时为您服务~",
+      "variables": [],
+      "needs_human": false,
+      "priority": 50,
+      "notes": "通用打招呼回复，不承诺库存价格发货",
+      "source": "synthetic"
+    },
+    {
+      "scene": "售前咨询-打招呼与确认在线",
+      "intent": "询问是否自动发货",
+      "keywords": [
+        "自动发货吗",
+        "自动发货",
+        "拍了自动发吗",
+        "怎么发货"
+      ],
+      "reply": "交付方式以系统显示为准，拍下后可以联系客服确认哦~",
+      "variables": [],
+      "needs_human": false,
+      "priority": 50,
+      "notes": "交付方式未知，不承诺自动发货",
+      "source": "synthetic"
+    },
+    {
+      "scene": "售前咨询-打招呼与确认在线",
+      "intent": "询问拍下多久收到",
+      "keywords": [
+        "多久收到",
+        "多久发货",
+        "什么时候发",
+        "发货时间"
+      ],
+      "reply": "发货时间以系统显示为准，拍下后请联系客服核实处理哦~",
+      "variables": [],
+      "needs_human": false,
+      "priority": 50,
+      "notes": "发货时间未知，不承诺分钟数",
+      "source": "synthetic"
+    },
+    {
+      "scene": "售前咨询-打招呼与确认在线",
+      "intent": "确认是否有货能否直接拍",
+      "keywords": [
+        "有货吗",
+        "有库存吗",
+        "能直接拍吗",
+        "现在能拍吗"
+      ],
+      "reply": "目前是否有货以系统显示为准，建议拍前先联系客服确认一下哦~",
+      "variables": [],
+      "needs_human": false,
+      "priority": 50,
+      "notes": "库存未知，只引导以系统为准",
+      "source": "synthetic"
+    },
+    {
+      "scene": "售前咨询-打招呼与确认在线",
+      "intent": "确认客服是否在线",
+      "keywords": [
+        "客服在线吗",
+        "现在在线不",
+        "客服在吗",
+        "人工在吗"
+      ],
+      "reply": "在的呢，有问题可以直接留言，会尽快为您处理哦~",
+      "variables": [],
+      "needs_human": false,
+      "priority": 50,
+      "notes": "确认在线，不承诺具体在线时间",
+      "source": "synthetic"
+    },
+    {
+      "scene": "售前咨询",
+      "intent": "打招呼与确认在线",
+      "keywords": [
+        "在吗",
+        "在不在",
+        "老板在吗",
+        "有人吗"
+      ],
+      "reply": "在的亲，我在线呢，是想咨询{item_title}吗？",
+      "variables": [
+        "item_title"
+      ],
+      "needs_human": false,
+      "priority": 50,
+      "notes": "打招呼首问",
+      "source": "synthetic"
+    },
+    {
+      "scene": "售前咨询",
+      "intent": "确认是否自动发货",
+      "keywords": [
+        "自动发货吗",
+        "自动发吗",
+        "拍下自动发",
+        "是不是秒发"
+      ],
+      "reply": "亲，交付方式以页面显示为准，付款后若没收到请联系客服核实哦",
+      "variables": [],
+      "needs_human": false,
+      "priority": 50,
+      "notes": "不承诺具体发货方式",
+      "source": "synthetic"
+    },
+    {
+      "scene": "售前咨询",
+      "intent": "确认是否有货可拍",
+      "keywords": [
+        "有货吗",
+        "有库存吗",
+        "能直接拍吗",
+        "可以拍吗"
+      ],
+      "reply": "亲，目前有货的，库存以系统为准，可以直接拍哦",
+      "variables": [],
+      "needs_human": false,
+      "priority": 50,
+      "notes": "未公开具体库存",
+      "source": "synthetic"
+    },
+    {
+      "scene": "售前咨询",
+      "intent": "咨询付款后多久收到",
+      "keywords": [
+        "多久收到",
+        "多久发货",
+        "什么时候发",
+        "发货时间"
+      ],
+      "reply": "亲，付款后系统会自动发送的，没收到的话联系客服帮您核实哦",
+      "variables": [],
+      "needs_human": false,
+      "priority": 50,
+      "notes": "未填写时不承诺分钟数",
+      "source": "synthetic"
+    },
+    {
+      "scene": "售前咨询",
+      "intent": "咨询商品包含内容",
+      "keywords": [
+        "包含什么",
+        "里面有什么",
+        "有什么内容",
+        "包括啥"
+      ],
+      "reply": "亲，包含内容以商品页面描述为准哦，不确定的可以联系客服帮您核实",
+      "variables": [],
+      "needs_human": false,
+      "priority": 50,
+      "notes": "不编造包含内容",
+      "source": "synthetic"
+    },
+    {
+      "scene": "售前咨询",
+      "intent": "咨询激活是否麻烦",
+      "keywords": [
+        "激活麻烦吗",
+        "怎么激活",
+        "不会用",
+        "小白能用吗"
+      ],
+      "reply": "亲，不麻烦的，一般按提示操作就行，搞不定联系客服帮您看看哦",
+      "variables": [],
+      "needs_human": false,
+      "priority": 50,
+      "notes": "未填写不编造步骤链接",
+      "source": "synthetic"
+    }
+  ],
+  "sessions": [
+    {
+      "scenario": "【售前咨询】打招呼与确认在线",
+      "session_index": 1,
+      "turns": [
+        {
+          "role": "buyer",
+          "content": "你好，在吗"
+        },
+        {
+          "role": "seller",
+          "content": "你好，在的呀，是咨询自动发货商品吗？有什么可以帮您？"
+        },
+        {
+          "role": "buyer",
+          "content": "在就好，这个现在还有货吗"
+        },
+        {
+          "role": "seller",
+          "content": "有的，当前显示可以购买，库存以系统为准，下单后按规则发货哦"
+        },
+        {
+          "role": "buyer",
+          "content": "那拍下是自动发的吗，多久能收到呀"
+        },
+        {
+          "role": "seller",
+          "content": "拍下后按系统设置的发货方式交付哦，具体到账以系统为准，异常可联系客服核实"
+        },
+        {
+          "role": "buyer",
+          "content": "那是秒发吗还是要等人来发啊"
+        },
+        {
+          "role": "seller",
+          "content": "是设置自动发货的哦，具体到账以系统为准，如没收到可联系客服核实"
+        },
+        {
+          "role": "buyer",
+          "content": "那收到的是卡密还是文件呀"
+        },
+        {
+          "role": "seller",
+          "content": "这个具体包含内容我这边还没确认，需要帮您核实一下，您稍等联系客服确认哦"
+        },
+        {
+          "role": "buyer",
+          "content": "那麻烦帮我确认下呗"
+        },
+        {
+          "role": "seller",
+          "content": "好的，已帮您记录核实，稍等一下，有结果马上回复您哦"
+        }
+      ],
+      "status": "completed",
+      "created_at": "2026-09-04T12:29:29+08:00"
+    },
+    {
+      "scenario": "【售前咨询】打招呼与确认在线",
+      "session_index": 2,
+      "turns": [
+        {
+          "role": "buyer",
+          "content": "你好，在吗"
+        },
+        {
+          "role": "seller",
+          "content": "你好，在的呀，欢迎咨询，有什么可以帮您的吗？"
+        },
+        {
+          "role": "buyer",
+          "content": "在就好，想问下拍了是自动发货不"
+        },
+        {
+          "role": "seller",
+          "content": "亲，具体发货方式以商品页面为准，付款后请留意订单消息，没收到请联系客服核实哦"
+        },
+        {
+          "role": "buyer",
+          "content": "那付款后大概多久能收到呀"
+        },
+        {
+          "role": "seller",
+          "content": "亲，具体到账时间还需核实哦，付款后请留意订单消息，没收到联系客服帮您看下"
+        },
+        {
+          "role": "buyer",
+          "content": "现在是有货的吧，能直接拍吗"
+        },
+        {
+          "role": "seller",
+          "content": "亲，目前有货，库存以系统为准，可以直接拍，付款后请留意订单消息哦"
+        },
+        {
+          "role": "buyer",
+          "content": "那收到的是直接能用的吗"
+        },
+        {
+          "role": "seller",
+          "content": "亲，具体使用方式还需核实哦，收到后如有问题请联系客服帮您看下"
+        },
+        {
+          "role": "buyer",
+          "content": "那万一用不了能找你处理不"
+        },
+        {
+          "role": "seller",
+          "content": "亲，可以的哦，如用不了请保留订单号和截图，联系客服帮您核实处理"
+        }
+      ],
+      "status": "completed",
+      "created_at": "2026-09-04T12:30:01+08:00"
+    },
+    {
+      "scenario": "【售前咨询】打招呼与确认在线",
+      "session_index": 3,
+      "turns": [
+        {
+          "role": "buyer",
+          "content": "在吗老板"
+        },
+        {
+          "role": "seller",
+          "content": "在的亲，我在的，请问想咨询自动发货商品哪方面呢"
+        },
+        {
+          "role": "buyer",
+          "content": "现在拍还有货吗"
+        },
+        {
+          "role": "seller",
+          "content": "在的亲，目前有货，库存以系统显示为准，现在拍下可正常发货"
+        },
+        {
+          "role": "buyer",
+          "content": "是拍下就自动发吗"
+        },
+        {
+          "role": "seller",
+          "content": "是的亲，拍下付款后自动发送，请留意消息查收"
+        },
+        {
+          "role": "buyer",
+          "content": "大概多久能收到呀"
+        },
+        {
+          "role": "seller",
+          "content": "亲，付款后系统自动发送，一般很快到账，没收到请联系客服帮您核实"
+        },
+        {
+          "role": "buyer",
+          "content": "是直接发到闲鱼消息里吗"
+        },
+        {
+          "role": "seller",
+          "content": "是的亲，付款后自动发到闲鱼消息里，请注意查收"
+        },
+        {
+          "role": "buyer",
+          "content": "没收到的话直接找你就行是吧"
+        },
+        {
+          "role": "seller",
+          "content": "对的亲，没收到请带上订单号找我，我帮您核实处理"
+        }
+      ],
+      "status": "completed",
+      "created_at": "2026-09-04T12:30:36+08:00"
+    },
+    {
+      "scenario": "【售前咨询】打招呼与确认在线",
+      "session_index": 4,
+      "turns": [
+        {
+          "role": "buyer",
+          "content": "老板在吗"
+        },
+        {
+          "role": "seller",
+          "content": "在的亲，我在线的，请问想咨询自动发货商品的哪方面呢？"
+        },
+        {
+          "role": "buyer",
+          "content": "在就行，想问下这个拍下是自动发货不"
+        },
+        {
+          "role": "seller",
+          "content": "亲，交付方式以系统页面为准，付款后请留意消息，有异常联系客服帮您核实"
+        },
+        {
+          "role": "buyer",
+          "content": "现在有货吗，能直接拍不"
+        },
+        {
+          "role": "seller",
+          "content": "亲，目前有货，库存以系统为准，可以直接拍，付款后留意消息哦"
+        },
+        {
+          "role": "buyer",
+          "content": "行，那拍完大概多久能收到啊"
+        },
+        {
+          "role": "seller",
+          "content": "亲，具体发货时间还需核实，以系统实际发送为准，付款后留意消息，有问题联系客服哦"
+        },
+        {
+          "role": "buyer",
+          "content": "要是付款了没收到咋办啊"
+        },
+        {
+          "role": "seller",
+          "content": "亲别担心，付款后没收到请保留订单号联系客服，帮您核实订单和库存后人工处理"
+        },
+        {
+          "role": "buyer",
+          "content": "客服一般啥时候在线啊，晚上找得到人不"
+        },
+        {
+          "role": "seller",
+          "content": "亲，客服在线时间还需确认，有问题留言即可，看到后会尽快帮您核实处理哦"
+        }
+      ],
+      "status": "completed",
+      "created_at": "2026-09-04T12:31:09+08:00"
+    },
+    {
+      "scenario": "【售前咨询】打招呼与确认在线",
+      "session_index": 5,
+      "turns": [
+        {
+          "role": "buyer",
+          "content": "在吗老板"
+        },
+        {
+          "role": "seller",
+          "content": "在的亲，我在线呢，是想咨询自动发货商品吗？"
+        },
+        {
+          "role": "buyer",
+          "content": "现在拍的话是马上自动发货吗"
+        },
+        {
+          "role": "seller",
+          "content": "亲，正常是付款后系统自动发送，具体以系统为准，有问题随时联系客服"
+        },
+        {
+          "role": "buyer",
+          "content": "现在有货吗"
+        },
+        {
+          "role": "seller",
+          "content": "亲，目前有货，库存以系统为准，可以放心拍"
+        },
+        {
+          "role": "buyer",
+          "content": "那我直接拍就行了是吧"
+        },
+        {
+          "role": "seller",
+          "content": "可以的亲，直接拍就行，付款后按系统提示收货，有问题联系客服"
+        },
+        {
+          "role": "buyer",
+          "content": "行，那拍完是在订单里看卡密吗"
+        },
+        {
+          "role": "seller",
+          "content": "亲，拍完按订单页提示查看收货就行，有异常联系客服帮你核实"
+        },
+        {
+          "role": "buyer",
+          "content": "要是没收到找你就行是吧"
+        },
+        {
+          "role": "seller",
+          "content": "对的亲，没收到先看下订单状态，再联系客服帮你核实处理"
+        }
+      ],
+      "status": "completed",
+      "created_at": "2026-09-04T12:31:43+08:00"
+    },
+    {
+      "scenario": "【售前咨询】打招呼与确认在线",
+      "session_index": 6,
+      "turns": [
+        {
+          "role": "buyer",
+          "content": "在吗亲"
+        },
+        {
+          "role": "seller",
+          "content": "在的亲，我在线哦，有什么可以帮您？欢迎咨询~"
+        },
+        {
+          "role": "buyer",
+          "content": "在就好，想问下这个是拍下就自动发货吗"
+        },
+        {
+          "role": "seller",
+          "content": "亲，发货方式以商品页面显示为准，付款后请留意订单消息，没收到请联系客服帮您核实~"
+        },
+        {
+          "role": "buyer",
+          "content": "那现在有货吗，我直接拍就行了吧"
+        },
+        {
+          "role": "seller",
+          "content": "亲，目前有货，库存以系统为准，可以直接拍下，付款后留意订单消息哦~"
+        },
+        {
+          "role": "buyer",
+          "content": "拍完大概多久能收到呀"
+        },
+        {
+          "role": "seller",
+          "content": "亲，具体到账时间以系统实际发送为准，付款后请留意订单消息，没收到请联系客服核实~"
+        },
+        {
+          "role": "buyer",
+          "content": "要是没收到我找你能给补发一下不"
+        },
+        {
+          "role": "seller",
+          "content": "亲，若没收到请联系客服，提供订单号帮您核实，核实后按实际情况处理哦~"
+        },
+        {
+          "role": "buyer",
+          "content": "行吧，那客服一般啥时候在线呀"
+        },
+        {
+          "role": "seller",
+          "content": "亲，客服在线时间暂不确定哦，您留言后会尽快回复，请留意消息~"
+        }
+      ],
+      "status": "completed",
+      "created_at": "2026-09-04T12:32:13+08:00"
+    },
+    {
+      "scenario": "【售前咨询】打招呼与确认在线",
+      "session_index": 7,
+      "turns": [
+        {
+          "role": "buyer",
+          "content": "在吗老板，想咨询一下"
+        },
+        {
+          "role": "seller",
+          "content": "在的老板，想咨询自动发货商品哪方面？我帮您看下"
+        },
+        {
+          "role": "buyer",
+          "content": "在的就好，这个现在拍了能直接自动发吗"
+        },
+        {
+          "role": "seller",
+          "content": "在的，拍下后以系统显示为准，有货一般会自动发送，异常联系客服帮您处理"
+        },
+        {
+          "role": "buyer",
+          "content": "那发的是卡密直接发这儿吗，大概多久能收到呀"
+        },
+        {
+          "role": "seller",
+          "content": "在的，付款后一般是系统自动发送，具体以订单显示为准，没收到联系客服帮您核实"
+        },
+        {
+          "role": "buyer",
+          "content": "哦哦懂了，那发的是cdk嘛，里面都包含啥呀"
+        },
+        {
+          "role": "seller",
+          "content": "在的，包含内容以商品描述为准，我这边还需核实下，您可以先看下描述或联系客服确认"
+        },
+        {
+          "role": "buyer",
+          "content": "描述有点没看明白，老板能简单说下都带啥不"
+        },
+        {
+          "role": "seller",
+          "content": "在的，抱歉这个包含内容我这边还没法确认，建议以描述为准或联系客服核实下"
+        },
+        {
+          "role": "buyer",
+          "content": "那客服一般啥时候在线呀，我直接去问下"
+        },
+        {
+          "role": "seller",
+          "content": "在的，客服在线时间我这边还不确定，您留言后看到会尽快回复您"
+        }
+      ],
+      "status": "completed",
+      "created_at": "2026-09-04T12:32:48+08:00"
+    },
+    {
+      "scenario": "【售前咨询】打招呼与确认在线",
+      "session_index": 8,
+      "turns": [
+        {
+          "role": "buyer",
+          "content": "在吗老板，看到吱一声呗"
+        },
+        {
+          "role": "seller",
+          "content": "在的在的，我在呢，想了解自动发货商品随时问我呀"
+        },
+        {
+          "role": "buyer",
+          "content": "现在有货吗，能直接拍不"
+        },
+        {
+          "role": "seller",
+          "content": "在的，目前有货，库存以系统为准，可以直接拍下哦"
+        },
+        {
+          "role": "buyer",
+          "content": "是自动发货不，拍完多久能收到呀"
+        },
+        {
+          "role": "seller",
+          "content": "是自动发货的，付款后系统会自动发送，到账时间以系统为准，没收到随时找我"
+        },
+        {
+          "role": "buyer",
+          "content": "收到的是卡密吗，还是发我网盘呀"
+        },
+        {
+          "role": "seller",
+          "content": "亲，具体是卡密还是网盘我这边需要核实下，麻烦稍等或联系客服确认哦"
+        },
+        {
+          "role": "buyer",
+          "content": "那你帮我看下呗，我这边急着要呢"
+        },
+        {
+          "role": "seller",
+          "content": "好的我帮您核实下，麻烦稍等一下，有结果马上回复您哦"
+        },
+        {
+          "role": "buyer",
+          "content": "那大概要等多久呀，我这挺急的"
+        },
+        {
+          "role": "seller",
+          "content": "亲，具体等待时间这边没法确定，麻烦您稍等下或联系客服确认哦"
+        }
+      ],
+      "status": "completed",
+      "created_at": "2026-09-04T12:33:26+08:00"
+    },
+    {
+      "scenario": "【售前咨询】打招呼与确认在线",
+      "session_index": 9,
+      "turns": [
+        {
+          "role": "buyer",
+          "content": "在吗老板"
+        },
+        {
+          "role": "seller",
+          "content": "在的老板，我在线的，有什么可以帮您？"
+        },
+        {
+          "role": "buyer",
+          "content": "你家那个自动发货的还有货吗"
+        },
+        {
+          "role": "seller",
+          "content": "在的亲，目前有货，库存以系统为准，拍下按规则自动发货"
+        },
+        {
+          "role": "buyer",
+          "content": "是拍下就直接发我这边吗"
+        },
+        {
+          "role": "seller",
+          "content": "是的亲，付款后系统会自动发送，请注意查收，有问题随时联系客服"
+        },
+        {
+          "role": "buyer",
+          "content": "那大概多久能收到呀"
+        },
+        {
+          "role": "seller",
+          "content": "亲，付款后系统自动发送，一般很快到，具体以系统为准哈"
+        },
+        {
+          "role": "buyer",
+          "content": "是直接发到这聊天框里吗"
+        },
+        {
+          "role": "seller",
+          "content": "亲，付款后系统会自动发送，具体以系统显示为准，注意查收哈"
+        },
+        {
+          "role": "buyer",
+          "content": "要是没收到的话直接找你就行是吧"
+        },
+        {
+          "role": "seller",
+          "content": "对的亲，没收到请带上订单号联系客服，我们核验后帮您人工处理"
+        }
+      ],
+      "status": "completed",
+      "created_at": "2026-09-04T12:33:57+08:00"
+    },
+    {
+      "scenario": "【售前咨询】打招呼与确认在线",
+      "session_index": 10,
+      "turns": [],
+      "status": "failed",
+      "error": "接口返回没有可识别的文本字段，返回字段：id, object, created_at, completed_at, status, parallel_tool_calls, temperature, top_p, max_output_tokens, background, truncation, top_logprobs, model, error, incomplete_details, output, usage, instructions, tool_choice, tools",
+      "created_at": "2026-09-04T12:34:23+08:00"
+    },
+    {
+      "scenario": "【售前咨询】打招呼与确认在线",
+      "session_index": 11,
+      "turns": [],
+      "status": "failed",
+      "error": "接口返回没有可识别的文本字段，返回字段：id, object, created_at, completed_at, status, parallel_tool_calls, temperature, top_p, max_output_tokens, background, truncation, top_logprobs, model, error, incomplete_details, output, usage, instructions, tool_choice, tools",
+      "created_at": "2026-09-04T12:34:38+08:00"
+    },
+    {
+      "scenario": "【售前咨询】打招呼与确认在线",
+      "session_index": 12,
+      "turns": [
+        {
+          "role": "buyer",
+          "content": "在吗老板"
+        },
+        {
+          "role": "seller",
+          "content": "在的老板，我在线的，需要了解自动发货商品可以问我"
+        },
+        {
+          "role": "buyer",
+          "content": "还在卖吗，是直接拍就行吗"
+        },
+        {
+          "role": "seller",
+          "content": "在卖的老板，目前有货，库存以系统为准，可以直接拍，具体以页面提示为准"
+        },
+        {
+          "role": "buyer",
+          "content": "是自动发货的不，拍完就直接发我吗"
+        },
+        {
+          "role": "seller",
+          "content": "是的老板，这款是自动发货商品，付款后系统会自动处理，具体以订单页面显示为准"
+        },
+        {
+          "role": "buyer",
+          "content": "哦哦，那拍完大概多久能到账啊"
+        },
+        {
+          "role": "seller",
+          "content": "老板，付款后系统会自动发货的，到账以系统显示为准，没收到联系我帮你核实"
+        },
+        {
+          "role": "buyer",
+          "content": "要是没收到找你就行是吧"
+        },
+        {
+          "role": "seller",
+          "content": "对的老板，没收到联系我，提供下订单号，我帮你核实处理"
+        },
+        {
+          "role": "buyer",
+          "content": "谢谢，先这样"
+        },
+        {
+          "role": "seller",
+          "content": "不客气的老板，有需要随时联系我"
+        }
+      ],
+      "status": "completed",
+      "created_at": "2026-09-04T12:35:12+08:00"
+    },
+    {
+      "scenario": "【售前咨询】打招呼与确认在线",
+      "session_index": 13,
+      "turns": [
+        {
+          "role": "buyer",
+          "content": "在吗"
+        },
+        {
+          "role": "seller",
+          "content": "在的亲~欢迎咨询自动发货商品，有什么可以帮您呀？"
+        },
+        {
+          "role": "buyer",
+          "content": "在就好，想问下这个拍了是自动发货吗"
+        },
+        {
+          "role": "seller",
+          "content": "亲，具体发货方式以商品页面显示为准，付款后可以查看订单消息，有问题随时联系客服帮您核实~"
+        },
+        {
+          "role": "buyer",
+          "content": "那付款后大概多久能收到呀"
+        },
+        {
+          "role": "seller",
+          "content": "亲，发货时间暂时还不能确定，付款后请留意订单消息，超时没收到联系客服帮您核实~"
+        },
+        {
+          "role": "buyer",
+          "content": "那万一没收到找你能给处理下吗"
+        },
+        {
+          "role": "seller",
+          "content": "可以的亲，付款后没收到请带订单号联系客服，帮您核实处理~"
+        },
+        {
+          "role": "buyer",
+          "content": "现在直接拍的话有货吗"
+        },
+        {
+          "role": "seller",
+          "content": "亲，目前库存以系统页面显示为准，可以直接查看下单，有问题联系客服帮您确认~"
+        },
+        {
+          "role": "buyer",
+          "content": "行，那我直接拍就行了吧"
+        },
+        {
+          "role": "seller",
+          "content": "可以的亲，按页面提示直接拍下就行，付款后留意订单消息，有问题随时找我~"
+        }
+      ],
+      "status": "completed",
+      "created_at": "2026-09-04T12:35:46+08:00"
+    },
+    {
+      "scenario": "【售前咨询】打招呼与确认在线",
+      "session_index": 14,
+      "turns": [],
+      "status": "failed",
+      "error": "接口返回没有可识别的文本字段，返回字段：id, object, created_at, completed_at, status, parallel_tool_calls, temperature, top_p, max_output_tokens, background, truncation, top_logprobs, model, error, incomplete_details, output, usage, instructions, tool_choice, tools",
+      "created_at": "2026-09-04T12:35:53+08:00"
+    },
+    {
+      "scenario": "【售前咨询】打招呼与确认在线",
+      "session_index": 15,
+      "turns": [
+        {
+          "role": "buyer",
+          "content": "在吗老板"
+        },
+        {
+          "role": "seller",
+          "content": "在的，老板，我在线的，有什么想咨询的可以直接说哦"
+        },
+        {
+          "role": "buyer",
+          "content": "在就好，想问下这个拍了是自动发货不"
+        },
+        {
+          "role": "seller",
+          "content": "在的，亲，这个发货方式我帮您核实下，具体以系统显示为准，拍下后留意消息哦"
+        },
+        {
+          "role": "buyer",
+          "content": "那大概几分钟能收到啊，是秒发吗"
+        },
+        {
+          "role": "seller",
+          "content": "亲，这个发货时间还不能确定哦，不敢保证秒发，拍下后留意消息，有问题随时联系客服"
+        },
+        {
+          "role": "buyer",
+          "content": "哦哦这样啊，那晚上拍也是一样吗还是要等人发"
+        },
+        {
+          "role": "seller",
+          "content": "亲，晚上拍也是一样的哦，具体发货方式需要核实，以系统为准，有问题随时联系客服"
+        },
+        {
+          "role": "buyer",
+          "content": "那现在能直接拍吗，还有货吧"
+        },
+        {
+          "role": "seller",
+          "content": "亲，可以直接拍的哦，目前有货，库存以系统为准，下单前看下页面显示就行"
+        },
+        {
+          "role": "buyer",
+          "content": "行，那我直接拍就行了吧，还用备注啥不"
+        },
+        {
+          "role": "seller",
+          "content": "可以直接拍的哦，亲，不用特别备注，下单后留意消息，有问题随时联系客服"
+        }
+      ],
+      "status": "completed",
+      "created_at": "2026-09-04T12:36:26+08:00"
+    },
+    {
+      "scenario": "【售前咨询】打招呼与确认在线",
+      "session_index": 16,
+      "turns": [],
+      "status": "failed",
+      "error": "接口返回没有可识别的文本字段，返回字段：id, object, created_at, completed_at, status, parallel_tool_calls, temperature, top_p, max_output_tokens, background, truncation, top_logprobs, model, error, incomplete_details, output, usage, instructions, tool_choice, tools",
+      "created_at": "2026-09-04T12:36:39+08:00"
+    },
+    {
+      "scenario": "【售前咨询】打招呼与确认在线",
+      "session_index": 17,
+      "turns": [
+        {
+          "role": "buyer",
+          "content": "在吗老板，还在不"
+        },
+        {
+          "role": "seller",
+          "content": "在的老板，我在线，有什么可以帮您？"
+        },
+        {
+          "role": "buyer",
+          "content": "在就好，这个现在还有货吗"
+        },
+        {
+          "role": "seller",
+          "content": "在的亲，目前有货，库存以系统显示为准，可以放心拍~"
+        },
+        {
+          "role": "buyer",
+          "content": "拍下是直接自动发我吗"
+        },
+        {
+          "role": "seller",
+          "content": "亲，付款后是自动发送，具体以订单页面显示为准，有问题联系客服帮您处理~"
+        },
+        {
+          "role": "buyer",
+          "content": "是直接发卡密到订单里吗"
+        },
+        {
+          "role": "seller",
+          "content": "亲，一般是发送到订单里，具体以您订单页面收到的内容为准哦~"
+        },
+        {
+          "role": "buyer",
+          "content": "哦哦，那拍了是秒发吗，还是得等一会"
+        },
+        {
+          "role": "seller",
+          "content": "亲，一般付款后自动发送，具体到账以订单为准，稍等刷新查看哦~"
+        },
+        {
+          "role": "buyer",
+          "content": "那这个里面都包含啥呀，能用几次"
+        },
+        {
+          "role": "seller",
+          "content": "亲，包含内容和使用次数暂时无法确认，以商品页面为准，需要帮您核实一下哦~"
+        }
+      ],
+      "status": "completed",
+      "created_at": "2026-09-04T12:37:14+08:00"
+    },
+    {
+      "scenario": "【售前咨询】打招呼与确认在线",
+      "session_index": 18,
+      "turns": [],
+      "status": "failed",
+      "error": "接口返回没有可识别的文本字段，返回字段：id, object, created_at, completed_at, status, parallel_tool_calls, temperature, top_p, max_output_tokens, background, truncation, top_logprobs, model, error, incomplete_details, output, usage, instructions, tool_choice, tools",
+      "created_at": "2026-09-04T12:37:21+08:00"
+    },
+    {
+      "scenario": "【售前咨询】打招呼与确认在线",
+      "session_index": 19,
+      "turns": [
+        {
+          "role": "buyer",
+          "content": "在吗老板"
+        },
+        {
+          "role": "seller",
+          "content": "在的老板，我在的，有什么关于这款自动发货商品想了解的，随时问我"
+        },
+        {
+          "role": "buyer",
+          "content": "现在拍是自动发货不"
+        },
+        {
+          "role": "seller",
+          "content": "是自动发货的，付款后系统会自动发送，注意查收，有问题随时联系我"
+        },
+        {
+          "role": "buyer",
+          "content": "那拍完几分钟能收到啊"
+        },
+        {
+          "role": "seller",
+          "content": "付款后是系统自动发送的，具体几分钟到账要以系统为准，付款后稍等刷新查看，有问题随时找我"
+        },
+        {
+          "role": "buyer",
+          "content": "是在这聊天里直接发我吗"
+        },
+        {
+          "role": "seller",
+          "content": "是自动发货的，付款后系统会自动发送，请注意查收订单和系统消息，有问题随时找我"
+        },
+        {
+          "role": "buyer",
+          "content": "现在是有货的是吧，直接拍就行"
+        },
+        {
+          "role": "seller",
+          "content": "老板，目前库存以系统显示为准，有货可以直接拍，付款后自动发货，有问题随时找我"
+        },
+        {
+          "role": "buyer",
+          "content": "那就是按标价那个价格拍就行了吧"
+        },
+        {
+          "role": "seller",
+          "content": "对的老板，按商品页面标价拍就行，实际价格以系统显示为准"
+        }
+      ],
+      "status": "completed",
+      "created_at": "2026-09-04T12:37:59+08:00"
+    },
+    {
+      "scenario": "【售前咨询】打招呼与确认在线",
+      "session_index": 20,
+      "turns": [
+        {
+          "role": "buyer",
+          "content": "在吗"
+        },
+        {
+          "role": "seller",
+          "content": "在的，亲，有什么需要了解的吗？随时为您服务~"
+        },
+        {
+          "role": "buyer",
+          "content": "在就好，想问下这个拍了是自动发货吗"
+        },
+        {
+          "role": "seller",
+          "content": "亲，交付方式暂时还需核实，建议以系统显示为准，拍下后联系客服确认哦~"
+        },
+        {
+          "role": "buyer",
+          "content": "哦哦这样，那拍下后大概多久能收到呀"
+        },
+        {
+          "role": "seller",
+          "content": "亲，发货时间暂时无法确认，拍下后请联系客服核实处理哦~"
+        },
+        {
+          "role": "buyer",
+          "content": "那现在是有货能直接拍吗"
+        },
+        {
+          "role": "seller",
+          "content": "亲，目前是否有货以系统显示为准，建议拍前先联系客服确认一下哦~"
+        },
+        {
+          "role": "buyer",
+          "content": "那你现在能帮我看下有货没"
+        },
+        {
+          "role": "seller",
+          "content": "亲，库存情况暂时无法确认，建议联系客服核实后再拍哦~"
+        },
+        {
+          "role": "buyer",
+          "content": "那客服现在在线不"
+        },
+        {
+          "role": "seller",
+          "content": "在的呢，亲，有问题可以直接留言，会尽快为您处理哦~"
+        }
+      ],
+      "status": "completed",
+      "created_at": "2026-09-04T12:38:31+08:00"
+    },
+    {
+      "scenario": "【售前咨询】打招呼与确认在线",
+      "session_index": 21,
+      "turns": [
+        {
+          "role": "buyer",
+          "content": "在吗老板"
+        },
+        {
+          "role": "seller",
+          "content": "在的亲，我在线呢，是想咨询自动发货商品吗？"
+        },
+        {
+          "role": "buyer",
+          "content": "嗯对的，就是想问下这个拍下是自动发的吗"
+        },
+        {
+          "role": "seller",
+          "content": "亲，交付方式以页面显示为准，付款后若没收到请联系客服核实哦"
+        },
+        {
+          "role": "buyer",
+          "content": "那现在是有货的吧，能直接拍吗"
+        },
+        {
+          "role": "seller",
+          "content": "亲，目前有货的，库存以系统为准，可以直接拍哦"
+        },
+        {
+          "role": "buyer",
+          "content": "那拍完大概多久能收到呀"
+        },
+        {
+          "role": "seller",
+          "content": "亲，付款后系统会自动发送的，没收到的话联系客服帮您核实哦"
+        },
+        {
+          "role": "buyer",
+          "content": "哦哦，那这个里面都包含啥呀"
+        },
+        {
+          "role": "seller",
+          "content": "亲，包含内容以商品页面描述为准哦，不确定的可以联系客服帮您核实"
+        },
+        {
+          "role": "buyer",
+          "content": "激活麻烦不，我小白怕搞不定"
+        },
+        {
+          "role": "seller",
+          "content": "亲，不麻烦的，一般按提示操作就行，搞不定联系客服帮您看看哦"
+        }
+      ],
+      "status": "completed",
+      "created_at": "2026-09-04T12:39:02+08:00"
+    }
+  ],
+  "review_required": true,
+  "warning": "这是 AI 合成内容，启用前必须依据真实商品事实人工审核。"
+}

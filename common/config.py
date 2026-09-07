@@ -18,12 +18,20 @@ def _get_int(name: str, default: int) -> int:
         return default
 
 
+def _get_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 @dataclass(frozen=True)
 class Settings:
     """运行配置。默认值用于本地开发,生产由环境变量覆盖。"""
 
     # 运行环境: development / production / test
     environment: str = "development"
+    allow_dev_auth_bypass: bool = True
 
     # MySQL
     mysql_host: str = "127.0.0.1"
@@ -56,6 +64,7 @@ class Settings:
     backend_service_url: str = "http://127.0.0.1:8089"
     websocket_service_url: str = "http://127.0.0.1:8090"
     scheduler_service_url: str = "http://127.0.0.1:8091"
+    update_manifest_url: str = "https://www.gemstory.cn/release/xianyu/latest.json"
     static_dir: str = "./static"
     backup_dir: str = "./backups"
     browser_data_dir: str = "./browser_data"
@@ -79,8 +88,11 @@ class Settings:
     @classmethod
     def from_env(cls) -> "Settings":
         """从环境变量构建配置实例。"""
+        environment = os.getenv("ENVIRONMENT", "development")
         return cls(
-            environment=os.getenv("ENVIRONMENT", "development"),
+            environment=environment,
+            # 生产环境强制关闭免登录管理员身份；本地开发仍可通过显式配置保留旧行为。
+            allow_dev_auth_bypass=environment != "production" and _get_bool("ALLOW_DEV_AUTH_BYPASS", True),
             mysql_host=os.getenv("MYSQL_HOST", "127.0.0.1"),
             mysql_port=_get_int("MYSQL_PORT", 3306),
             mysql_user=os.getenv("MYSQL_USER", "xianyu"),
@@ -101,6 +113,7 @@ class Settings:
             backend_service_url=os.getenv("BACKEND_SERVICE_URL", "http://127.0.0.1:8089"),
             websocket_service_url=os.getenv("WEBSOCKET_SERVICE_URL", "http://127.0.0.1:8090"),
             scheduler_service_url=os.getenv("SCHEDULER_SERVICE_URL", "http://127.0.0.1:8091"),
+            update_manifest_url=os.getenv("UPDATE_MANIFEST_URL", "https://www.gemstory.cn/release/xianyu/latest.json").strip(),
             static_dir=os.getenv("STATIC_DIR", "./static"),
             backup_dir=os.getenv("BACKUP_DIR", "./backups"),
             browser_data_dir=os.getenv("BROWSER_DATA_DIR", "./browser_data"),

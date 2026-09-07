@@ -13,6 +13,7 @@ import { Layers, CheckCircle, XCircle, Clock, Play, Loader2 } from 'lucide-react
 import { useUIStore } from '@/store/uiStore'
 import { publishBatch, getBatchStatus, getMaterials, type ProductMaterial, type BatchAccountStatus } from '@/api/productPublish'
 import { getAccountDetails } from '@/api/accounts'
+import { emitLiveRefresh } from '@/utils/liveRefresh'
 
 interface BatchProgress {
   batch_id: string
@@ -81,6 +82,7 @@ export function BatchPublish() {
           setProgress(res.data)
           if (res.data.finished) {
             if (pollingRef.current) clearInterval(pollingRef.current)
+            if (res.data.success > 0) emitLiveRefresh('items')
             const syncFailedCount = res.data.account_statuses.filter(item => item.sync_status === 'failed').length
             const syncUnknownCount = res.data.account_statuses.filter(item => item.sync_status === 'unknown').length
             const syncProblemCount = syncFailedCount + syncUnknownCount

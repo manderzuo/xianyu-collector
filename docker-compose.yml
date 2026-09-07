@@ -1,7 +1,7 @@
 services:
   mysql:
     image: mysql:8.0
-    container_name: xr-mysql
+    container_name: ${XR_CONTAINER_PREFIX:-xr}-mysql
     restart: unless-stopped
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-change-me-root-password}
@@ -16,7 +16,7 @@ services:
 
   redis:
     image: redis:7-alpine
-    container_name: xr-redis
+    container_name: ${XR_CONTAINER_PREFIX:-xr}-redis
     restart: unless-stopped
     command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:-change-me-redis-password}", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru", "--appendonly", "yes"]
     environment: [TZ=Asia/Shanghai]
@@ -26,7 +26,8 @@ services:
 
   backend:
     build: {context: ., dockerfile: backend/Dockerfile}
-    container_name: xr-backend
+    image: ${XR_IMAGE_REGISTRY:-local}/${XR_IMAGE_NAMESPACE:-xianyu}/xianyu-backend:${XR_IMAGE_TAG:-local}
+    container_name: ${XR_CONTAINER_PREFIX:-xr}-backend
     restart: unless-stopped
     environment:
       ENVIRONMENT: production
@@ -46,8 +47,10 @@ services:
       EXTERNAL_API_KEY: ${EXTERNAL_API_KEY:-}
       WEBSOCKET_SERVICE_URL: http://websocket:8090
       SCHEDULER_SERVICE_URL: http://scheduler:8091
+      UPDATE_MANIFEST_URL: ${UPDATE_MANIFEST_URL:-https://www.gemstory.cn/release/xianyu/latest.json}
       STATIC_DIR: /app/static
       BACKUP_DIR: /app/backups
+      XIANYU_CLOUD_AUTH_URL: ${XIANYU_CLOUD_AUTH_URL:-}
       JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
       TZ: Asia/Shanghai
     volumes: [static-files:/app/static, backup-files:/app/backups]
@@ -58,7 +61,8 @@ services:
 
   websocket:
     build: {context: ., dockerfile: websocket/Dockerfile}
-    container_name: xr-websocket
+    image: ${XR_IMAGE_REGISTRY:-local}/${XR_IMAGE_NAMESPACE:-xianyu}/xianyu-websocket:${XR_IMAGE_TAG:-local}
+    container_name: ${XR_CONTAINER_PREFIX:-xr}-websocket
     restart: unless-stopped
     environment:
       ENVIRONMENT: production
@@ -86,7 +90,8 @@ services:
 
   scheduler:
     build: {context: ., dockerfile: scheduler/Dockerfile}
-    container_name: xr-scheduler
+    image: ${XR_IMAGE_REGISTRY:-local}/${XR_IMAGE_NAMESPACE:-xianyu}/xianyu-scheduler:${XR_IMAGE_TAG:-local}
+    container_name: ${XR_CONTAINER_PREFIX:-xr}-scheduler
     restart: unless-stopped
     environment:
       ENVIRONMENT: production
@@ -115,17 +120,25 @@ services:
 
   frontend:
     build: {context: ., dockerfile: deploy/frontend.Dockerfile}
-    container_name: xr-frontend
+    image: ${XR_IMAGE_REGISTRY:-local}/${XR_IMAGE_NAMESPACE:-xianyu}/xianyu-frontend:${XR_IMAGE_TAG:-local}
+    container_name: ${XR_CONTAINER_PREFIX:-xr}-frontend
     restart: unless-stopped
     ports: ["${FRONTEND_PORT:-9000}:80"]
     networks: [xr-net]
     depends_on: {backend: {condition: service_healthy}}
 
 networks:
-  xr-net: {driver: bridge}
+  xr-net:
+    name: ${XR_NETWORK_NAME:-xr-net}
+    driver: bridge
 volumes:
   mysql_data:
+    name: ${XR_VOLUME_PREFIX:-xr}_mysql_data
   redis_data:
+    name: ${XR_VOLUME_PREFIX:-xr}_redis_data
   static-files:
+    name: ${XR_VOLUME_PREFIX:-xr}_static_files
   backup-files:
+    name: ${XR_VOLUME_PREFIX:-xr}_backup_files
   browser_data:
+    name: ${XR_VOLUME_PREFIX:-xr}_browser_data

@@ -54,6 +54,13 @@ async def init_db() -> None:
         await connection.run_sync(_migrate_user_columns)
         await connection.run_sync(_migrate_order_columns)
         await connection.run_sync(_migrate_scheduled_task_columns)
+        await connection.run_sync(_migrate_registration_invite_columns)
+        await connection.run_sync(_migrate_entitlements_v1)
+
+    # 默认套餐采用幂等种子数据；只补缺失套餐/功能，不覆盖管理员已配置的值。
+    from common.services.entitlements import ensure_default_plans
+    async with async_session_maker() as session:
+        await ensure_default_plans(session)
 
 
 def _migrate_user_columns(connection) -> None:
@@ -71,10 +78,32 @@ def _migrate_user_columns(connection) -> None:
         "account_limit": "INT NULL",
         "balance": "DECIMAL(18, 2) NOT NULL DEFAULT 0",
         "expire_at": "DATETIME NULL",
+        "plan_code": "VARCHAR(32) NOT NULL DEFAULT 'NORMAL'",
+        "plan_expires_at": "DATETIME NULL",
+        "auth_version": "INT NOT NULL DEFAULT 1",
     }
     for name, definition in missing.items():
         if name not in existing:
             connection.execute(text(f"ALTER TABLE xr_users ADD COLUMN {name} {definition}"))
+
+
+def _migrate_entitlements_v1(connection) -> None:
+    """记录权限模型首个版本，便于后续迁移和发布检查。"""
+    connection.execute(text(
+        "CREATE TABLE IF NOT EXISTS xr_schema_migrations ("
+        "version VARCHAR(64) PRIMARY KEY, "
+        "applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP"
+        ")"
+    ))
+    exists = connection.execute(
+        text("SELECT version FROM xr_schema_migrations WHERE version = :version"),
+        {"version": "20260904_entitlements_v1"},
+    ).first()
+    if exists is None:
+        connection.execute(
+            text("INSERT INTO xr_schema_migrations(version) VALUES (:version)"),
+            {"version": "20260904_entitlements_v1"},
+        )
 
 
 def _migrate_order_columns(connection) -> None:
@@ -115,3 +144,13 @@ def _migrate_scheduled_task_columns(connection) -> None:
     existing = {column["name"] for column in inspector.get_columns("xr_scheduled_tasks")}
     if "interval_seconds" not in existing:
         connection.execute(text("ALTER TABLE xr_scheduled_tasks ADD COLUMN interval_seconds INT NULL"))
+
+
+def _migrate_registration_invite_columns(connection) -> None:
+    """给已有邀请码表补齐加密存储列。"""
+    inspector = sqlalchemy_inspect(connection)
+    if "xr_registration_invites" not in inspector.get_table_names():
+        return
+    existing = {column["name"] for column in inspector.get_columns("xr_registration_invites")}
+    if "code_encrypted" not in existing:
+        connection.execute(text("ALTER TABLE xr_registration_invites ADD COLUMN code_encrypted TEXT NULL"))

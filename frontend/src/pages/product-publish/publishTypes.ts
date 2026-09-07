@@ -4,6 +4,11 @@
  */
 import type { MaterialVideo, PlatformCategoryCardData, PlatformCategoryPathItem, PlatformMaterialAttribute } from '@/api/productPublish'
 
+export type InventoryMode = 'verified' | 'candidate' | 'service' | 'single'
+
+/** 闲鱼顶层发布入口：发闲置商品或发服务。 */
+export type PublishType = 'item' | 'service'
+
 export type ShippingMethod = 'free' | 'distance' | 'fixed' | 'template' | 'none'
 
 export interface SpecificationValue {
@@ -66,6 +71,7 @@ export interface PublishForm {
   description: string
   price: string
   original_price: string
+  publish_type: PublishType
   category: string
   platform_category_id: string
   platform_category_name: string
@@ -76,6 +82,10 @@ export interface PublishForm {
   platform_category_path: PlatformCategoryPathItem[]
   platform_card_list: PlatformCategoryCardData[]
   is_service_category: boolean
+  inventory_mode?: InventoryMode
+  inventory_label?: string
+  inventory_reason?: string
+  inventory_price_unit?: string
   platform_attributes: PlatformMaterialAttribute[]
   category_source: 'manual' | 'recommendation'
   category_confidence?: number

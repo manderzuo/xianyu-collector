@@ -78,9 +78,7 @@ async def _online_ids() -> set[str]:
 
 
 async def _get_account(account_id: int, user: dict, db: AsyncSession) -> Account:
-    statement = select(Account).where(Account.id == account_id)
-    if not _is_admin(user):
-        statement = statement.where(Account.user_id == _uid(user))
+    statement = select(Account).where(Account.id == account_id, Account.user_id == _uid(user))
     account = (await db.execute(statement)).scalar_one_or_none()
     if account is None:
         raise HTTPException(status_code=404, detail="账号不存在")
@@ -473,8 +471,7 @@ async def list_chat_accounts(
     db: AsyncSession = Depends(get_session),
 ):
     statement = select(Account).order_by(Account.id.desc())
-    if not _is_admin(user):
-        statement = statement.where(Account.user_id == _uid(user))
+    statement = statement.where(Account.user_id == _uid(user))
     accounts = list((await db.execute(statement)).scalars().all())
     online_ids = await _online_ids()
     start = (page - 1) * page_size
@@ -892,9 +889,7 @@ async def chat_websocket(socket: WebSocket, account_id: int):
         await socket.close(code=1008, reason="登录状态已失效")
         return
     async with async_session_maker() as db:
-        statement = select(Account).where(Account.id == account_id)
-        if not _is_admin(user):
-            statement = statement.where(Account.user_id == _uid(user))
+        statement = select(Account).where(Account.id == account_id, Account.user_id == _uid(user))
         account = (await db.execute(statement)).scalar_one_or_none()
     if account is None:
         await socket.close(code=1008, reason="账号不存在或无权访问")

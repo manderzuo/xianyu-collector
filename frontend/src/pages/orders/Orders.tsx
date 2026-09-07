@@ -5,6 +5,7 @@ import { fetchXianyuOrders, getOrders, deleteOrder, batchDeleteOrders, getOrderD
 import { getAccountDetails } from '@/api/accounts'
 import { useUIStore } from '@/store/uiStore'
 import { useAuthStore } from '@/store/authStore'
+import { useLiveRefresh } from '@/utils/liveRefresh'
 import { PageLoading } from '@/components/common/Loading'
 import { Select } from '@/components/common/Select'
 import { ConfirmModal } from '@/components/common/ConfirmModal'
@@ -129,10 +130,11 @@ export function Orders() {
     currentFilters: OrderFilterParams = filters,
     account: string = selectedAccount,
     status: string = selectedStatus,
+    silent = false,
   ) => {
     if (!_hasHydrated || !isAuthenticated || !token) return
     try {
-      setOrdersLoading(true)
+      if (!silent) setOrdersLoading(true)
       setSelectedOrderIds(new Set())
       const result = await getOrders(account || undefined, status || undefined, page, size, currentFilters)
       if (result.success) {
@@ -144,10 +146,23 @@ export function Orders() {
     } catch {
       addToast({ type: 'error', message: '加载订单列表失败' })
     } finally {
-      setOrdersLoading(false)
+      if (!silent) setOrdersLoading(false)
       setLoading(false)
     }
   }
+
+  useLiveRefresh(
+    () => {
+      if (_hasHydrated && isAuthenticated && token) {
+        return loadOrders(currentPage, pageSize, filters, selectedAccount, selectedStatus, true)
+      }
+    },
+    {
+      topics: ['orders', 'all'],
+      intervalMs: 30000,
+      enabled: _hasHydrated && isAuthenticated && Boolean(token),
+    },
+  )
 
   // 每页条数切换
   const handlePageSizeChange = (newPageSize: number) => {

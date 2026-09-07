@@ -1,7 +1,29 @@
 // 用户相关类型
 export type UserRole = 'ADMIN' | 'OPERATOR' | 'MEMBER'
 
-export type UserStatus = 'ACTIVE' | 'INACTIVE' | 'SUSPENDED' | 'DELETED'
+export type UserStatus = 'ACTIVE' | 'PENDING' | 'INACTIVE' | 'SUSPENDED' | 'DELETED'
+
+export interface EntitlementQuota {
+  feature_key?: string
+  enabled?: boolean
+  limit?: number | null
+  unlimited?: boolean
+  used?: number
+  reserved?: number
+  remaining?: number | null
+  plan?: string
+  source?: string
+  expires_at?: string | null
+}
+
+export interface UserEntitlements {
+  role?: string
+  plan?: string
+  plan_expires_at?: string | null
+  features?: Record<string, boolean>
+  quotas?: Record<string, EntitlementQuota>
+  permissions_version?: number
+}
 
 export interface User {
   user_id: number
@@ -12,6 +34,10 @@ export interface User {
   role?: UserRole
   status?: UserStatus
   account_limit?: number | null
+  plan_code?: string
+  plan_expires_at?: string | null
+  auth_version?: number
+  entitlements?: UserEntitlements
   balance?: string | null
   expire_at?: string | null
 }
@@ -36,6 +62,9 @@ export interface LoginResponse {
   username?: string
   is_admin?: boolean
   account_limit?: number | null
+  role?: UserRole
+  plan_code?: string
+  entitlements?: UserEntitlements
 }
 
 // 账号相关类型

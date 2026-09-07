@@ -1,5 +1,6 @@
 import axios, { AxiosError, AxiosInstance, AxiosRequestConfig, AxiosResponse, InternalAxiosRequestConfig } from 'axios'
 import { useAuthStore } from '@/store/authStore'
+import { notifyVipContentIfNeeded } from '@/utils/vipContent'
 
 // 创建 axios 实例
 const request: AxiosInstance = axios.create({
@@ -56,6 +57,8 @@ request.interceptors.response.use(
   },
   async (error: AxiosError) => {
     const originalRequest = error.config as InternalAxiosRequestConfig & { _retry?: boolean }
+
+    notifyVipContentIfNeeded(error.response?.status, error.response?.data)
 
     // 如果是401错误且不是刷新Token接口
     if (error.response?.status === 401 && originalRequest && !originalRequest._retry) {

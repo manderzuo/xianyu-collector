@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.dependencies import get_current_user
 from backend.app.core.response import ok
+from backend.app.services.entitlements import FEATURE_CARD_AUTO_DELIVERY, finalize_quota, reserve_quota
 from common.config import settings
 from common.db.session import get_session
 from common.models import FeatureRecord
@@ -98,14 +99,25 @@ async def create_card(payload: dict[str, Any] | None = Body(default=None), user=
     data = dict(payload or {})
     if not str(data.get("name") or "").strip():
         raise HTTPException(status_code=422, detail="卡券名称不能为空")
+    external_id = uuid4().hex
+    reservation = None
+    if bool(data.get("enabled", True)):
+        reservation = await reserve_quota(
+            db,
+            user,
+            FEATURE_CARD_AUTO_DELIVERY,
+            resource_key=f"card:{external_id}",
+            idempotency_key=f"card:create:{external_id}",
+        )
     item = FeatureRecord(
         owner_id=_uid(user),
         feature=FEATURE,
-        external_id=uuid4().hex,
+        external_id=external_id,
         status="active" if data.get("enabled", True) else "disabled",
         payload=data,
     )
     db.add(item)
+    finalize_quota(reservation)
     await db.commit()
     await db.refresh(item)
     return ok(_serialize(item), "卡券创建成功")
@@ -202,10 +214,21 @@ async def update_card_items(card_id: int, payload: dict[str, Any] | None = Body(
 async def update_card(card_id: int, payload: dict[str, Any] | None = Body(default=None), user=Depends(get_current_user), db: AsyncSession = Depends(get_session)):
     card = await _get_card(card_id, user, db)
     data = dict(card.payload or {})
+    was_enabled = card.status == "active" and bool(data.get("enabled", True))
     data.update(payload or {})
+    reservation = None
+    if bool(data.get("enabled", True)) and not was_enabled:
+        reservation = await reserve_quota(
+            db,
+            user,
+            FEATURE_CARD_AUTO_DELIVERY,
+            resource_key=f"card:{card_id}",
+            idempotency_key=f"card:enable:{card_id}:{card.updated_at or card_id}",
+        )
     if "enabled" in data:
         card.status = "active" if data["enabled"] else "disabled"
     card.payload = data
+    finalize_quota(reservation)
     await db.commit()
     await db.refresh(card)
     return ok(_serialize(card), "卡券更新成功")
