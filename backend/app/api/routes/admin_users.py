@@ -120,6 +120,31 @@ def _serialize(user: User, account_count: int = 0) -> dict[str, Any]:
     }
 
 
+def _serialize_remote_user(item: dict[str, Any]) -> dict[str, Any]:
+    """Map a cloud approval user to the shape used by the local admin page."""
+    status = str(item.get("status") or "").lower()
+    return {
+        "id": item.get("id"), "user_id": item.get("id"), "username": item.get("username"),
+        "nickname": item.get("employee_name"), "email": None, "phone": None,
+        "role": "ADMIN" if item.get("role") == "admin" else "MEMBER",
+        "status": {"approved": "ACTIVE", "pending": "PENDING", "rejected": "INACTIVE", "disabled": "INACTIVE"}.get(status, "INACTIVE"),
+        "is_admin": item.get("role") == "admin", "account_limit": None, "plan_code": "NORMAL",
+        "plan_expires_at": None, "balance": "0.00", "expire_at": None, "account_count": 0,
+        "created_at": item.get("created_at"), "updated_at": item.get("approved_at"),
+    }
+
+
+async def _list_remote_users(user: dict[str, Any], *, username: str | None, limit: int, offset: int) -> dict[str, Any] | None:
+    if not cloud_auth_url() or not user.get("cloud_session_token"):
+        return None
+    remote = await cloud_auth_request("list_users", {}, str(user["cloud_session_token"]))
+    items = [_serialize_remote_user(item) for item in (remote or {}).get("items", [])]
+    term = (username or "").strip().lower()
+    if term:
+        items = [item for item in items if term in str(item.get("username") or "").lower()]
+    return {"items": items[offset:offset + limit], "total": len(items), "offset": offset, "limit": limit}
+
+
 def _apply_payload(user: User, payload: dict[str, Any], *, creating: bool) -> None:
     if creating:
         username = str(payload.get("username") or "").strip()
@@ -186,6 +211,9 @@ async def list_users(
     db: AsyncSession = Depends(get_session),
 ):
     _require_admin(user)
+    remote_items = await _list_remote_users(user, username=username, limit=limit, offset=offset)
+    if remote_items is not None:
+        return ok(remote_items, "用户查询成功")
     statement = select(User)
     count_statement = select(func.count()).select_from(User)
     if username and username.strip():
@@ -212,22 +240,8 @@ async def create_user(
 ):
     _require_admin(user)
     if cloud_auth_url() and user.get("cloud_session_token"):
-        remote = await cloud_auth_request("list_users", {}, str(user.get("cloud_session_token")))
-        remote_items = []
-        for item in (remote or {}).get("items", []):
-            remote_items.append({
-                "id": item.get("id"), "user_id": item.get("id"), "username": item.get("username"),
-                "nickname": item.get("employee_name"), "email": None, "phone": None,
-                "role": "ADMIN" if item.get("role") == "admin" else "MEMBER",
-                "status": {"approved": "ACTIVE", "pending": "PENDING", "rejected": "INACTIVE", "disabled": "INACTIVE"}.get(item.get("status"), "INACTIVE"),
-                "is_admin": item.get("role") == "admin", "account_limit": None, "plan_code": "NORMAL",
-                "plan_expires_at": None, "balance": "0.00", "expire_at": None, "account_count": 0,
-                "created_at": item.get("created_at"), "updated_at": item.get("approved_at"),
-            })
-        term = (username or "").strip().lower()
-        if term:
-            remote_items = [item for item in remote_items if term in str(item.get("username") or "").lower()]
-        return ok({"items": remote_items[offset:offset + limit], "total": len(remote_items), "offset": offset, "limit": limit}, "用户查询成功")
+        remote_items = await _list_remote_users(user, username=username, limit=limit, offset=offset)
+        return ok(remote_items or {"items": [], "total": 0, "offset": offset, "limit": limit}, "用户查询成功")
     values = payload or {}
     await _validate_plan(db, values)
     item = User(username="", password_hash="", role="user", plan_code="NORMAL", status=1)
