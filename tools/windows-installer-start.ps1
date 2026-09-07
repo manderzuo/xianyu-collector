@@ -5,6 +5,7 @@ $ComposeFile = Join-Path $AppRoot 'docker-compose.yml'
 $EnvFile = Join-Path $AppRoot '.env'
 $UpdateChecker = Join-Path $AppRoot 'deploy\check-xianyu-update.ps1'
 $DbCredentialSync = Join-Path $AppRoot 'deploy\sync-xianyu-db-credentials.ps1'
+$ProtocolRegistrar = Join-Path $AppRoot 'deploy\register-xianyu-update-protocol.ps1'
 $DockerBootstrap = Join-Path $PackageRoot 'resources\docker-bootstrap.ps1'
 $Desktop = [Environment]::GetFolderPath('Desktop')
 $ShortcutTitle = -join ([char[]](0x95f2, 0x9c7c, 0x7ba1, 0x7406, 0x7cfb, 0x7edf))
@@ -52,6 +53,9 @@ if (-not (Test-Path -LiteralPath $EnvFile)) {
     exit 1
 }
 Update-DesktopShortcut
+if (Test-Path -LiteralPath $ProtocolRegistrar) {
+    try { & $ProtocolRegistrar -ProjectRoot $AppRoot } catch { Write-Host "[xianyu] Update protocol registration skipped: $($_.Exception.Message)" -ForegroundColor Yellow }
+}
 try { & $DockerBootstrap } catch { Write-Host "[xianyu] $($_.Exception.Message)" -ForegroundColor Red; exit 1 }
 
 if (Test-Path -LiteralPath $DbCredentialSync) {

@@ -4,6 +4,7 @@ $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $ComposeFile = Join-Path $ProjectRoot 'docker-compose.yml'
 $EnvExample = Join-Path $ProjectRoot '.env.example'
 $EnvFile = Join-Path $ProjectRoot '.env'
+$ProtocolRegistrar = Join-Path $PSScriptRoot 'register-xianyu-update-protocol.ps1'
 
 function Write-Step([string]$Message) {
     Write-Host "[xianyu] $Message" -ForegroundColor Cyan
@@ -75,6 +76,10 @@ function Get-FreePort([int]$StartPort, [int[]]$UsedPorts) {
 if (-not (Test-Command 'docker')) { Fail 'Docker CLI was not found. Install and start Docker Desktop first.' }
 if (-not (Test-Path $ComposeFile)) { Fail 'docker-compose.yml was not found beside this script.' }
 if (-not (Test-Path $EnvExample)) { Fail '.env.example was not found.' }
+
+if (Test-Path -LiteralPath $ProtocolRegistrar) {
+    & $ProtocolRegistrar -ProjectRoot $ProjectRoot
+}
 
 try {
     docker info | Out-Null

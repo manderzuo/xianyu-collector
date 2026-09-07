@@ -7,6 +7,7 @@ $EnvFile = Join-Path $AppRoot '.env'
 $DockerBootstrap = Join-Path $PackageRoot 'resources\docker-bootstrap.ps1'
 $WslBootstrap = Join-Path $PackageRoot 'resources\prepare-wsl.ps1'
 $DbCredentialSync = Join-Path $AppRoot 'deploy\sync-xianyu-db-credentials.ps1'
+$ProtocolRegistrar = Join-Path $AppRoot 'deploy\register-xianyu-update-protocol.ps1'
 
 function Fail([string]$Message) {
     Write-Host "[xianyu] ERROR: $Message" -ForegroundColor Red
@@ -116,6 +117,9 @@ $containerPrefix = $envMap['XR_CONTAINER_PREFIX']
 
 if (Test-Path -LiteralPath $DbCredentialSync) {
     & $DbCredentialSync -ProjectRoot $AppRoot
+}
+if (Test-Path -LiteralPath $ProtocolRegistrar) {
+    & $ProtocolRegistrar -ProjectRoot $AppRoot
 }
 $ownedContainers = @(docker ps -a --format '{{.Names}}' | Where-Object { $_ -like "$containerPrefix-*" })
 $ports = @()

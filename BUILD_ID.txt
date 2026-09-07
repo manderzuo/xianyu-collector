@@ -1,1 +1,1 @@
-20260908-1.0.8-cloud-session-sync
+20260908-1.0.9-web-update-launcher

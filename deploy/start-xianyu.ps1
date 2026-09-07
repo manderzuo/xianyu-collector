@@ -7,6 +7,7 @@ $ShortcutTitle = -join ([char[]](0x95f2, 0x9c7c, 0x7ba1, 0x7406, 0x7cfb, 0x7edf)
 $ShortcutPath = Join-Path $Desktop "$ShortcutTitle.lnk"
 $OldShortcutPath = Join-Path $Desktop 'Xianyu System.lnk'
 $IconPath = Join-Path $ProjectRoot 'assets\xianyu-launcher.ico'
+$ProtocolRegistrar = Join-Path $PSScriptRoot 'register-xianyu-update-protocol.ps1'
 
 function Remove-StaleXianyuShortcuts {
     param([string]$KeepPath)
@@ -50,6 +51,9 @@ if (-not (Test-Path $EnvFile)) {
 
 & (Join-Path $PSScriptRoot 'sync-xianyu-db-credentials.ps1') -ProjectRoot $ProjectRoot
 Update-DesktopShortcut
+if (Test-Path -LiteralPath $ProtocolRegistrar) {
+    try { & $ProtocolRegistrar -ProjectRoot $ProjectRoot } catch { Write-Host "[xianyu] Update protocol registration skipped: $($_.Exception.Message)" -ForegroundColor Yellow }
+}
 
 & (Join-Path $PSScriptRoot 'check-xianyu-update.ps1')
 

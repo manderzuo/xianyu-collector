@@ -34,6 +34,11 @@ function splitDescriptionLines(description: string): string[] {
 export function UpdateModal({ info, onClose }: UpdateModalProps) {
   const changeLines = splitDescriptionLines(info.description)
 
+  const startDesktopUpdate = () => {
+    const version = encodeURIComponent(info.remote_version)
+    window.location.href = `xianyu-update://install?version=${version}`
+  }
+
   return (
     <div className="modal-overlay">
       <div className="modal-content max-w-lg">
@@ -88,7 +93,7 @@ export function UpdateModal({ info, onClose }: UpdateModalProps) {
 
           <div className="p-3 bg-blue-50 dark:bg-blue-900/20 rounded-lg">
             <p className="text-xs text-blue-600 dark:text-blue-400">
-              <strong>提示：</strong>请关闭此提示后重新启动桌面启动器，启动时系统会拉取并应用更新。
+              <strong>提示：</strong>点击“立即更新”将唤起本机更新程序。首次使用时，请允许浏览器打开“闲鱼管理系统更新”。
             </p>
           </div>
         </div>
@@ -99,6 +104,14 @@ export function UpdateModal({ info, onClose }: UpdateModalProps) {
             className="btn-ios-secondary"
           >
             关闭
+          </button>
+          <button
+            type="button"
+            onClick={startDesktopUpdate}
+            className="btn-ios-primary"
+          >
+            <ArrowUpCircle className="w-4 h-4" />
+            立即更新
           </button>
         </div>
       </div>
