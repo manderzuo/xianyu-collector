@@ -22,5 +22,10 @@ foreach ($line in Get-Content -LiteralPath $EnvFile) {
 }
 if (-not $Force -and "$($envMap['UPDATE_CHECK_ON_START'])".ToLowerInvariant() -eq 'false') { exit 0 }
 
-& $GuiScript -ProjectRoot $ProjectRoot -Force:$Force
-exit $LASTEXITCODE
+# The launcher itself runs hidden to avoid a console window.  Start the GUI in
+# a separate visible process; otherwise Windows may keep the WinForms window
+# hidden on machines where the parent PowerShell process is hidden.
+$guiArguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $GuiScript, '-ProjectRoot', $ProjectRoot)
+if ($Force) { $guiArguments += '-Force' }
+$guiProcess = Start-Process -FilePath 'powershell.exe' -ArgumentList $guiArguments -WindowStyle Normal -Wait -PassThru
+exit $guiProcess.ExitCode
