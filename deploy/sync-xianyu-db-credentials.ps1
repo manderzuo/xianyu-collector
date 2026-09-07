@@ -45,6 +45,12 @@ if (-not (Test-Path -LiteralPath $ComposeFile) -or -not (Test-Path -LiteralPath 
 
 try {
     $mysqlId = (& docker compose --project-directory $ProjectRoot --env-file $EnvFile -f $ComposeFile ps -aq mysql 2>$null | Select-Object -First 1).Trim()
+    if (-not $mysqlId) {
+        $envMap = Get-EnvMap $EnvFile
+        $prefix = "$($envMap['XR_CONTAINER_PREFIX'])".Trim()
+        if ([string]::IsNullOrWhiteSpace($prefix)) { $prefix = 'xr' }
+        $mysqlId = (docker ps -aq --filter "name=^/${prefix}-mysql$" | Select-Object -First 1).Trim()
+    }
     if (-not $mysqlId) { exit 0 }
 
     $containerEnv = @(docker inspect $mysqlId --format '{{range .Config.Env}}{{println .}}{{end}}')
