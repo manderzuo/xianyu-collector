@@ -20,8 +20,6 @@ $envMap = @{}
 foreach ($line in Get-Content -LiteralPath $EnvFile) {
     if ($line -match '^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$') { $envMap[$Matches[1]] = $Matches[2] }
 }
-if (-not $Force -and "$($envMap['UPDATE_CHECK_ON_START'])".ToLowerInvariant() -eq 'false') { exit 0 }
-
 # The launcher itself runs hidden to avoid a console window.  Start the GUI in
 # a separate visible process; otherwise Windows may keep the WinForms window
 # hidden on machines where the parent PowerShell process is hidden.
