@@ -133,6 +133,8 @@ try {
     Set-EnvValue $EnvFile 'XR_IMAGE_NAMESPACE' $namespace
     Set-EnvValue $EnvFile 'XR_IMAGE_TAG' $tag
 
+    & (Join-Path $PSScriptRoot 'sync-xianyu-db-credentials.ps1') -ProjectRoot $ProjectRoot
+
     Write-UpdateLog 'pull_start'
     docker compose --project-directory $ProjectRoot --env-file $EnvFile -f $ComposeFile pull
     if ($LASTEXITCODE -ne 0) { throw 'Image pull failed. Check registry login and network.' }

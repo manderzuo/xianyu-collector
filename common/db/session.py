@@ -14,6 +14,8 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 from sqlalchemy import inspect as sqlalchemy_inspect, text
+from fastapi import HTTPException, status
+from sqlalchemy.exc import SQLAlchemyError
 
 from common.config import settings
 from common.db.base import Base
@@ -37,8 +39,14 @@ async_session_maker = async_sessionmaker(
 
 async def get_session() -> AsyncGenerator[AsyncSession, None]:
     """FastAPI 依赖项:为一次请求提供一个数据库会话,自动关闭。"""
-    async with async_session_maker() as session:
-        yield session
+    try:
+        async with async_session_maker() as session:
+            yield session
+    except SQLAlchemyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="本机数据库连接失败，请重新启动应用或检查 Docker 数据库配置",
+        ) from exc
 
 
 async def init_db() -> None:

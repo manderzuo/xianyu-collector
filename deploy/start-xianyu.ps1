@@ -47,6 +47,8 @@ if (-not (Test-Path $EnvFile)) {
     Write-Host '[xianyu] Local environment is missing. Run install-xianyu.bat first.' -ForegroundColor Red
     exit 1
 }
+
+& (Join-Path $PSScriptRoot 'sync-xianyu-db-credentials.ps1') -ProjectRoot $ProjectRoot
 Update-DesktopShortcut
 
 & (Join-Path $PSScriptRoot 'check-xianyu-update.ps1')

@@ -115,6 +115,11 @@ if (-not $envMap.ContainsKey('COMPOSE_PROJECT_NAME') -or [string]::IsNullOrWhite
 
 $envMap = Get-EnvMap $EnvFile
 $containerPrefix = $envMap['XR_CONTAINER_PREFIX']
+
+# If this installation reuses an existing MySQL volume, preserve the
+# credentials that were used when that database was initialized.
+& (Join-Path $PSScriptRoot 'sync-xianyu-db-credentials.ps1') -ProjectRoot $ProjectRoot
+
 $ownedContainers = @()
 try {
     $ownedContainers = @(docker ps -a --format '{{.Names}}' | Where-Object { $_ -like "$containerPrefix-*" })
