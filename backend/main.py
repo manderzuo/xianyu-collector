@@ -71,7 +71,7 @@ from backend.app.api.routes.qrcode import router as qrcode_router
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("xr.backend")
-app = FastAPI(title=f"{settings.brand_name} API", version="1.0.6", docs_url="/docs", redoc_url="/redoc")
+app = FastAPI(title=f"{settings.brand_name} API", version="1.0.7", docs_url="/docs", redoc_url="/redoc")
 
 origins = [item.strip() for item in settings.cors_origins.split(",") if item.strip()]
 app.add_middleware(CORSMiddleware, allow_origins=origins or ["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])

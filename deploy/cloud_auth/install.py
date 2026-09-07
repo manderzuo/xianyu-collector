@@ -14,6 +14,13 @@ stamp = datetime.now().strftime('%Y%m%d%H%M%S')
 subprocess.run(['id', 'xianyu-auth'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0 or subprocess.run(['useradd', '--system', '--no-create-home', '--shell', '/usr/sbin/nologin', 'xianyu-auth'], check=True)
 root.mkdir(parents=True, exist_ok=True)
 data.mkdir(parents=True, exist_ok=True)
+session_key = data / 'session.key'
+if not session_key.exists():
+    session_key.write_text(secrets.token_urlsafe(48) + '\n')
+    session_key.chmod(0o600)
+session_env = data / 'session.env'
+session_env.write_text('XIANYU_CLOUD_SESSION_KEY=' + session_key.read_text().strip() + '\n')
+session_env.chmod(0o600)
 db = data / 'server.db'
 if db.exists():
     with sqlite3.connect(db) as source, sqlite3.connect(data / ('backup-' + stamp + '.db')) as target:
@@ -23,6 +30,7 @@ for name in ['server.py', 'auth_store.py', 'admin.html']:
     if target.exists():
         shutil.copy2(target, root / (name + '.bak-' + stamp))
     shutil.copy2(Path(__file__).parent / name, target)
+subprocess.run(['/usr/bin/python3', '-m', 'pip', 'install', '--disable-pip-version-check', '-r', str(Path(__file__).parent / 'requirements.txt')], check=True)
 # Only seed the independent administrator on first install, preserving the
 # collector administrator's password hash without printing or copying its users.
 if not db.exists():
@@ -50,6 +58,7 @@ After=network-online.target
 User=xianyu-auth
 Group=xianyu-auth
 WorkingDirectory=/opt/gemstory/xianyu-auth
+EnvironmentFile=/var/lib/gemstory/xianyu-auth/session.env
 ExecStart=/usr/bin/python3 /opt/gemstory/xianyu-auth/server.py --db /var/lib/gemstory/xianyu-auth/server.db --port 8766
 Restart=on-failure
 NoNewPrivileges=true
@@ -74,7 +83,7 @@ if 'location ^~ /api/xianyu/' not in old:
         proxy_pass http://127.0.0.1:8766;
         proxy_set_header Host $host;
         proxy_read_timeout 15s;
-        client_max_body_size 8k;
+        client_max_body_size 256k;
     }
 
 '''

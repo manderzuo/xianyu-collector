@@ -15,6 +15,7 @@ import os
 import secrets
 import sqlite3
 import threading
+from cryptography.fernet import Fernet, InvalidToken
 from datetime import datetime, timedelta
 from typing import Any, Mapping
 
@@ -61,6 +62,14 @@ class AuthStore:
     @staticmethod
     def _now() -> str:
         return datetime.now().astimezone().isoformat(timespec="seconds")
+
+    @staticmethod
+    def _session_fernet() -> Fernet:
+        seed = os.environ.get("XIANYU_CLOUD_SESSION_KEY", "").strip()
+        if not seed:
+            raise AuthError("configuration_error", "云端会话加密密钥未配置")
+        key = base64.urlsafe_b64encode(hashlib.sha256(seed.encode("utf-8")).digest())
+        return Fernet(key)
 
     def ensure_schema(self) -> None:
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
@@ -119,6 +128,26 @@ class AuthStore:
                       expires_at TEXT NOT NULL,
                       revoked_at TEXT,
                       FOREIGN KEY(user_id) REFERENCES app_users(id)
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS app_account_sessions (
+                      id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      owner_user_id INTEGER NOT NULL,
+                      account_key TEXT NOT NULL,
+                      account_name TEXT NOT NULL,
+                      ciphertext TEXT NOT NULL,
+                      device_id TEXT NOT NULL,
+                      metadata_json TEXT NOT NULL DEFAULT '{}',
+                      revision INTEGER NOT NULL DEFAULT 1,
+                      status TEXT NOT NULL DEFAULT 'active',
+                      last_validated_at TEXT,
+                      created_at TEXT NOT NULL,
+                      updated_at TEXT NOT NULL,
+                      UNIQUE(owner_user_id, account_key),
+                      FOREIGN KEY(owner_user_id) REFERENCES app_users(id)
                     )
                     """
                 )
@@ -444,6 +473,74 @@ class AuthStore:
                 "WHERE token_hash = ? AND revoked_at IS NULL",
                 (self._now(), self._session_hash(raw)),
             )
+            conn.commit()
+        finally:
+            conn.close()
+
+    @staticmethod
+    def _session_public(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "id": int(row["id"]), "account_key": str(row["account_key"]),
+            "account_name": str(row["account_name"]), "device_id": str(row["device_id"]),
+            "metadata": json.loads(row["metadata_json"] or "{}"),
+            "revision": int(row["revision"] or 1), "status": str(row["status"] or "active"),
+            "last_validated_at": row["last_validated_at"], "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
+    def list_account_sessions(self, owner_user_id: int) -> list[dict[str, Any]]:
+        conn = self._connect()
+        try:
+            rows = conn.execute("SELECT * FROM app_account_sessions WHERE owner_user_id = ? ORDER BY id DESC", (int(owner_user_id),)).fetchall()
+            return [self._session_public(row) for row in rows]
+        finally:
+            conn.close()
+
+    def save_account_session(self, owner_user_id: int, payload: Mapping[str, Any]) -> dict[str, Any]:
+        account_key = self._text(payload.get("account_key"), "账号标识", 128)
+        account_name = self._text(payload.get("account_name") or account_key, "账号名称", 64)
+        session_payload = payload.get("session_payload")
+        if not isinstance(session_payload, Mapping):
+            raise AuthError("invalid_input", "会话内容无效")
+        try:
+            ciphertext = self._session_fernet().encrypt(json.dumps(dict(session_payload), ensure_ascii=False).encode("utf-8")).decode("ascii")
+        except (TypeError, ValueError) as exc:
+            raise AuthError("invalid_input", "会话内容无法加密") from exc
+        device_id = self._text(payload.get("device_id"), "设备标识", 128)
+        metadata = payload.get("metadata") if isinstance(payload.get("metadata"), Mapping) else {}
+        now = self._now()
+        conn = self._connect()
+        try:
+            row = conn.execute("SELECT id, revision FROM app_account_sessions WHERE owner_user_id = ? AND account_key = ?", (int(owner_user_id), account_key)).fetchone()
+            if row is None:
+                conn.execute("INSERT INTO app_account_sessions(owner_user_id, account_key, account_name, ciphertext, device_id, metadata_json, revision, last_validated_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)", (int(owner_user_id), account_key, account_name, ciphertext, device_id, json.dumps(metadata, ensure_ascii=False), now, now, now))
+            else:
+                conn.execute("UPDATE app_account_sessions SET account_name=?, ciphertext=?, device_id=?, metadata_json=?, revision=?, status='active', last_validated_at=?, updated_at=? WHERE id=? AND owner_user_id=?", (account_name, ciphertext, device_id, json.dumps(metadata, ensure_ascii=False), int(row["revision"] or 1) + 1, now, now, int(row["id"]), int(owner_user_id)))
+            conn.commit()
+            saved = conn.execute("SELECT * FROM app_account_sessions WHERE owner_user_id=? AND account_key=?", (int(owner_user_id), account_key)).fetchone()
+            return self._session_public(saved)
+        finally:
+            conn.close()
+
+    def get_account_session(self, owner_user_id: int, session_id: int) -> dict[str, Any]:
+        conn = self._connect()
+        try:
+            row = conn.execute("SELECT * FROM app_account_sessions WHERE owner_user_id=? AND id=? AND status='active'", (int(owner_user_id), int(session_id))).fetchone()
+            if row is None:
+                raise AuthError("not_found", "云端登录会话不存在")
+            result = self._session_public(row)
+            try:
+                result["session_payload"] = json.loads(self._session_fernet().decrypt(str(row["ciphertext"]).encode("ascii")).decode("utf-8"))
+            except (InvalidToken, ValueError, UnicodeError) as exc:
+                raise AuthError("configuration_error", "云端会话无法解密") from exc
+            return result
+        finally:
+            conn.close()
+
+    def delete_account_session(self, owner_user_id: int, session_id: int) -> None:
+        conn = self._connect()
+        try:
+            conn.execute("UPDATE app_account_sessions SET status='revoked', updated_at=? WHERE owner_user_id=? AND id=?", (self._now(), int(owner_user_id), int(session_id)))
             conn.commit()
         finally:
             conn.close()

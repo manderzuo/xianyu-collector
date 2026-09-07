@@ -167,6 +167,43 @@ export const updateAccountCookie = (id: string, value: string): Promise<ApiRespo
   return put(`/api/v1/accounts/${id}`, { cookie: value })
 }
 
+export interface CloudSessionSummary {
+  id: number
+  account_key: string
+  account_name: string
+  device_id: string
+  revision: number
+  status: string
+  last_validated_at?: string | null
+  updated_at?: string | null
+}
+
+const getDeviceId = (): string => {
+  const key = 'xianyu_device_id'
+  const existing = localStorage.getItem(key)
+  if (existing) return existing
+  const value = crypto.randomUUID()
+  localStorage.setItem(key, value)
+  return value
+}
+
+export const listCloudSessions = async (): Promise<CloudSessionSummary[]> => {
+  const result = await get<ApiResponse<{ items?: CloudSessionSummary[] }>>('/api/v1/accounts/cloud-sessions')
+  return result.data?.items || []
+}
+
+export const syncCloudSession = (id: string): Promise<ApiResponse<CloudSessionSummary>> => {
+  return post(`/api/v1/accounts/${id}/cloud-sync`, undefined, { headers: { 'X-Device-ID': getDeviceId() } })
+}
+
+export const restoreCloudSession = (sessionId: number): Promise<ApiResponse> => {
+  return post(`/api/v1/accounts/cloud-sessions/${sessionId}/restore`)
+}
+
+export const revokeCloudSession = (sessionId: number): Promise<ApiResponse> => {
+  return del(`/api/v1/accounts/cloud-sessions/${sessionId}`)
+}
+
 // 更新账号启用/禁用状态
 export const updateAccountStatus = (id: string, enabled: boolean): Promise<ApiResponse> => {
   return patch(`/api/v1/accounts/${id}/status?status=${enabled ? 'active' : 'inactive'}`)

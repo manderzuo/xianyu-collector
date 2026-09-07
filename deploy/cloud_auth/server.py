@@ -39,7 +39,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(404, {'ok': False, 'message': '接口不存在'})
         try:
             length = int(self.headers.get('Content-Length', '0'))
-            if not 0 < length <= 8192:
+            if not 0 < length <= 262144:
                 return self.reply(413, {'ok': False, 'message': '请求大小无效'})
             body = json.loads(self.rfile.read(length))
             if not isinstance(body, dict):
@@ -67,6 +67,15 @@ class Handler(BaseHTTPRequestHandler):
                 if requested != user['id'] and user['role'] != 'admin':
                     return self.reply(403, {'ok': False, 'message': '只有管理员可以查看其他账号权限'})
                 return self.reply(200, {'ok': True, **store.get_entitlements(requested)})
+            if action == 'list_account_sessions':
+                return self.reply(200, {'ok': True, 'items': store.list_account_sessions(user['id'])})
+            if action == 'sync_account_session':
+                return self.reply(200, {'ok': True, 'session': store.save_account_session(user['id'], body)})
+            if action == 'get_account_session':
+                return self.reply(200, {'ok': True, 'session': store.get_account_session(user['id'], int(body.get('session_id') or 0))})
+            if action == 'delete_account_session':
+                store.delete_account_session(user['id'], int(body.get('session_id') or 0))
+                return self.reply(200, {'ok': True, 'deleted': True})
             if user['role'] != 'admin':
                 return self.reply(403, {'ok': False, 'message': '只有管理员可以审批'})
             if action == 'list_users':

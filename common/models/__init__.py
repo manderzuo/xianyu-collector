@@ -18,6 +18,7 @@ from common.models.card_delivery import CardDeliveryRecord
 from common.models.risk_logs import RiskLog
 from common.models.notifications import Notification
 from common.models.account_cookies import AccountCookie
+from common.models.cloud_sessions import CloudAccountSession
 from common.models.rules import KeywordRule, DefaultReply
 from common.models.catalog import Material, PublishLog, PublishAddress, CrawlItem
 from common.models.monitor import MonitorTask, MonitorItem
@@ -47,7 +48,7 @@ __all__ = [
     "Order", "CardDeliveryRecord",
     "RiskLog",
     "Notification",
-    "AccountCookie", "KeywordRule", "DefaultReply", "Material", "PublishLog",
+    "AccountCookie", "CloudAccountSession", "KeywordRule", "DefaultReply", "Material", "PublishLog",
     "PublishAddress", "CrawlItem", "MonitorTask", "MonitorItem", "ScheduledTask",
     "Upload", "Announcement", "Advertisement", "Feedback", "SystemSetting", "ExternalConnection",
     "GoofishCrawlJob", "GoofishCrawlResult",

@@ -352,6 +352,19 @@ export function Sidebar({ systemName = '闲鱼管理系统' }: SidebarProps) {
           ))}
         </nav>
 
+        {/* Version is always visible so support can identify the running build. */}
+        <NavLink
+          to="/about"
+          title={`当前版本 v${__APP_VERSION__}`}
+          className={cn(
+            'mx-3 mb-2 flex items-center rounded-md text-xs text-slate-400 hover:text-blue-500 dark:text-slate-500 dark:hover:text-blue-400',
+            showLabel ? 'justify-between px-2 py-1.5' : 'justify-center px-1 py-1.5'
+          )}
+        >
+          {showLabel && <span>当前版本</span>}
+          <span className="font-mono">v{__APP_VERSION__}</span>
+        </NavLink>
+
         {/* Collapse toggle button */}
         <div className="hidden lg:flex items-center justify-center p-2 border-t border-slate-200 dark:border-slate-700">
           <button
