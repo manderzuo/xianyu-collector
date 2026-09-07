@@ -177,13 +177,23 @@ for ($i = 0; $i -lt 90; $i++) {
 if (-not $ready) { Write-Host '[xianyu] WARNING: frontend did not respond within the wait period.' -ForegroundColor Yellow }
 
 $desktop = [Environment]::GetFolderPath('Desktop')
-$shortcutPath = Join-Path $desktop 'Xianyu System.lnk'
+$shortcutTitle = -join ([char[]](0x95f2, 0x9c7c, 0x7ba1, 0x7406, 0x7cfb, 0x7edf))
+$shortcutPath = Join-Path $desktop "$shortcutTitle.lnk"
+$oldShortcutPath = Join-Path $desktop 'Xianyu System.lnk'
+$iconPath = Join-Path $PackageRoot 'xianyu-launcher.ico'
+if (-not (Test-Path -LiteralPath $iconPath)) {
+    $iconPath = Join-Path $PackageRoot 'assets\xianyu-launcher.ico'
+}
+if (Test-Path -LiteralPath $oldShortcutPath) {
+    Remove-Item -LiteralPath $oldShortcutPath -Force
+}
 $shell = New-Object -ComObject WScript.Shell
 $shortcut = $shell.CreateShortcut($shortcutPath)
 $shortcut.TargetPath = Join-Path $env:SystemRoot 'System32\cmd.exe'
 $shortcut.Arguments = "/c `"$(Join-Path $PackageRoot 'start.bat')`""
 $shortcut.WorkingDirectory = $PackageRoot
-$shortcut.Description = 'Start Xianyu system'
+$shortcut.Description = $shortcutTitle
+if (Test-Path -LiteralPath $iconPath) { $shortcut.IconLocation = "$iconPath,0" }
 $shortcut.Save()
 
 Write-Host '[xianyu] Installation completed.' -ForegroundColor Green

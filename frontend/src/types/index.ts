@@ -281,7 +281,6 @@ export interface SystemSettings {
   'runtime.is_exe_mode'?: boolean
   default_reply?: string
   registration_enabled?: boolean
-  show_default_login_info?: boolean
   login_captcha_enabled?: boolean
   'disclaimer.title'?: string
   'disclaimer.content'?: string

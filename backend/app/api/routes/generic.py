@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
+import secrets
 from typing import Any
 from uuid import uuid4
 
@@ -94,7 +95,7 @@ def _defaults(resource: str, payload: dict[str, Any], user_id: int) -> dict[str,
     data = dict(payload)
     if resource == "users":
         data.setdefault("username", f"user_{uuid4().hex[:8]}")
-        data["password_hash"] = hash_password(str(data.pop("password", "admin123")))
+        data["password_hash"] = hash_password(str(data.pop("password", "") or secrets.token_urlsafe(24)))
         data.setdefault("role", "user"); data.setdefault("status", 1)
     if resource == "system-settings": data.setdefault("setting_key", f"setting.{uuid4().hex[:8]}")
     if resource == "cookies": data.setdefault("account_id", 0); data.setdefault("cookie_value", "pending")

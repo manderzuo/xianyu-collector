@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 from datetime import datetime
+import os
 import secrets
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -20,7 +21,10 @@ from common.services.cloud_auth import cloud_auth_request, cloud_auth_url
 
 router = APIRouter(prefix="/api/v1/auth", tags=["鉴权"])
 refresh_bearer = HTTPBearer(auto_error=False)
-DEFAULT_ADMIN_PASSWORD = "admin123"
+
+
+def get_bootstrap_admin_password() -> str:
+    return os.getenv("BOOTSTRAP_ADMIN_PASSWORD", "").strip()
 
 
 class RegisterRequest(BaseModel):
@@ -49,7 +53,8 @@ async def ensure_admin(session: AsyncSession) -> User:
     user = result.scalar_one_or_none()
     if user is not None:
         return user
-    user = User(username="admin", nickname="系统管理员", role="admin", status=1, plan_code="NORMAL", password_hash=hash_password(DEFAULT_ADMIN_PASSWORD))
+    initial_password = get_bootstrap_admin_password() or secrets.token_urlsafe(32)
+    user = User(username="admin", nickname="系统管理员", role="admin", status=1, plan_code="NORMAL", password_hash=hash_password(initial_password))
     session.add(user)
     await session.commit()
     await session.refresh(user)
@@ -310,7 +315,8 @@ async def verify(user=Depends(get_current_user), db: AsyncSession = Depends(get_
 @router.get("/check-default-password")
 async def check_default_password(user=Depends(get_current_user), session: AsyncSession = Depends(get_session)):
     record = (await session.execute(select(User).where(User.id == int(user.get("sub", 1))))).scalar_one_or_none()
-    return ok({"is_default": bool(record and verify_password(DEFAULT_ADMIN_PASSWORD, record.password_hash))}, "查询成功")
+    configured_password = get_bootstrap_admin_password()
+    return ok({"is_default": bool(configured_password and record and verify_password(configured_password, record.password_hash))}, "查询成功")
 
 
 @router.post("/change-password")

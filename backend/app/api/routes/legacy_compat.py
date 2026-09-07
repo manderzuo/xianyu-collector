@@ -531,7 +531,7 @@ async def health_ping():
 async def public_settings(db: AsyncSession = Depends(get_session)):
     """登录前可读取的非敏感设置。"""
     public_keys = {
-        "registration_enabled", "show_default_login_info", "login_captcha_enabled",
+        "registration_enabled", "login_captcha_enabled",
         "login.system_name", "login.system_title", "login.system_description",
         "auth.footer_ad_html", "disclaimer.title", "disclaimer.content",
         "disclaimer.checkbox_text", "disclaimer.agree_button_text", "disclaimer.disagree_button_text",

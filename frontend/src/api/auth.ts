@@ -114,14 +114,6 @@ export const getRegistrationStatus = async (): Promise<{ enabled: boolean }> => 
   return { enabled: value === true || value === 'true' || value === 1 || value === '1' }
 }
 
-// 获取登录信息显示状态 - 从系统设置获取
-export const getLoginInfoStatus = async (): Promise<{ enabled: boolean }> => {
-  const settings = await getPublicSettings()
-  // 处理多种可能的值类型：true, 'true', 1, '1'
-  const value = settings.show_default_login_info
-  return { enabled: value === true || value === 'true' || value === 1 || value === '1' }
-}
-
 // 获取登录验证码开关状态
 export const getLoginCaptchaStatus = async (): Promise<{ enabled: boolean }> => {
   const settings = await getPublicSettings()

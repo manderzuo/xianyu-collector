@@ -62,6 +62,10 @@ Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows-installer-install.bat')
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows-installer-start.bat') -Destination (Join-Path $OutputDirectory 'start.bat') -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows-installer-stop.bat') -Destination (Join-Path $OutputDirectory 'stop.bat') -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows-installer-diagnostics.bat') -Destination (Join-Path $OutputDirectory 'diagnostics.bat') -Force
+$iconSource = Join-Path $SourceRoot 'assets\xianyu-launcher.ico'
+if (Test-Path -LiteralPath $iconSource) {
+    Copy-Item -LiteralPath $iconSource -Destination (Join-Path $OutputDirectory 'xianyu-launcher.ico') -Force
+}
 
 $version = '0.0.0'
 $versionPath = Join-Path $SourceRoot 'VERSION.txt'
@@ -90,7 +94,7 @@ Copy this whole folder to another Windows computer. Do not move only one file.
 
 1. Install or start Docker Desktop.
 2. Double-click install.bat.
-3. Open the desktop shortcut named Xianyu System.
+3. Open the desktop shortcut named 闲鱼管理系统.
 
 On the first run, install.bat checks and configures WSL 2 prerequisites. Windows may ask for administrator permission and a restart. Run install.bat again after the restart.
 

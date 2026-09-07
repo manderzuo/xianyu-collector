@@ -19,14 +19,14 @@
 5. 构建前端、后端、WebSocket 和 Scheduler 镜像。
 6. 启动 MySQL、Redis、Backend、WebSocket、Scheduler 和 Frontend。
 7. 等待前端响应。
-8. 在当前 Windows 用户桌面创建 `Xianyu System` 启动器。
+8. 在当前 Windows 用户桌面创建 `闲鱼管理系统` 启动器，并设置闲鱼风格图标。
 9. 自动打开浏览器。
 
 如果 `.env` 中 `XR_DEPLOY_MODE=remote`，安装脚本会从更新清单指定的 GHCR 镜像拉取镜像，不会在客户电脑上编译源码。
 
 ## 三、后续启动
 
-以后可以双击桌面上的 `Xianyu System`，或者双击项目根目录的 `start-xianyu.bat`。启动器会按当前 `.env` 的端口启动已有容器并打开浏览器。
+以后可以双击桌面上的 `闲鱼管理系统`，或者双击项目根目录的 `start-xianyu.bat`。启动器会按当前 `.env` 的端口启动已有容器并打开浏览器。
 
 停止服务可以双击 `stop-xianyu.bat`。该操作只停止容器，不删除数据库、Redis、上传文件或浏览器数据。
 
