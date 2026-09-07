@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Users as UsersIcon, RefreshCw, Plus, ChevronLeft, ChevronRight, Loader2, Pencil, Power, PowerOff, Wallet, Search, X, Ticket, CheckCircle2, XCircle } from 'lucide-react'
 import { getUsers, deleteUser, updateUser, approveUser, rejectUser } from '@/api/admin'
 import { useUIStore } from '@/store/uiStore'
@@ -69,12 +69,15 @@ export function Users() {
   const [editingUser, setEditingUser] = useState<User | null>(null)
   const [rechargingUser, setRechargingUser] = useState<User | null>(null)
   const [showInviteModal, setShowInviteModal] = useState(false)
+  const loadSequence = useRef(0)
 
   const loadUsers = async () => {
     if (!_hasHydrated || !isAuthenticated || !token) return
+    const sequence = ++loadSequence.current
     try {
       setLoading(true)
       const result = await getUsers({ page: currentPage, pageSize, username: appliedUsername })
+      if (sequence !== loadSequence.current) return
       if (!result.success) {
         setUsers([])
         setTotal(0)
@@ -84,9 +87,10 @@ export function Users() {
       setUsers(result.data || [])
       setTotal(result.total || 0)
     } catch (error) {
+      if (sequence !== loadSequence.current) return
       addToast({ type: 'error', message: getApiErrorMessage(error, '加载用户列表失败') })
     } finally {
-      setLoading(false)
+      if (sequence === loadSequence.current) setLoading(false)
     }
   }
 
