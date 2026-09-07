@@ -21,7 +21,7 @@ from backend.app.core.response import ok
 from backend.app.core.security import hash_password
 from common.db.session import get_session
 from common.models import Account, Plan, User
-from common.services.cloud_auth import cloud_auth_request, cloud_auth_url
+from common.services.cloud_auth import CloudAuthError, cloud_auth_request, cloud_auth_url
 
 router = APIRouter(prefix="/api/v1/admin/users", tags=["管理员用户管理"])
 
@@ -135,9 +135,15 @@ def _serialize_remote_user(item: dict[str, Any]) -> dict[str, Any]:
 
 
 async def _list_remote_users(user: dict[str, Any], *, username: str | None, limit: int, offset: int) -> dict[str, Any] | None:
-    if not cloud_auth_url() or not user.get("cloud_session_token"):
+    if not cloud_auth_url():
         return None
-    remote = await cloud_auth_request("list_users", {}, str(user["cloud_session_token"]))
+    token = str(user.get("cloud_session_token") or "").strip()
+    if not token:
+        raise HTTPException(status_code=401, detail="云端管理员会话已失效，请退出后重新登录")
+    try:
+        remote = await cloud_auth_request("list_users", {}, token)
+    except CloudAuthError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     items = [_serialize_remote_user(item) for item in (remote or {}).get("items", [])]
     term = (username or "").strip().lower()
     if term:
@@ -239,9 +245,8 @@ async def create_user(
     db: AsyncSession = Depends(get_session),
 ):
     _require_admin(user)
-    if cloud_auth_url() and user.get("cloud_session_token"):
-        remote_items = await _list_remote_users(user, username=username, limit=limit, offset=offset)
-        return ok(remote_items or {"items": [], "total": 0, "offset": offset, "limit": limit}, "用户查询成功")
+    if cloud_auth_url():
+        raise HTTPException(status_code=409, detail="云端模式请使用登录页的注册申请，不支持管理员在本机直接创建用户")
     values = payload or {}
     await _validate_plan(db, values)
     item = User(username="", password_hash="", role="user", plan_code="NORMAL", status=1)
@@ -315,8 +320,14 @@ async def approve_user(
     db: AsyncSession = Depends(get_session),
 ):
     _require_admin(user)
-    if cloud_auth_url() and user.get("cloud_session_token"):
-        remote = await cloud_auth_request("approve_user", {"user_id": user_id}, str(user.get("cloud_session_token")))
+    if cloud_auth_url():
+        token = str(user.get("cloud_session_token") or "").strip()
+        if not token:
+            raise HTTPException(status_code=401, detail="云端管理员会话已失效，请退出后重新登录")
+        try:
+            remote = await cloud_auth_request("approve_user", {"user_id": user_id}, token)
+        except CloudAuthError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
         return ok({"user": remote.get("user") if remote else {}, "approved": True}, "注册申请已通过")
     item = await _get_pending_user(user_id, db)
     item.status = 1
@@ -333,8 +344,14 @@ async def reject_user(
     db: AsyncSession = Depends(get_session),
 ):
     _require_admin(user)
-    if cloud_auth_url() and user.get("cloud_session_token"):
-        remote = await cloud_auth_request("reject_user", {"user_id": user_id}, str(user.get("cloud_session_token")))
+    if cloud_auth_url():
+        token = str(user.get("cloud_session_token") or "").strip()
+        if not token:
+            raise HTTPException(status_code=401, detail="云端管理员会话已失效，请退出后重新登录")
+        try:
+            remote = await cloud_auth_request("reject_user", {"user_id": user_id}, token)
+        except CloudAuthError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
         return ok({"user": remote.get("user") if remote else {}, "rejected": True}, "注册申请已拒绝")
     item = await _get_pending_user(user_id, db)
     item.status = 0

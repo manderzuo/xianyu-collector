@@ -17,7 +17,7 @@ from backend.app.services.entitlements import entitlement_payload
 from backend.app.core.dependencies import get_current_user
 from backend.app.core.response import ok
 from backend.app.core.security import create_access_token, create_refresh_token, decode_refresh_token, hash_password, verify_password
-from common.services.cloud_auth import cloud_auth_request, cloud_auth_url
+from common.services.cloud_auth import CloudAuthError, cloud_auth_request, cloud_auth_url
 
 router = APIRouter(prefix="/api/v1/auth", tags=["鉴权"])
 refresh_bearer = HTTPBearer(auto_error=False)
@@ -77,10 +77,8 @@ async def login(request: LoginRequest, session: AsyncSession = Depends(get_sessi
     if password and username:
         try:
             remote = await cloud_auth_request("login", {"username": username, "password": password})
-        except RuntimeError as exc:
-            if str(exc) != "云端账号服务暂时不可用，请稍后重试":
-                raise HTTPException(status_code=403, detail=str(exc)) from exc
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except CloudAuthError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
         if remote is not None:
             remote_user = remote.get("user") or {}
             user_record = (await session.execute(select(User).where(User.username == username).limit(1))).scalar_one_or_none()
@@ -263,6 +261,11 @@ async def refresh(credentials: HTTPAuthorizationCredentials | None = Depends(ref
         claims = decode_access_token(credentials.credentials)
     if claims is None:
         raise HTTPException(status_code=401, detail="刷新令牌已失效")
+    # 云端模式的 access/refresh token 必须携带云端会话。旧版本在切换
+    # 到云端认证前签发的本机令牌不能继续使用，否则管理员接口会落回
+    # 本机用户表，造成不同电脑看到的注册申请不一致。
+    if cloud_auth_url() and not str(claims.get("cloud_session_token") or "").strip():
+        raise HTTPException(status_code=401, detail="云端登录状态已失效，请重新登录")
     try:
         user_id = int(claims.get("sub", 0))
     except (TypeError, ValueError):
