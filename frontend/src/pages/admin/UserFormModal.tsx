@@ -100,12 +100,7 @@ export function UserFormModal({ initial, onClose, onSaved }: Props) {
       return
     }
 
-    if (!email) {
-      addToast({ type: 'warning', message: '请输入邮箱' })
-      return
-    }
-
-    if (!/^\S+@\S+\.\S+$/.test(email)) {
+    if (email && !/^\S+@\S+\.\S+$/.test(email)) {
       addToast({ type: 'warning', message: '请输入正确的邮箱地址' })
       return
     }
@@ -197,13 +192,13 @@ export function UserFormModal({ initial, onClose, onSaved }: Props) {
               />
             </div>
             <div className="input-group">
-              <label className="input-label">邮箱 <span className="text-red-500">*</span></label>
+              <label className="input-label">邮箱（可选）</label>
               <input
                 className="input-ios"
                 type="email"
                 value={form.email}
                 onChange={(event) => updateField('email', event.target.value)}
-                placeholder="请输入邮箱"
+                placeholder="可选，不填写也可以"
               />
             </div>
             <div className="input-group">

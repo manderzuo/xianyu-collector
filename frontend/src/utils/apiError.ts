@@ -16,6 +16,31 @@ export function getApiErrorMessage(error: unknown, fallback: string): string {
       if (typeof message === 'string' && message.trim()) {
         return message
       }
+
+      // FastAPI/Pydantic validation errors are returned as a detail array.
+      // Convert the first field error into a readable message instead of
+      // falling through to a generic network-style message.
+      if (Array.isArray(detail)) {
+        const firstError = detail[0] as { msg?: unknown; loc?: unknown } | undefined
+        if (typeof firstError?.msg === 'string' && firstError.msg.trim()) {
+          const field = Array.isArray(firstError.loc) ? firstError.loc.at(-1) : undefined
+          const fieldNames: Record<string, string> = {
+            username: '用户名',
+            invite_code: '邀请码',
+            password: '密码',
+          }
+          const fieldLabel = typeof field === 'string' ? fieldNames[field] : undefined
+          return fieldLabel ? `${fieldLabel}：${firstError.msg}` : firstError.msg
+        }
+      }
+    }
+
+    if (error.code === 'ECONNABORTED' || error.code === 'ETIMEDOUT' || error.message?.toLowerCase().includes('timeout')) {
+      return '请求超时，请稍后重试'
+    }
+
+    if (!error.response && error.message?.toLowerCase() === 'network error') {
+      return '无法连接服务器，请检查网络或确认服务已启动'
     }
 
     if (error.message?.trim()) {

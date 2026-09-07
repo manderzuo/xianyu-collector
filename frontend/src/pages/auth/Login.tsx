@@ -12,6 +12,7 @@ import { cn } from '@/utils/cn'
 import { ButtonLoading } from '@/components/common/Loading'
 import { GeetestCaptcha, type GeetestResult } from '@/components/common/GeetestCaptcha'
 import { POPUP_ANNOUNCEMENT_SHOWN_KEY } from '@/components/common/PopupAnnouncementModal'
+import { getApiErrorMessage } from '@/utils/apiError'
 
 type LoginType = 'username' | 'email-password' | 'email-code'
 
@@ -305,8 +306,7 @@ export function Login() {
         addToast({ type: 'error', message: result.message || '注册失败' })
       }
     } catch (error: unknown) {
-      const err = error as { response?: { data?: { detail?: string; message?: string } } }
-      addToast({ type: 'error', message: err?.response?.data?.detail || err?.response?.data?.message || '注册失败，请检查网络连接' })
+      addToast({ type: 'error', message: getApiErrorMessage(error, '注册失败，请稍后重试') })
     } finally {
       setLoading(false)
     }
