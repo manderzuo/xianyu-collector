@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Plus, RefreshCw, QrCode, Key, Edit2, Trash2, Power, PowerOff, X, Loader2, Clock, CheckCircle, MessageSquare, Bot, Globe, Timer, ScanFace, ChevronLeft, ChevronRight, ChevronDown, ImagePlus, Filter, Repeat, MoreHorizontal, PackageCheck, Star, ShieldCheck, Flower2, Eye, EyeOff, Ban, Download, Upload, Send, Ticket, AlertCircle, UploadCloud } from 'lucide-react'
-import { getAccountDetailsPaginated, deleteAccount, updateAccountCookie, updateAccountStatus, updateAccountsStatusBatch, closeAccountsNoticeBatch, clearTokenCacheBatch, updateAccountRemark, addAccount, generateQRLogin, checkQRLoginStatus, passwordLogin, checkPasswordLoginStatus, cancelPasswordLogin, updateAccountAutoConfirm, updateAccountPauseDuration, updateAccountMessageExpireTime, updateAccountReplyDelay, updateAccountLoginInfo, updateAccountScheduledRedelivery, updateAccountScheduledRate, updateAccountAutoPolish, updateAccountConfirmBeforeSend, updateAccountSendBeforeConfirm, updateAccountOnlySendCard, updateAccountAutoRedFlower, updateAccountAiReplyBlockOrderedUsers, getAIReplySettings, updateAIReplySettings, testAIConnection, fetchAIModels, AI_PROVIDER_OPTIONS, AI_PROVIDER_DEFAULT_BASE_URLS, getProxyConfig, updateProxyConfig, getFaceVerificationScreenshot, deleteFaceVerificationScreenshot, getConfirmReceiptMessage, updateConfirmReceiptMessage, uploadConfirmReceiptImage, exportAccountsExcel, importAccountsExcel, getRewriteAccountContentDetail, syncRewriteAccountContent, syncCloudSession, type AIProviderType, type AIModelOption, type ProxyConfig, type FaceVerificationScreenshot, type AccountFilterParams, type RewriteAccountContentDetail } from '@/api/accounts'
+import { getAccountDetailsPaginated, deleteAccount, updateAccountCookie, updateAccountStatus, updateAccountsStatusBatch, closeAccountsNoticeBatch, clearTokenCacheBatch, updateAccountRemark, addAccount, generateQRLogin, checkQRLoginStatus, passwordLogin, checkPasswordLoginStatus, cancelPasswordLogin, updateAccountAutoConfirm, updateAccountPauseDuration, updateAccountMessageExpireTime, updateAccountReplyDelay, updateAccountLoginInfo, updateAccountScheduledRedelivery, updateAccountScheduledRate, updateAccountAutoPolish, updateAccountConfirmBeforeSend, updateAccountSendBeforeConfirm, updateAccountOnlySendCard, updateAccountAutoRedFlower, updateAccountAiReplyBlockOrderedUsers, getAIReplySettings, updateAIReplySettings, testAIConnection, fetchAIModels, AI_PROVIDER_OPTIONS, AI_PROVIDER_DEFAULT_BASE_URLS, getProxyConfig, updateProxyConfig, getFaceVerificationScreenshot, deleteFaceVerificationScreenshot, getConfirmReceiptMessage, updateConfirmReceiptMessage, uploadConfirmReceiptImage, exportAccountsExcel, importAccountsExcel, getRewriteAccountContentDetail, syncRewriteAccountContent, syncCloudSession, listCloudSessions, restoreCloudSession, revokeCloudSession, type CloudSessionSummary, type AIProviderType, type AIModelOption, type ProxyConfig, type FaceVerificationScreenshot, type AccountFilterParams, type RewriteAccountContentDetail } from '@/api/accounts'
 import { getDefaultReply, updateDefaultReply, uploadDefaultReplyImage } from '@/api/keywords'
 import { getAutoRateConfig, updateAutoRateConfig } from '@/api/autoRate'
 import { checkAdminDefaultPassword } from '@/api/auth'
@@ -80,6 +80,9 @@ export function Accounts() {
   const navigate = useNavigate()
   const [loading, setLoading] = useState(true)
   const [accounts, setAccounts] = useState<AccountWithKeywordCount[]>([])
+  const [cloudSessions, setCloudSessions] = useState<CloudSessionSummary[]>([])
+  const [cloudSessionsOpen, setCloudSessionsOpen] = useState(false)
+  const [cloudSessionsLoading, setCloudSessionsLoading] = useState(false)
   const [activeModal, setActiveModal] = useState<ModalType>(null)
   const activeModalRef = useRef<ModalType>(null)
   const [pagination, setPagination] = useState<AccountPagination>({
@@ -1123,6 +1126,41 @@ export function Accounts() {
     }
   }
 
+  const loadCloudSessions = async () => {
+    setCloudSessionsLoading(true)
+    try {
+      setCloudSessions(await listCloudSessions())
+      setCloudSessionsOpen(true)
+    } catch (error) {
+      addToast({ type: 'error', message: getApiErrorMessage(error, '云端会话加载失败，请重新登录后重试') })
+    } finally {
+      setCloudSessionsLoading(false)
+    }
+  }
+
+  const handleCloudRestore = async (sessionId: number) => {
+    try {
+      const result = await restoreCloudSession(sessionId)
+      if (!result.success) throw new Error(result.message || '恢复失败')
+      addToast({ type: 'success', message: '闲鱼登录会话已恢复到本机' })
+      setCloudSessionsOpen(false)
+      await loadAccounts()
+    } catch (error) {
+      addToast({ type: 'error', message: getApiErrorMessage(error, '云端会话恢复失败') })
+    }
+  }
+
+  const handleCloudRevoke = async (sessionId: number) => {
+    try {
+      const result = await revokeCloudSession(sessionId)
+      if (!result.success) throw new Error(result.message || '撤销失败')
+      setCloudSessions(prev => prev.filter(item => item.id !== sessionId))
+      addToast({ type: 'success', message: '云端会话已撤销' })
+    } catch (error) {
+      addToast({ type: 'error', message: getApiErrorMessage(error, '撤销云端会话失败') })
+    }
+  }
+
   // ==================== 编辑账号 ====================
   const openEditModal = (account: AccountDetail) => {
     setEditingAccount(account)
@@ -2049,7 +2087,28 @@ export function Accounts() {
           <RefreshCw className="w-4 h-4" />
           刷新
         </button>
+        <button onClick={() => void loadCloudSessions()} className="btn-ios-secondary" disabled={cloudSessionsLoading}>
+          {cloudSessionsLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+          云端会话
+        </button>
       </div>
+
+      {cloudSessionsOpen && (
+        <div className="vben-card">
+          <div className="vben-card-header flex-between">
+            <div><h2 className="vben-card-title">云端闲鱼账号</h2><p className="text-xs text-slate-500 mt-1">仅显示当前平台账号同步的会话，不跨用户共享。</p></div>
+            <button className="btn-ios-secondary btn-sm" onClick={() => setCloudSessionsOpen(false)}>关闭</button>
+          </div>
+          <div className="divide-y divide-slate-100 dark:divide-slate-700">
+            {cloudSessions.length === 0 ? <div className="px-4 py-6 text-sm text-slate-500">暂无云端会话，请先在账号列表点击“同步”。</div> : cloudSessions.map(item => (
+              <div key={item.id} className="flex items-center justify-between gap-4 px-4 py-3">
+                <div><p className="font-medium text-slate-800 dark:text-slate-100">{item.account_name || item.account_key}</p><p className="text-xs text-slate-500">{item.account_key} · 修订 {item.revision}</p></div>
+                <div className="flex gap-2"><button className="btn-ios-primary btn-sm" onClick={() => void handleCloudRestore(item.id)}>拉取到本机</button><button className="btn-ios-secondary btn-sm text-red-600" onClick={() => void handleCloudRevoke(item.id)}>撤销</button></div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Add Account Card */}
       <div className="vben-card">

@@ -30,7 +30,17 @@ for name in ['server.py', 'auth_store.py', 'admin.html']:
     if target.exists():
         shutil.copy2(target, root / (name + '.bak-' + stamp))
     shutil.copy2(Path(__file__).parent / name, target)
-subprocess.run(['/usr/bin/python3', '-m', 'pip', 'install', '--disable-pip-version-check', '-r', str(Path(__file__).parent / 'requirements.txt')], check=True)
+# Ubuntu 24 marks the system interpreter as externally managed (PEP 668).
+# The service deliberately runs with /usr/bin/python3, so use the distro
+# package instead of mutating that interpreter with pip.
+crypto_check = subprocess.run(
+    ['/usr/bin/python3', '-c', 'from cryptography.fernet import Fernet'],
+    stdout=subprocess.DEVNULL,
+    stderr=subprocess.DEVNULL,
+)
+if crypto_check.returncode != 0:
+    subprocess.run(['apt-get', 'update'], check=True)
+    subprocess.run(['apt-get', 'install', '-y', '--no-install-recommends', 'python3-cryptography'], check=True)
 # Only seed the independent administrator on first install, preserving the
 # collector administrator's password hash without printing or copying its users.
 if not db.exists():

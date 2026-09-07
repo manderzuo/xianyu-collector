@@ -1,1 +1,1 @@
-20260907-1.0.2-password-login-cold-start-fix
+20260908-1.0.8-cloud-session-sync
