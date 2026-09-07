@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import hmac
 import os
 import secrets
@@ -82,6 +83,16 @@ class AuthStore:
                     )
                     """
                 )
+                for column, definition in (
+                    ("plan_code", "TEXT NOT NULL DEFAULT 'NORMAL'"),
+                    ("plan_expires_at", "TEXT"),
+                    ("entitlements_json", "TEXT NOT NULL DEFAULT '{}'"),
+                ):
+                    try:
+                        conn.execute(f"ALTER TABLE app_users ADD COLUMN {column} {definition}")
+                    except sqlite3.OperationalError as exc:
+                        if "duplicate column" not in str(exc).lower():
+                            raise
                 conn.execute(
                     """
                     CREATE TABLE IF NOT EXISTS app_invites (
@@ -211,7 +222,38 @@ class AuthStore:
             "created_at": str(row["created_at"] or ""),
             "approved_at": str(row["approved_at"] or ""),
             "last_login_at": str(row["last_login_at"] or ""),
+            "plan_code": str(row["plan_code"] or "NORMAL"),
+            "plan_expires_at": str(row["plan_expires_at"] or "") or None,
+            "entitlements": json.loads(row["entitlements_json"] or "{}"),
         }
+
+    def get_entitlements(self, user_id: int) -> dict[str, Any]:
+        conn = self._connect()
+        try:
+            row = conn.execute("SELECT plan_code, plan_expires_at, entitlements_json FROM app_users WHERE id = ?", (int(user_id),)).fetchone()
+            if row is None:
+                raise AuthError("not_found", "账号不存在")
+            return {"user_id": int(user_id), "plan_code": row["plan_code"] or "NORMAL", "plan_expires_at": row["plan_expires_at"], "overrides": json.loads(row["entitlements_json"] or "{}")}
+        finally:
+            conn.close()
+
+    def update_entitlements(self, user_id: int, *, plan_code: str | None = None, plan_expires_at: str | None = None, feature_key: str | None = None, feature: Mapping[str, Any] | None = None, delete_feature: bool = False) -> dict[str, Any]:
+        conn = self._connect()
+        try:
+            row = conn.execute("SELECT * FROM app_users WHERE id = ?", (int(user_id),)).fetchone()
+            if row is None:
+                raise AuthError("not_found", "账号不存在")
+            overrides = json.loads(row["entitlements_json"] or "{}")
+            if feature_key:
+                if delete_feature:
+                    overrides.pop(feature_key, None)
+                else:
+                    overrides[feature_key] = dict(feature or {})
+            conn.execute("UPDATE app_users SET plan_code = ?, plan_expires_at = ?, entitlements_json = ?, updated_at = ? WHERE id = ?", (plan_code or row["plan_code"] or "NORMAL", plan_expires_at if plan_expires_at is not None else row["plan_expires_at"], json.dumps(overrides, ensure_ascii=False), self._now(), int(user_id)))
+            conn.commit()
+            return self.get_entitlements(user_id)
+        finally:
+            conn.close()
 
     def register(self, username: Any, password: Any, employee_name: Any, invite_code: Any) -> dict[str, Any]:
         username = self._text(username, "账号", self.MAX_USERNAME_LENGTH)
@@ -553,4 +595,3 @@ class AuthStore:
 
 
 __all__ = ["AuthError", "AuthStore"]
-

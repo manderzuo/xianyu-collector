@@ -15,8 +15,19 @@ from backend.app.core.response import ok
 from backend.app.services.entitlements import entitlement_payload, get_effective_entitlement, is_admin, user_id
 from common.db.session import get_session
 from common.models import EntitlementAuditLog, Plan, PlanEntitlement, User, UserEntitlementOverride
+from common.services.cloud_auth import CloudAuthError, cloud_auth_request, cloud_auth_url
 
 router = APIRouter(prefix="/api/v1/admin/entitlements", tags=["管理员套餐权限"])
+
+
+async def _cloud_entitlement(action: str, payload: dict[str, Any], user: dict[str, Any]) -> dict[str, Any]:
+    token = str(user.get("cloud_session_token") or "").strip()
+    if not token:
+        raise HTTPException(status_code=401, detail="云端管理员会话已失效，请重新登录")
+    try:
+        return await cloud_auth_request(action, payload, token) or {}
+    except CloudAuthError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
 
 def _require_admin(user: dict[str, Any]) -> int:
@@ -148,6 +159,9 @@ async def update_plan_feature(
 @router.get("/users/{target_user_id}")
 async def get_user_entitlements(target_user_id: int, user=Depends(get_current_user), db: AsyncSession = Depends(get_session)):
     _require_admin(user)
+    if cloud_auth_url():
+        remote = await _cloud_entitlement("get_entitlements", {"user_id": target_user_id}, user)
+        return ok({"user_id": target_user_id, "plan_code": remote.get("plan_code") or "NORMAL", "plan_expires_at": remote.get("plan_expires_at"), "overrides": [{"feature_key": key, **value} for key, value in (remote.get("overrides") or {}).items()], "effective": {}}, "用户权限查询成功")
     target = (await db.execute(select(User).where(User.id == target_user_id))).scalar_one_or_none()
     if target is None:
         raise HTTPException(status_code=404, detail="用户不存在")
@@ -170,6 +184,9 @@ async def get_user_entitlements(target_user_id: int, user=Depends(get_current_us
 @router.put("/users/{target_user_id}/plan")
 async def set_user_plan(target_user_id: int, payload: dict[str, Any] = Body(default_factory=dict), user=Depends(get_current_user), db: AsyncSession = Depends(get_session)):
     actor_id = _require_admin(user)
+    if cloud_auth_url():
+        remote = await _cloud_entitlement("set_user_plan", {"user_id": target_user_id, "plan_code": payload.get("plan_code") or payload.get("plan") or "NORMAL", "plan_expires_at": payload.get("plan_expires_at")}, user)
+        return ok({"user_id": target_user_id, "plan_code": remote.get("plan_code"), "plan_expires_at": remote.get("plan_expires_at")}, "用户套餐已更新")
     target = (await db.execute(select(User).where(User.id == target_user_id))).scalar_one_or_none()
     if target is None:
         raise HTTPException(status_code=404, detail="用户不存在")
@@ -194,6 +211,9 @@ async def set_user_feature(
     db: AsyncSession = Depends(get_session),
 ):
     actor_id = _require_admin(user)
+    if cloud_auth_url():
+        remote = await _cloud_entitlement("set_user_feature", {"user_id": target_user_id, "feature_key": feature_key, "feature": payload}, user)
+        return ok({"feature_key": feature_key, "effective": remote.get("overrides", {}).get(feature_key, payload)}, "用户功能权限已更新")
     target = (await db.execute(select(User).where(User.id == target_user_id))).scalar_one_or_none()
     if target is None:
         raise HTTPException(status_code=404, detail="用户不存在")
@@ -225,6 +245,9 @@ async def set_user_feature(
 @router.delete("/users/{target_user_id}/features/{feature_key:path}")
 async def delete_user_feature(target_user_id: int, feature_key: str, user=Depends(get_current_user), db: AsyncSession = Depends(get_session)):
     actor_id = _require_admin(user)
+    if cloud_auth_url():
+        await _cloud_entitlement("delete_user_feature", {"user_id": target_user_id, "feature_key": feature_key}, user)
+        return ok({"deleted": True, "feature_key": feature_key}, "用户功能覆盖已删除")
     target = (await db.execute(select(User).where(User.id == target_user_id))).scalar_one_or_none()
     if target is None:
         raise HTTPException(status_code=404, detail="用户不存在")

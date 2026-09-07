@@ -62,6 +62,11 @@ class Handler(BaseHTTPRequestHandler):
             if action == 'logout':
                 store.revoke_session(token)
                 return self.reply(200, {'ok': True})
+            if action == 'get_entitlements':
+                requested = int(body.get('user_id') or user['id'])
+                if requested != user['id'] and user['role'] != 'admin':
+                    return self.reply(403, {'ok': False, 'message': '只有管理员可以查看其他账号权限'})
+                return self.reply(200, {'ok': True, **store.get_entitlements(requested)})
             if user['role'] != 'admin':
                 return self.reply(403, {'ok': False, 'message': '只有管理员可以审批'})
             if action == 'list_users':
@@ -72,6 +77,18 @@ class Handler(BaseHTTPRequestHandler):
             if action in operations:
                 target = int(body.get('user_id', 0))
                 return self.reply(200, {'ok': True, 'user': operations[action](target)})
+            if action in {'set_user_plan', 'set_user_feature', 'delete_user_feature'}:
+                target = int(body.get('user_id') or 0)
+                feature_key = body.get('feature_key')
+                result = store.update_entitlements(
+                    target,
+                    plan_code=body.get('plan_code') if action == 'set_user_plan' else None,
+                    plan_expires_at=body.get('plan_expires_at') if action == 'set_user_plan' else None,
+                    feature_key=str(feature_key) if feature_key else None,
+                    feature=body.get('feature') or {},
+                    delete_feature=action == 'delete_user_feature',
+                )
+                return self.reply(200, {'ok': True, **result})
             return self.reply(404, {'ok': False, 'message': '接口不存在'})
         except AuthError as exc:
             self.reply(400 if exc.code == 'invalid_input' else 403, {'ok': False, 'code': exc.code, 'message': exc.message})

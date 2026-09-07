@@ -185,7 +185,8 @@ async def _online_account_ids() -> set[str]:
     try:
         async with httpx.AsyncClient(timeout=2.5) as client:
             response = await client.get(
-                f"{settings.websocket_service_url.rstrip('/')}/internal/accounts/connection-stats"
+                f"{settings.websocket_service_url.rstrip('/')}/internal/accounts/connection-stats",
+                headers={"X-Internal-Token": settings.jwt_secret},
             )
         if not response.is_success:
             return set()

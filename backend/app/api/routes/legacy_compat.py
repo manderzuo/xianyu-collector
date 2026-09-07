@@ -35,6 +35,14 @@ _password_login_sessions: dict[str, dict[str, Any]] = {}
 _password_login_tasks: dict[str, asyncio.Task] = {}
 
 
+def _cleanup_password_login_sessions() -> None:
+    cutoff = datetime.now(timezone.utc).timestamp() - 900
+    for session_id, state in list(_password_login_sessions.items()):
+        finished_at = float(state.get("finished_at", 0) or 0)
+        if finished_at and finished_at < cutoff:
+            _password_login_sessions.pop(session_id, None)
+
+
 def uid(user: dict) -> int:
     try:
         return int(user.get("sub", 1))
@@ -308,10 +316,12 @@ async def _run_password_login(
         state.update({"status": "failed", "message": f"密码登录异常：{str(exc)[:500]}", "error": f"密码登录异常：{str(exc)[:500]}"})
     finally:
         _password_login_tasks.pop(session_id, None)
+        state["finished_at"] = datetime.now(timezone.utc).timestamp()
 
 
 @router.post("/password-login")
 async def password_login(payload: dict[str, Any] | None = Body(default=None), user=Depends(get_current_user), db: AsyncSession = Depends(get_session)):
+    _cleanup_password_login_sessions()
     data = payload or {}
     account_key = str(data.get("account_id") or data.get("account") or "").strip()
     username = str(data.get("account") or data.get("username") or account_key).strip()
@@ -321,7 +331,7 @@ async def password_login(payload: dict[str, Any] | None = Body(default=None), us
     # 密码登录同样可能创建新闲鱼账号，配额耗尽时在启动外部登录任务前直接拒绝。
     await ensure_quota(db, user, FEATURE_ACCOUNT)
     session_id = f"pwd-{uuid4().hex}"
-    _password_login_sessions[session_id] = {"status": "processing", "message": "密码登录任务已启动"}
+    _password_login_sessions[session_id] = {"status": "processing", "message": "密码登录任务已启动", "owner_id": uid(user)}
     task = asyncio.create_task(
         _run_password_login(
             session_id,
@@ -339,7 +349,7 @@ async def password_login(payload: dict[str, Any] | None = Body(default=None), us
 @router.delete("/password-login/cancel/{session_id}")
 async def cancel_password_login(session_id: str, user=Depends(get_current_user)):
     state = _password_login_sessions.get(session_id)
-    if state is None:
+    if state is None or int(state.get("owner_id", 0) or 0) != uid(user):
         return ok({"session_id": session_id, "status": "not_found"}, "登录会话不存在")
     task = _password_login_tasks.get(session_id)
     if task and not task.done():
@@ -351,7 +361,7 @@ async def cancel_password_login(session_id: str, user=Depends(get_current_user))
 @router.get("/password-login/check/{session_id}")
 async def check_password_login(session_id: str, user=Depends(get_current_user)):
     state = _password_login_sessions.get(session_id)
-    if state is None:
+    if state is None or int(state.get("owner_id", 0) or 0) != uid(user):
         return {"status": "not_found", "message": "登录会话不存在", "error": "登录会话不存在"}
     return {**state, "session_id": session_id}
 
@@ -400,7 +410,7 @@ def _local_version() -> str:
                 return value
         except OSError:
             continue
-    return os.getenv("APP_VERSION", "1.0.2").strip() or "1.0.2"
+    return os.getenv("APP_VERSION", "1.0.3").strip() or "1.0.3"
 
 
 def _version_parts(value: str) -> tuple[int, ...]:
@@ -495,7 +505,7 @@ async def restart_service(service_key: str, user=Depends(get_current_user)):
     if service_key == "scheduler":
         try:
             async with httpx.AsyncClient(timeout=20) as client:
-                response = await client.post(f"{settings.scheduler_service_url.rstrip('/')}/internal/reload")
+                response = await client.post(f"{settings.scheduler_service_url.rstrip('/')}/internal/reload", headers={"X-Internal-Token": settings.jwt_secret})
             response.raise_for_status()
             payload = response.json()
         except (httpx.HTTPError, ValueError) as exc:

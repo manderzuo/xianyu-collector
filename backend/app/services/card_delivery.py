@@ -269,6 +269,7 @@ async def _send_to_buyer(account: Account, buyer_id: str, cid: str | None, text:
             response = await client.post(
                 f"{settings.websocket_service_url.rstrip('/')}/internal/chat/{account.id}/{endpoint}",
                 json=body,
+                headers={"X-Internal-Token": settings.jwt_secret},
             )
         try:
             payload = response.json()
@@ -318,7 +319,7 @@ async def _send_image_to_buyer(account: Account, buyer_id: str, cid: str | None,
     endpoint = f"{settings.websocket_service_url.rstrip('/')}/internal/chat/{account.id}/send-image-url"
     try:
         async with httpx.AsyncClient(timeout=45) as client:
-            response = await client.post(endpoint, json={"cid": cid or "", "to_user_id": buyer_id, "image_url": image_url})
+            response = await client.post(endpoint, json={"cid": cid or "", "to_user_id": buyer_id, "image_url": image_url}, headers={"X-Internal-Token": settings.jwt_secret})
         result = response.json()
     except (httpx.HTTPError, ValueError) as exc:
         raise CardDeliveryError("message_service_unavailable", f"图片消息服务不可用：{str(exc)[:300]}") from exc
@@ -334,6 +335,7 @@ async def _resolve_cid(account: Account, buyer_id: str) -> str | None:
             response = await client.post(
                 f"{settings.websocket_service_url.rstrip('/')}/internal/chat/{account.id}/find-conversation",
                 json={"buyer_id": buyer_id},
+                headers={"X-Internal-Token": settings.jwt_secret},
             )
         payload = response.json()
         if response.is_success and payload.get("success"):

@@ -35,13 +35,13 @@ interface CurrentAccount {
   filter_count?: number
   today_reply_count?: number
   username?: string
-  login_password?: string
+  has_password?: boolean
   show_browser?: boolean
 }
 
 function mapCurrentAccount(item: CurrentAccount): AccountDetail {
   const enabled = item.status === 'active'
-  const hasPassword = Boolean(item.login_password)
+  const hasPassword = item.has_password ?? false
   return {
     pk: item.id,
     // 重写版动作接口使用数据库账号主键；平台 ID 单独保留在 note 里展示。
@@ -72,7 +72,7 @@ function mapCurrentAccount(item: CurrentAccount): AccountDetail {
     updated_at: undefined,
     // 账号平台标识放入扩展字段，列表中仍然可核对真实闲鱼账号。
     username: item.username || undefined,
-    login_password: item.login_password || undefined,
+    login_password: undefined,
     has_password: hasPassword,
     pause_duration: item.pause_duration ?? 0,
     message_expire_time: item.message_expire_time ?? 0,
@@ -144,7 +144,7 @@ export const getAccountDetailsPaginated = async (
     }
   }
   if (filters?.has_password !== null && filters?.has_password !== undefined) {
-    items = items.filter((item) => Boolean(item.login_password) === filters.has_password)
+      items = items.filter((item) => Boolean(item.has_password) === filters.has_password)
   }
   if (filters?.disable_reason?.trim()) {
     const keyword = filters.disable_reason.trim()

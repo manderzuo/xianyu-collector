@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import logging
+import secrets
 from datetime import datetime
 from contextlib import asynccontextmanager
 from zoneinfo import ZoneInfo
 from fastapi import Body, Depends, FastAPI, HTTPException
+from fastapi.responses import JSONResponse
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
@@ -89,7 +91,17 @@ async def lifespan(app: FastAPI):
     scheduler.shutdown(wait=False)
 
 
-app = FastAPI(title=f"{settings.brand_name} Scheduler", version="1.0.2", lifespan=lifespan)
+app = FastAPI(title=f"{settings.brand_name} Scheduler", version="1.0.4", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def protect_internal_routes(request, call_next):
+    """调度控制接口只允许受信任服务调用。"""
+    if request.url.path.startswith("/internal/"):
+        token = request.headers.get("X-Internal-Token", "")
+        if not token or not secrets.compare_digest(token, settings.jwt_secret):
+            return JSONResponse(status_code=401, content={"detail": "内部调用凭证无效"})
+    return await call_next(request)
 
 
 @app.get("/health", tags=["系统"])

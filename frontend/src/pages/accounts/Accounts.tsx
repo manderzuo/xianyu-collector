@@ -1121,7 +1121,8 @@ export function Accounts() {
     setEditAutoConfirm(account.auto_confirm || false)
     setEditPauseDuration(account.pause_duration || 0)
     setEditUsername(account.username || '')
-    setEditPassword(account.login_password || '')
+    // 服务端不再回传明文密码；编辑时留空表示保持原密码不变。
+    setEditPassword('')
     setEditShowBrowser(account.show_browser || false)
     setActiveModal('edit')
   }
@@ -1151,15 +1152,15 @@ export function Accounts() {
       }
 
       // 更新登录信息（用户名、密码、显示浏览器）
-      const loginInfoChanged = 
+      const loginInfoChanged =
         editUsername !== (editingAccount.username || '') ||
-        editPassword !== (editingAccount.login_password || '') ||
+        Boolean(editPassword) ||
         editShowBrowser !== (editingAccount.show_browser || false)
       
       if (loginInfoChanged) {
         promises.push(updateAccountLoginInfo(editingAccount.id, {
           username: editUsername,
-          login_password: editPassword,
+          ...(editPassword ? { login_password: editPassword } : {}),
           show_browser: editShowBrowser,
         }))
       }
@@ -2528,12 +2529,12 @@ export function Accounts() {
                     </td>
                     <td>
                       <span className={`inline-flex items-center gap-1.5 text-xs font-medium px-2 py-1 rounded ${
-                        (account.username && account.login_password)
+                        (account.username && account.has_password)
                           ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300' 
                           : 'bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400'
                       }`}>
                         <Key className="w-3.5 h-3.5" />
-                        {(account.username && account.login_password) ? '已配置' : '未配置'}
+                        {(account.username && account.has_password) ? '已配置' : '未配置'}
                       </span>
                     </td>
                     {/* 功能开关组：图标按钮点击切换，hover 查看说明 */}

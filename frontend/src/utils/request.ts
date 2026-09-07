@@ -63,7 +63,7 @@ request.interceptors.response.use(
     // 如果是401错误且不是刷新Token接口
     if (error.response?.status === 401 && originalRequest && !originalRequest._retry) {
       // 如果是刷新Token接口失败，直接退出登录
-      if (originalRequest.url?.includes('/auth/refresh')) {
+      if (originalRequest.url?.includes('/auth/refresh') || originalRequest.url?.includes('/auth/login')) {
         useAuthStore.getState().clearAuth()
         return Promise.reject(error)
       }

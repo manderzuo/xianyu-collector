@@ -7,17 +7,53 @@
 """
 from __future__ import annotations
 
+import base64
+import hashlib
 from typing import Any, Iterable
 
+from cryptography.fernet import Fernet, InvalidToken
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from common.models.feature_records import FeatureRecord
+from common.config import settings as app_settings
 
 
 ACCOUNT_SETTINGS_FEATURE = "account-settings"
 PLATFORM_AI_SETTINGS_FEATURE = "platform-ai-settings"
 PLATFORM_AI_SETTINGS_ID = "default"
+PASSWORD_PREFIX = "enc:v1:"
+
+
+def _password_fernet() -> Fernet:
+    key = base64.urlsafe_b64encode(hashlib.sha256(app_settings.jwt_secret.encode("utf-8")).digest())
+    return Fernet(key)
+
+
+def _encrypt_login_password(value: object) -> str:
+    raw = str(value or "")
+    if not raw or raw.startswith(PASSWORD_PREFIX):
+        return raw
+    return PASSWORD_PREFIX + _password_fernet().encrypt(raw.encode("utf-8")).decode("ascii")
+
+
+def _decrypt_login_password(value: object) -> str:
+    raw = str(value or "")
+    if not raw.startswith(PASSWORD_PREFIX):
+        # 兼容升级前的明文记录；下次保存账号设置时会自动加密。
+        return raw
+    try:
+        return _password_fernet().decrypt(raw.removeprefix(PASSWORD_PREFIX).encode("ascii")).decode("utf-8")
+    except (InvalidToken, ValueError, UnicodeError):
+        return ""
+
+
+def _decrypt_settings(payload: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(payload, dict):
+        return payload
+    copied = dict(payload)
+    copied["login_password"] = _decrypt_login_password(copied.get("login_password"))
+    return copied
 
 
 def default_account_settings() -> dict[str, Any]:
@@ -116,7 +152,7 @@ async def load_account_settings(
             )
         )
     ).scalar_one_or_none()
-    return _copy_settings(row.payload if row else None)
+    return _copy_settings(_decrypt_settings(row.payload) if row else None)
 
 
 async def load_account_settings_map(
@@ -137,7 +173,7 @@ async def load_account_settings_map(
         )
     ).scalars().all()
     return {
-        int(row.external_id): _copy_settings(row.payload)
+        int(row.external_id): _copy_settings(_decrypt_settings(row.payload))
         for row in rows
         if row.external_id and row.external_id.isdigit()
     }
@@ -168,10 +204,13 @@ async def save_account_settings(
             note="账号列表配置",
         )
         db.add(row)
-    row.payload = _copy_settings({**_copy_settings(row.payload), **values})
+    merged = {**_copy_settings(row.payload), **values}
+    persisted = _copy_settings(merged)
+    persisted["login_password"] = _encrypt_login_password(persisted.get("login_password"))
+    row.payload = persisted
     await db.commit()
     await db.refresh(row)
-    return _copy_settings(row.payload)
+    return _copy_settings(_decrypt_settings(row.payload))
 
 
 async def load_platform_ai_settings(

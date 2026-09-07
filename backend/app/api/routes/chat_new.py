@@ -67,7 +67,8 @@ async def _online_ids() -> set[str]:
     try:
         async with httpx.AsyncClient(timeout=2.5) as client:
             response = await client.get(
-                f"{settings.websocket_service_url.rstrip('/')}/internal/accounts/connection-stats"
+                f"{settings.websocket_service_url.rstrip('/')}/internal/accounts/connection-stats",
+                headers={"X-Internal-Token": settings.jwt_secret},
             )
         if not response.is_success:
             return set()
@@ -91,6 +92,7 @@ async def _runtime_call(account: Account, action: str) -> dict:
             response = await client.post(
                 f"{settings.websocket_service_url.rstrip('/')}/internal/accounts/{account.id}/{action}",
                 json={"cookie_value": account.cookie or "", "user_id": int(account.user_id)},
+                headers={"X-Internal-Token": settings.jwt_secret},
             )
         payload = response.json()
         if response.is_success and payload.get("success"):
@@ -106,6 +108,7 @@ async def _runtime_query(account_id: int, path: str, payload: dict[str, object])
             response = await client.post(
                 f"{settings.websocket_service_url.rstrip('/')}/internal/chat/{account_id}/{path}",
                 json=payload,
+                headers={"X-Internal-Token": settings.jwt_secret},
             )
         if not response.is_success:
             return {}
@@ -604,6 +607,7 @@ async def send_image_message(
             response = await client.post(
                 f"{settings.websocket_service_url.rstrip('/')}/internal/chat/{account.id}/send-image",
                 json={"cid": cid, "to_user_id": to_user_id, "image_path": str(target)},
+                headers={"X-Internal-Token": settings.jwt_secret},
             )
         try:
             result = response.json()
@@ -654,6 +658,7 @@ async def recall_message(account_id: int, payload: dict[str, Any] | None = Body(
             response = await client.post(
                 f"{settings.websocket_service_url.rstrip('/')}/internal/chat/{account_id}/recall-message",
                 json={"message_id": message_id},
+                headers={"X-Internal-Token": settings.jwt_secret},
             )
         result = response.json()
         if not response.is_success or not result.get("success"):
@@ -808,7 +813,7 @@ async def send_message(account_id: int, payload: dict[str, Any], user=Depends(ge
         raise HTTPException(422, "会话、接收人和消息内容不能为空")
     try:
         async with httpx.AsyncClient(timeout=25) as client:
-            response = await client.post(f"{settings.websocket_service_url.rstrip('/')}/internal/chat/{account_id}/send-text", json={"cid": cid, "to_user_id": to_user_id, "text": text.strip()})
+            response = await client.post(f"{settings.websocket_service_url.rstrip('/')}/internal/chat/{account_id}/send-text", json={"cid": cid, "to_user_id": to_user_id, "text": text.strip()}, headers={"X-Internal-Token": settings.jwt_secret})
         if not response.is_success:
             detail = response.json().get("detail", "发送失败")
             raise HTTPException(502, detail)

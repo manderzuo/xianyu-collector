@@ -46,6 +46,13 @@ from backend.app.api.routes.accounts import delete_account
 router = APIRouter(prefix="/api/v1/cookies", tags=["账号列表兼容操作"])
 
 
+def _public_account_settings(settings: dict[str, Any]) -> dict[str, Any]:
+    """Never return the decrypted account password through an API response."""
+    result = dict(settings or {})
+    result["has_password"] = bool(result.pop("login_password", None))
+    return result
+
+
 def _safe_xml_text(value: Any) -> str:
     """移除 XML 1.0 不允许的控制字符，避免导出文件损坏。"""
     text = "" if value is None else str(value)
@@ -509,7 +516,7 @@ async def export_accounts(
             account.cookie or "",
             status_labels.get(account.status, account.status),
             account_settings.get("username", ""),
-            account_settings.get("login_password", ""),
+            "已配置" if account_settings.get("login_password") else "",
             "是" if account_settings.get("show_browser") else "否",
             "是" if platform_ai.get("ai_enabled") else "否",
             "是" if account_settings.get("scheduled_redelivery") else "否",
@@ -645,7 +652,10 @@ async def import_accounts(
                 "login_password": ("密码", "login_password", "password"),
             }.items():
                 if _row_has(row, *names):
-                    settings_values[field] = _row_value(row, *names)
+                    value = _row_value(row, *names)
+                    if field == "login_password" and str(value).strip().casefold() in {"已配置", "configured"}:
+                        continue
+                    settings_values[field] = value
             for field, names in {
                 "pause_duration": ("暂停时长", "pause_duration"),
                 "message_expire_time": ("相同消息等待时间", "message_expire_time"),
@@ -693,7 +703,7 @@ async def get_settings(account_id: int, user=Depends(get_current_user), db: Asyn
     platform = await load_platform_ai_settings(db, int(account.user_id))
     settings["ai_enabled"] = bool(platform.get("ai_enabled"))
     settings["ai_settings"] = dict(platform.get("ai_settings") or {})
-    return ok(settings, "账号设置查询成功（AI配置按平台账号共享）")
+    return ok(_public_account_settings(settings), "账号设置查询成功（AI配置按平台账号共享）")
 
 
 @router.put("/{account_id}/settings")
@@ -715,7 +725,7 @@ async def put_settings(
             port = str(proxy_config.get("proxy_port") or "").strip()
             account.proxy = f"{proxy_type}://{host}:{port}" if host and port else None
     settings = await _save_action(account_id, user, db, values)
-    return ok(settings, "账号设置已更新")
+    return ok(_public_account_settings(settings), "账号设置已更新")
 
 
 @router.put("/{account_id}/remark")
@@ -1004,4 +1014,4 @@ async def put_account_action(
     else:
         value_key = next((key for key in (field, "reply_delay_seconds", "pause_duration", "message_expire_time") if key in values), field)
         settings = await _save_action(account_id, user, db, {field: values.get(value_key)})
-    return ok(settings, "账号设置已更新")
+    return ok(_public_account_settings(settings), "账号设置已更新")

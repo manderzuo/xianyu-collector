@@ -107,6 +107,7 @@ async def _notify_runtime(account: Account, cookie_value: str, user_id: int, is_
             response = await client.post(
                 f"{settings.websocket_service_url.rstrip('/')}/internal/accounts/{account.id}/{action}",
                 json={"cookie_value": cookie_value, "user_id": user_id},
+                headers={"X-Internal-Token": settings.jwt_secret},
             )
         payload = response.json()
         if response.is_success and payload.get("success"):

@@ -269,6 +269,8 @@ async def update_user(
     db: AsyncSession = Depends(get_session),
 ):
     operator_id = _require_admin(user)
+    if cloud_auth_url():
+        raise HTTPException(status_code=409, detail="云端模式的账号资料和套餐权限请在统一认证服务中修改")
     item = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
     if item is None:
         raise HTTPException(status_code=404, detail="用户不存在")
@@ -295,6 +297,15 @@ async def disable_user(
     operator_id = _require_admin(user)
     if user_id == operator_id:
         raise HTTPException(status_code=400, detail="不能停用当前登录管理员")
+    if cloud_auth_url():
+        token = str(user.get("cloud_session_token") or "").strip()
+        if not token:
+            raise HTTPException(status_code=401, detail="云端管理员会话已失效，请退出后重新登录")
+        try:
+            remote = await cloud_auth_request("disable_user", {"user_id": user_id}, token)
+        except CloudAuthError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+        return ok({"user": _serialize_remote_user((remote or {}).get("user") or {}), "disabled": True}, "用户已停用")
     item = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
     if item is None:
         raise HTTPException(status_code=404, detail="用户不存在")
@@ -369,6 +380,8 @@ async def recharge_user(
     db: AsyncSession = Depends(get_session),
 ):
     _require_admin(user)
+    if cloud_auth_url():
+        raise HTTPException(status_code=409, detail="云端模式暂不支持本机余额调整")
     item = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
     if item is None:
         raise HTTPException(status_code=404, detail="用户不存在")

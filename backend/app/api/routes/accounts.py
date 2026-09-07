@@ -64,10 +64,11 @@ def serialize(account: Account, account_settings: dict | None = None) -> dict:
         "auto_confirm", "confirm_before_send", "send_before_confirm", "only_send_card",
         "auto_red_flower", "ai_reply_block_ordered_users", "delivery_disabled",
         "delivery_disabled_reason", "pause_duration", "message_expire_time",
-        "reply_delay_seconds", "username", "login_password", "show_browser",
+        "reply_delay_seconds", "username", "show_browser",
     ):
         if key in settings:
             data[key] = settings[key]
+    data["has_password"] = bool(settings.get("login_password"))
     return data
 
 
@@ -176,7 +177,8 @@ async def _connection_status(account_id: int) -> dict:
     try:
         async with httpx.AsyncClient(timeout=2.5) as client:
             response = await client.get(
-                f"{settings.websocket_service_url}/internal/accounts/{account_id}/status"
+                f"{settings.websocket_service_url}/internal/accounts/{account_id}/status",
+                headers={"X-Internal-Token": settings.jwt_secret},
             )
         payload = response.json()
         return payload.get("data") or {"status": "unknown"}
@@ -189,7 +191,8 @@ async def _online_account_ids() -> set[str]:
     try:
         async with httpx.AsyncClient(timeout=2.5) as client:
             response = await client.get(
-                f"{settings.websocket_service_url.rstrip('/')}/internal/accounts/connection-stats"
+                f"{settings.websocket_service_url.rstrip('/')}/internal/accounts/connection-stats",
+                headers={"X-Internal-Token": settings.jwt_secret},
             )
         if not response.is_success:
             return set()
@@ -207,6 +210,7 @@ async def _notify_runtime(account: Account, action: str) -> dict:
             response = await client.post(
                 f"{settings.websocket_service_url.rstrip('/')}/internal/accounts/{account.id}/{action}",
                 json={"cookie_value": account.cookie or "", "user_id": int(account.user_id)},
+                headers={"X-Internal-Token": settings.jwt_secret},
             )
         payload = response.json()
         if response.is_success and payload.get("success"):

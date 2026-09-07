@@ -7,9 +7,11 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from fastapi import HTTPException
+from sqlalchemy import text
 
 from common.config import settings
-from common.db.session import init_db
+from common.db.session import async_session_maker, init_db
 from backend.app.core.response import ok
 from backend.app.api.routes.auth import router as auth_router
 from backend.app.api.routes.user_profile import router as user_profile_router
@@ -69,7 +71,7 @@ from backend.app.api.routes.qrcode import router as qrcode_router
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("xr.backend")
-app = FastAPI(title=f"{settings.brand_name} API", version="1.0.2", docs_url="/docs", redoc_url="/redoc")
+app = FastAPI(title=f"{settings.brand_name} API", version="1.0.4", docs_url="/docs", redoc_url="/redoc")
 
 origins = [item.strip() for item in settings.cors_origins.split(",") if item.strip()]
 app.add_middleware(CORSMiddleware, allow_origins=origins or ["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
@@ -89,7 +91,13 @@ async def startup() -> None:
 
 @app.get("/health", tags=["系统"])
 async def health():
-    return ok({"service": "backend-web", "status": "running"})
+    try:
+        async with async_session_maker() as session:
+            await session.execute(text("SELECT 1"))
+    except Exception as exc:
+        logger.warning("health check database failed: %s", exc)
+        raise HTTPException(status_code=503, detail="数据库暂不可用") from exc
+    return ok({"service": "backend-web", "status": "running", "database": "ready"})
 
 
 @app.get("/api/v1/health", tags=["系统"])

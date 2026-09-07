@@ -266,6 +266,14 @@ async def refresh(credentials: HTTPAuthorizationCredentials | None = Depends(ref
     # 本机用户表，造成不同电脑看到的注册申请不一致。
     if cloud_auth_url() and not str(claims.get("cloud_session_token") or "").strip():
         raise HTTPException(status_code=401, detail="云端登录状态已失效，请重新登录")
+    if cloud_auth_url():
+        try:
+            remote = await cloud_auth_request("me", {}, str(claims.get("cloud_session_token")))
+        except CloudAuthError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+        remote_user = (remote or {}).get("user") or {}
+        if remote_user.get("username") and str(remote_user["username"]).casefold() != str(claims.get("username") or "").casefold():
+            raise HTTPException(status_code=401, detail="云端登录身份不匹配，请重新登录")
     try:
         user_id = int(claims.get("sub", 0))
     except (TypeError, ValueError):
@@ -275,6 +283,15 @@ async def refresh(credentials: HTTPAuthorizationCredentials | None = Depends(ref
         if record is not None and int(record.status or 0) == 2:
             raise HTTPException(status_code=403, detail="账号正在审核中，请等待管理员审批")
         raise HTTPException(status_code=401, detail="用户不存在或已被停用")
+    if cloud_auth_url():
+        # 云端是账号状态的唯一来源；把最新角色同步到本机镜像，避免
+        # 旧 token 在其他电脑上继续保留管理员权限。
+        remote_role = str(((remote or {}).get("user") or {}).get("role") or "user").lower()
+        next_role = "admin" if remote_role == "admin" else "user"
+        if record.role != next_role or int(record.status or 0) != 1:
+            record.role = next_role
+            record.status = 1
+            await session.commit()
     if int(record.auth_version or 1) != int(claims.get("auth_version", 1) or 1):
         raise HTTPException(status_code=401, detail="刷新令牌已失效，请重新登录")
     base_claims = {

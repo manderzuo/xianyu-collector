@@ -1,11 +1,13 @@
 # -*- coding: utf-8 -*-
 """WebSocket 长连接服务。"""
 import logging
+import secrets
 import shutil
 from pathlib import Path
 from typing import Any
 
 from fastapi import Body, FastAPI, Header, HTTPException, WebSocket
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 
@@ -17,9 +19,19 @@ from websocket.app.handler import handle_socket
 from websocket.app.xianyu_runtime import runtime_manager
 from websocket.app.browser_cookie_renew import renew_browser_cookies, renew_password_cookies
 
-app = FastAPI(title=f"{settings.brand_name} WebSocket", version="1.0.2")
+app = FastAPI(title=f"{settings.brand_name} WebSocket", version="1.0.4")
 manager = ConnectionManager()
 logger = logging.getLogger("xr.websocket")
+
+
+@app.middleware("http")
+async def protect_internal_routes(request, call_next):
+    """所有服务间 HTTP 接口必须携带部署级内部令牌。"""
+    if request.url.path.startswith("/internal/"):
+        token = request.headers.get("X-Internal-Token", "")
+        if not token or not secrets.compare_digest(token, settings.jwt_secret):
+            return JSONResponse(status_code=401, content={"detail": "内部调用凭证无效"})
+    return await call_next(request)
 
 
 class AccountRuntimeRequest(BaseModel):
@@ -186,10 +198,6 @@ async def browser_cookie_renew(
     x_internal_token: str | None = Header(default=None, alias="X-Internal-Token"),
 ):
     """由 scheduler/backend 委托执行持久化浏览器 Cookie 续期。"""
-    # 内部服务调用使用 JWT Secret；兼容同机调试调用时不携带该请求头。
-    # Docker 网络中的该接口不暴露给前端，错误的 Token 明确拒绝请求。
-    if x_internal_token and x_internal_token != settings.jwt_secret:
-        raise HTTPException(status_code=403, detail="内部调用凭证无效")
     cookie_value = payload.cookies_str.strip()
     try:
         numeric_account_id = int(payload.account_id)
@@ -220,8 +228,6 @@ async def password_cookie_renew(
     x_internal_token: str | None = Header(default=None, alias="X-Internal-Token"),
 ):
     """由后台续期服务委托执行账号密码登录兜底。"""
-    if x_internal_token and x_internal_token != settings.jwt_secret:
-        raise HTTPException(status_code=403, detail="内部调用凭证无效")
     account_key = str(payload.account_id or "").strip()
     if not account_key:
         raise HTTPException(status_code=422, detail="账号标识不能为空")

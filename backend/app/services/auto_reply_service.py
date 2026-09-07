@@ -359,6 +359,7 @@ async def _send_text(account_id: int, cid: str, to_user_id: str, text: str) -> s
         response = await client.post(
             f"{settings.websocket_service_url.rstrip('/')}/internal/chat/{account_id}/send-text",
             json={"cid": cid, "to_user_id": to_user_id, "text": text},
+            headers={"X-Internal-Token": settings.jwt_secret},
         )
     try:
         body = response.json()
@@ -387,6 +388,7 @@ async def _send_image(account: Account, cid: str, to_user_id: str, image_value: 
         response = await client.post(
             f"{settings.websocket_service_url.rstrip('/')}/internal/chat/{account.id}/send-image-url",
             json={"cid": cid, "to_user_id": to_user_id, "image_url": image_url},
+            headers={"X-Internal-Token": settings.jwt_secret},
         )
     body = response.json() if response.content else {}
     if not response.is_success or not body.get("success"):
