@@ -194,6 +194,23 @@ async def register(request: RegisterRequest, session: AsyncSession = Depends(get
     if len(invite_code) < 8:
         raise HTTPException(status_code=400, detail="邀请码格式无效")
     email = (request.email or "").strip().lower() or None
+
+    # In cloud mode the invite belongs to the shared auth service.  Do not
+    # look it up in this computer's business database, otherwise a code issued
+    # on the administrator's computer can never work on another computer.
+    if cloud_auth_url():
+        try:
+            remote = await cloud_auth_request("register", {
+                "username": request.username.strip(),
+                "password": request.password,
+                "nickname": request.nickname or request.username.strip(),
+                "invite_code": invite_code,
+            })
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        if remote is not None:
+            return ok(remote.get("user") or {}, remote.get("message") or "注册申请已提交，请等待管理员审核")
+
     existing = (await session.execute(select(User).where(User.username == request.username.strip()))).scalar_one_or_none()
     if existing is not None:
         raise HTTPException(status_code=409, detail="用户名已存在")
@@ -220,18 +237,6 @@ async def register(request: RegisterRequest, session: AsyncSession = Depends(get
         invite.status = "expired"
         await session.commit()
         raise HTTPException(status_code=400, detail="邀请码已过期")
-
-    try:
-        remote = await cloud_auth_request("register", {
-            "username": request.username.strip(),
-            "password": request.password,
-            "nickname": request.nickname or request.username.strip(),
-            "invite_code": invite_code,
-        })
-    except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    if remote is not None:
-        return ok(remote.get("user") or {}, remote.get("message") or "注册申请已提交，请等待管理员审核")
 
     user = User(username=request.username.strip(), password_hash=hash_password(request.password), nickname=request.nickname, email=email, role="user", plan_code="NORMAL", status=2)
     session.add(user)

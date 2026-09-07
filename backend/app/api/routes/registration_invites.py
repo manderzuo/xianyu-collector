@@ -22,6 +22,7 @@ from common.services.registration_invites import (
     hash_invite_code,
     preview_invite_code,
 )
+from common.services.cloud_auth import cloud_auth_request, cloud_auth_url
 
 router = APIRouter(prefix="/api/v1/admin/invites", tags=["管理员邀请码"])
 CODE_ALPHABET = string.ascii_uppercase + string.digits
@@ -80,6 +81,19 @@ def _new_raw_code() -> str:
     return "".join(secrets.choice(CODE_ALPHABET) for _ in range(16))
 
 
+async def _sync_cloud_invites(user: dict[str, Any], items: list[dict[str, Any]]) -> None:
+    if not cloud_auth_url() or not user.get("cloud_session_token") or not items:
+        return
+    try:
+        await cloud_auth_request(
+            "sync_invites",
+            {"items": [{"code": item.get("code"), "status": item.get("status", "active")} for item in items if item.get("code")]},
+            str(user.get("cloud_session_token")),
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
 @router.get("")
 @router.get("/")
 async def list_invites(
@@ -112,8 +126,10 @@ async def list_invites(
         await db.execute(statement.order_by(RegistrationInvite.id.desc()).offset(offset).limit(limit))
     ).scalars().all()
     total = int((await db.execute(count_statement)).scalar_one() or 0)
+    serialized = [_serialize(item) for item in rows]
+    await _sync_cloud_invites(user, serialized)
     return ok({
-        "items": [_serialize(item) for item in rows],
+        "items": serialized,
         "total": total,
         "offset": offset,
         "limit": limit,
@@ -162,6 +178,8 @@ async def create_invites(
         await db.rollback()
         raise HTTPException(status_code=500, detail="邀请码生成失败，请重试") from exc
 
+    await _sync_cloud_invites(user, [{"code": entry["code"], "status": "active"} for entry in created])
+
     return ok({
         "items": [
             {**_serialize(entry["item"]), "code": entry["code"]}
@@ -189,4 +207,5 @@ async def revoke_invite(
     item.status = "revoked"
     await db.commit()
     await db.refresh(item)
+    await _sync_cloud_invites(user, [_serialize(item)])
     return ok({"item": _serialize(item)}, "邀请码已撤销")

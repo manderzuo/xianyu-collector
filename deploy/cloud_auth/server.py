@@ -47,7 +47,7 @@ class Handler(BaseHTTPRequestHandler):
             action = self.path.rstrip('/').rsplit('/', 1)[-1]
             store = self.server.store
             if action == 'register':
-                user = store.register(body.get('username'), body.get('password'), body.get('nickname') or body.get('username'))
+                user = store.register(body.get('username'), body.get('password'), body.get('nickname') or body.get('username'), body.get('invite_code'))
                 return self.reply(200, {'ok': True, 'user': user, 'message': '注册申请已提交，请等待管理员审核'})
             if action == 'login':
                 user = store.authenticate(body.get('username'), body.get('password'))
@@ -66,6 +66,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(403, {'ok': False, 'message': '只有管理员可以审批'})
             if action == 'list_users':
                 return self.reply(200, {'ok': True, 'items': store.list_users()})
+            if action == 'sync_invites':
+                return self.reply(200, {'ok': True, 'items': store.sync_invites(body.get('items') or [])})
             operations = {'approve_user': store.approve, 'reject_user': store.reject, 'disable_user': store.disable}
             if action in operations:
                 target = int(body.get('user_id', 0))

@@ -18,6 +18,15 @@ from datetime import datetime, timedelta
 from typing import Any, Mapping
 
 
+def normalize_invite_code(value: Any) -> str:
+    """Keep invite-code validation independent from the client package."""
+    return "".join(str(value or "").upper().split()).replace("-", "")
+
+
+def hash_invite_code(value: Any) -> str:
+    return hashlib.sha256(normalize_invite_code(value).encode("utf-8")).hexdigest()
+
+
 class AuthError(RuntimeError):
     """可安全展示给界面的认证业务错误。"""
 
@@ -70,6 +79,19 @@ class AuthStore:
                       approved_at TEXT,
                       last_login_at TEXT,
                       updated_at TEXT NOT NULL
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS app_invites (
+                      id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      code_hash TEXT NOT NULL UNIQUE,
+                      code_preview TEXT NOT NULL,
+                      status TEXT NOT NULL DEFAULT 'active',
+                      created_at TEXT NOT NULL,
+                      used_at TEXT,
+                      used_by INTEGER
                     )
                     """
                 )
@@ -191,15 +213,29 @@ class AuthStore:
             "last_login_at": str(row["last_login_at"] or ""),
         }
 
-    def register(self, username: Any, password: Any, employee_name: Any) -> dict[str, Any]:
+    def register(self, username: Any, password: Any, employee_name: Any, invite_code: Any) -> dict[str, Any]:
         username = self._text(username, "账号", self.MAX_USERNAME_LENGTH)
         password = self._password(password)
         employee_name = self._text(
             employee_name, "员工姓名", self.MAX_EMPLOYEE_NAME_LENGTH
         )
+        invite_code = normalize_invite_code(invite_code)
+        if len(invite_code) < 8:
+            raise AuthError("invalid_invite", "邀请码无效，请向管理员索取有效邀请码")
         now = self._now()
         conn = self._connect()
         try:
+            invite = conn.execute(
+                "SELECT id, status FROM app_invites WHERE code_hash = ?",
+                (hash_invite_code(invite_code),),
+            ).fetchone()
+            if invite is None:
+                raise AuthError("invalid_invite", "邀请码无效，请向管理员索取有效邀请码")
+            if str(invite["status"] or "") != "active":
+                message = {"used": "邀请码已使用", "revoked": "邀请码已撤销"}.get(
+                    str(invite["status"] or ""), "邀请码不可用"
+                )
+                raise AuthError("invalid_invite", message)
             try:
                 cursor = conn.execute(
                     """
@@ -212,11 +248,48 @@ class AuthStore:
                 )
             except sqlite3.IntegrityError as exc:
                 raise AuthError("username_exists", "该账号已存在") from exc
+            conn.execute(
+                "UPDATE app_invites SET status='used', used_at=?, used_by=? WHERE id=? AND status='active'",
+                (now, cursor.lastrowid, int(invite["id"])),
+            )
             conn.commit()
             row = conn.execute(
                 "SELECT * FROM app_users WHERE id = ?", (cursor.lastrowid,)
             ).fetchone()
             return self._public_user(row)
+        finally:
+            conn.close()
+
+    def sync_invites(self, items: Any) -> list[dict[str, Any]]:
+        """Upsert invite hashes sent by an administrator client."""
+        if not isinstance(items, list) or len(items) > 100:
+            raise AuthError("invalid_input", "邀请码数据无效")
+        now = self._now()
+        conn = self._connect()
+        try:
+            for item in items:
+                if not isinstance(item, Mapping):
+                    raise AuthError("invalid_input", "邀请码数据无效")
+                code = normalize_invite_code(item.get("code"))
+                if len(code) < 8:
+                    raise AuthError("invalid_input", "邀请码格式无效")
+                status = str(item.get("status") or "active").strip().lower()
+                if status not in {"active", "used", "revoked", "expired"}:
+                    raise AuthError("invalid_input", "邀请码状态无效")
+                preview = code[:4] + "-" + code[4:8] + ("-..." if len(code) > 8 else "")
+                conn.execute(
+                    """
+                    INSERT INTO app_invites(code_hash, code_preview, status, created_at)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(code_hash) DO UPDATE SET status=excluded.status
+                    """,
+                    (hash_invite_code(code), preview, status, now),
+                )
+            conn.commit()
+            rows = conn.execute(
+                "SELECT id, code_preview, status, created_at, used_at, used_by FROM app_invites ORDER BY id DESC"
+            ).fetchall()
+            return [dict(row) for row in rows]
         finally:
             conn.close()
 
@@ -480,5 +553,4 @@ class AuthStore:
 
 
 __all__ = ["AuthError", "AuthStore"]
-
 
