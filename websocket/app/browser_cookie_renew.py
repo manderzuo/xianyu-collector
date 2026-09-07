@@ -309,6 +309,7 @@ def _sync_password_login(
         # 提交后等待真实登录结果。首次冷启动可能需要更长时间，不能在
         # 固定 5 秒后立即把仍在提交中的页面当成密码错误。
         deadline = time.monotonic() + 45
+        retried_after_platform_error = False
         while time.monotonic() < deadline:
             body_text = (page.locator("body").text_content() or "").strip()
             if any(word in body_text for word in ("滑块", "人脸", "安全验证", "请完成验证")):
@@ -327,13 +328,30 @@ def _sync_password_login(
                     "method": "password",
                     "message": "账号密码登录成功",
                 }
+            retried_submission = False
             for selector in (".login-error-msg", ".fm-error", ".error-msg"):
                 try:
                     error_text = (login_frame.locator(selector).first.text_content() or "").strip()
                     if error_text and login_frame.locator(selector).first.is_visible():
+                        # 闲鱼首次冷启动时偶尔会在登录页返回一次瞬时的
+                        # “密码错误/登录失败”，同一个浏览器上下文重提一次
+                        # 通常即可完成登录。第二次仍失败才返回真实错误。
+                        if not retried_after_platform_error:
+                            retried_after_platform_error = True
+                            try:
+                                login_frame.locator("#fm-login-id").fill(str(username).strip())
+                                password_input.fill(str(password))
+                                submit.click(timeout=5000)
+                                page.wait_for_timeout(1000)
+                                retried_submission = True
+                                break
+                            except Exception:
+                                pass
                         return {"success": False, "message": f"密码登录失败：{error_text[:300]}"}
                 except Exception:
                     continue
+            if retried_submission:
+                continue
             page.wait_for_timeout(1000)
 
         # 优先返回页面原始错误，便于界面告诉用户是密码错误还是被平台拦截。
