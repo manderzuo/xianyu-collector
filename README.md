@@ -1,4 +1,4 @@
-# xianyu-rewrite — 闲鱼自动化系统（干净重写版）
+# xianyu-rewrite — 闲鱼自动化系统
 
 > 全新仓库，业务模块按当前功能重新实现。扫码登录按独立闲鱼协议实现，品牌和域名保留为可配置项。
 
@@ -84,6 +84,3 @@ GitHub Actions 配置见 `.github/workflows/build-and-publish.yml`。
 ## 品牌/域名占位
 - 全仓库以 `BRAND_NAME` / `BRAND_DOMAIN` 占位，待你补充后全局替换即可。
 - 不含任何原仓库远程地址、二维码、激活逻辑。
-
-## 合规
-- 本仓库为干净重写，未复制原仓库代码/资源，独立版权。
