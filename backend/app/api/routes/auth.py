@@ -221,13 +221,6 @@ async def register(request: RegisterRequest, session: AsyncSession = Depends(get
         await session.commit()
         raise HTTPException(status_code=400, detail="邀请码已过期")
 
-    if not request.session_id:
-        raise HTTPException(status_code=400, detail="请先完成图形验证码")
-    from backend.app.api.routes.captcha import consume_captcha
-    captcha_verified, captcha_message = consume_captcha(request.session_id)
-    if not captcha_verified:
-        raise HTTPException(status_code=400, detail=captcha_message)
-
     try:
         remote = await cloud_auth_request("register", {
             "username": request.username.strip(),

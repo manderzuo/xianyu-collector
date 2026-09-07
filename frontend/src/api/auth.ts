@@ -164,13 +164,13 @@ export const register = (data: {
   username: string
   invite_code: string
   password: string
-  session_id: string
+  session_id?: string
 }): Promise<ApiResponse> => {
   return post(`${AUTH_PREFIX}/register`, {
     username: data.username,
     invite_code: data.invite_code,
     password: data.password,
-    session_id: data.session_id,
+    ...(data.session_id ? { session_id: data.session_id } : {}),
   })
 }
 

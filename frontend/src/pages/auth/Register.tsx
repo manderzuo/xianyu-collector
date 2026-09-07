@@ -4,9 +4,8 @@ import { MessageSquare, User, Lock, KeyRound, Eye, EyeOff } from 'lucide-react'
 import { AuthNavbar } from '@/components/common/AuthNavbar'
 import { SafeHtml } from '@/components/common/SafeHtml'
 import { getDefaultAuthFooterAdSettings } from '@/api/settings'
-import { register, getRegistrationStatus, generateCaptcha, verifyCaptcha, getAuthFooterAdSettings } from '@/api/auth'
+import { register, getRegistrationStatus, getAuthFooterAdSettings } from '@/api/auth'
 import { useUIStore } from '@/store/uiStore'
-import { cn } from '@/utils/cn'
 import { ButtonLoading } from '@/components/common/Loading'
 
 export function Register() {
@@ -22,12 +21,6 @@ export function Register() {
   const [inviteCode, setInviteCode] = useState('')
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
-  const [captchaCode, setCaptchaCode] = useState('')
-
-  const [captchaImage, setCaptchaImage] = useState('')
-  const [sessionId] = useState(() => `session_${Math.random().toString(36).substr(2, 9)}_${Date.now()}`)
-  const [captchaVerified, setCaptchaVerified] = useState(false)
-  const [verifying, setVerifying] = useState(false)
 
   useEffect(() => {
     getRegistrationStatus()
@@ -45,49 +38,6 @@ export function Register() {
       .catch(() => {})
   }, [navigate, addToast])
 
-  useEffect(() => {
-    loadCaptcha()
-  }, [])
-
-  useEffect(() => {
-    if (captchaCode.length === 4 && !captchaVerified && !verifying) {
-      handleVerifyCaptchaAuto()
-    }
-  }, [captchaCode])
-
-  const handleVerifyCaptchaAuto = async () => {
-    if (captchaCode.length !== 4 || verifying) return
-    setVerifying(true)
-    try {
-      const result = await verifyCaptcha(sessionId, captchaCode)
-      if (result.success) {
-        setCaptchaVerified(true)
-        addToast({ type: 'success', message: '验证码验证成功' })
-      } else {
-        setCaptchaVerified(false)
-        loadCaptcha()
-        addToast({ type: 'error', message: '验证码错误' })
-      }
-    } catch {
-      addToast({ type: 'error', message: '验证失败' })
-    } finally {
-      setVerifying(false)
-    }
-  }
-
-  const loadCaptcha = async () => {
-    try {
-      const result = await generateCaptcha(sessionId)
-      if (result.success && result.captcha_image) {
-        setCaptchaImage(result.captcha_image)
-        setCaptchaVerified(false)
-        setCaptchaCode('')
-      }
-    } catch {
-      addToast({ type: 'error', message: '加载验证码失败' })
-    }
-  }
-
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!username.trim() || !inviteCode.trim() || !password || !confirmPassword) {
@@ -102,18 +52,12 @@ export function Register() {
       addToast({ type: 'error', message: '密码长度至少6位' })
       return
     }
-    if (!captchaVerified) {
-      addToast({ type: 'warning', message: '请先完成图形验证码验证' })
-      return
-    }
-
     setLoading(true)
     try {
       const result = await register({
         username: username.trim(),
         invite_code: inviteCode.trim(),
         password,
-        session_id: sessionId,
       })
       if (result.success) {
         addToast({ type: 'success', message: '注册申请已提交，请等待管理员审核' })
@@ -196,17 +140,6 @@ export function Register() {
                   <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
                   <input type={showPassword ? 'text' : 'password'} value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} placeholder="请再次输入密码" className="input-ios pl-9" />
                 </div>
-              </div>
-
-              <div className="input-group">
-                <label className="input-label">图形验证码</label>
-                <div className="flex gap-2">
-                  <input type="text" value={captchaCode} onChange={(e) => setCaptchaCode(e.target.value)} placeholder="输入验证码" maxLength={4} className="input-ios flex-1" disabled={captchaVerified} />
-                  <img src={captchaImage} alt="验证码" onClick={loadCaptcha} className="h-[38px] rounded border border-slate-300 dark:border-slate-600 cursor-pointer hover:opacity-80 transition-opacity" />
-                </div>
-                <p className={cn('text-xs', captchaVerified ? 'text-green-600 dark:text-green-400' : verifying ? 'text-blue-500' : 'text-slate-400')}>
-                  {captchaVerified ? '✓ 验证成功' : verifying ? '验证中...' : '点击图片更换验证码'}
-                </p>
               </div>
 
               <button type="submit" disabled={loading} className="w-full btn-ios-primary">

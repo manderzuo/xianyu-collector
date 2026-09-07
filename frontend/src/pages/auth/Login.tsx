@@ -104,10 +104,6 @@ export function Login() {
     }
   }, [loginType])
 
-  useEffect(() => {
-    if (showRegister) loadCaptcha()
-  }, [showRegister])
-
   // Countdown timer
   useEffect(() => {
     if (countdown > 0) {
@@ -295,13 +291,9 @@ export function Login() {
       addToast({ type: 'error', message: '密码长度至少6位' })
       return
     }
-    if (!captchaVerified) {
-      addToast({ type: 'warning', message: '请先完成图形验证码验证' })
-      return
-    }
     setLoading(true)
     try {
-      const result = await register({ username: username.trim(), invite_code: registerInviteCode.trim(), password, session_id: sessionId })
+      const result = await register({ username: username.trim(), invite_code: registerInviteCode.trim(), password })
       if (result.success) {
         addToast({ type: 'success', message: '注册申请已提交，请等待管理员审核' })
         setShowRegister(false)
@@ -423,7 +415,6 @@ export function Login() {
                 <div className="input-group"><label className="input-label">邀请码</label><div className="relative"><KeyRound className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" /><input value={registerInviteCode} onChange={(e) => setRegisterInviteCode(e.target.value.toUpperCase())} placeholder="请输入管理员提供的邀请码" className="input-ios pl-9 tracking-wide" autoComplete="one-time-code" /></div></div>
                 <div className="input-group"><label className="input-label">密码</label><div className="relative"><Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" /><input type={showPassword ? 'text' : 'password'} value={password} onChange={(e) => setPassword(e.target.value)} placeholder="至少6位字符" className="input-ios pl-9 pr-9" /><button type="button" onClick={() => setShowPassword(!showPassword)} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400">{showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}</button></div></div>
                 <div className="input-group"><label className="input-label">确认密码</label><input type={showPassword ? 'text' : 'password'} value={registerConfirmPassword} onChange={(e) => setRegisterConfirmPassword(e.target.value)} placeholder="请再次输入密码" className="input-ios" /></div>
-                <div className="input-group"><label className="input-label">图形验证码</label><div className="flex gap-2"><input value={captchaCode} onChange={(e) => setCaptchaCode(e.target.value)} placeholder="输入验证码" maxLength={4} className="input-ios flex-1" disabled={captchaVerified} /><img src={captchaImage} alt="验证码" onClick={loadCaptcha} className="h-[38px] rounded border border-gray-300 cursor-pointer" /></div><p className="text-xs text-slate-400">{captchaVerified ? '✓ 验证成功' : '点击图片更换验证码'}</p></div>
                 <button type="submit" disabled={loading} className="w-full btn-ios-primary">{loading ? <ButtonLoading /> : '提 交 注 册 申 请'}</button>
               </form>
             ) : <form onSubmit={handleSubmit} className="space-y-3 sm:space-y-4">

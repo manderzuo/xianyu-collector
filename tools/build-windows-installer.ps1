@@ -115,6 +115,9 @@ Each start.bat run checks the Tencent-hosted Xianyu release manifest first. If a
 image release is available, the installer asks for confirmation, pulls the images and
 restarts the services while preserving Docker volumes. A temporary network or registry
 failure is logged and the current installation still starts.
+If an older package left a garbled desktop shortcut, copy this package over the same
+installation folder and run start.bat once. The launcher will remove the stale Xianyu
+shortcut and recreate it with the correct Chinese name.
 stop.bat stops containers without deleting data.
 diagnostics.bat prints Docker and service status for troubleshooting.
 
