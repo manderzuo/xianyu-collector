@@ -61,6 +61,7 @@ Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows-installer-start.ps1') -
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows-installer-stop.ps1') -Destination (Join-Path $ScriptsRoot 'stop.ps1') -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows-installer-diagnostics.ps1') -Destination (Join-Path $ScriptsRoot 'diagnostics.ps1') -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows-installer-update.ps1') -Destination (Join-Path $ScriptsRoot 'update.ps1') -Force
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows-installer-apply-client-update.ps1') -Destination (Join-Path $ScriptsRoot 'apply-client-update.ps1') -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows-installer-docker.ps1') -Destination (Join-Path $ResourcesRoot 'docker-bootstrap.ps1') -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows-installer-wsl.ps1') -Destination (Join-Path $ResourcesRoot 'prepare-wsl.ps1') -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'import-offline-image-bundle.ps1') -Destination (Join-Path $ResourcesRoot 'import-offline-image-bundle.ps1') -Force
@@ -159,6 +160,9 @@ asks for confirmation, then downloads only changed Tencent-hosted image archives
 their SHA-256 values, imports them and restarts the services while preserving Docker
 volumes. The detailed update log is saved at app\logs\update.log, including the manifest
 response, download and Docker command output, exit codes and post-failure container status.
+If the release also contains a signed client maintenance package, the updater verifies its
+SHA-256 value and stages it for safe replacement at the next launcher start. This updates
+the GUI and maintenance scripts without replacing files in the middle of a running update.
 A temporary network or registry failure is logged and the current installation still starts.
 The installer also synchronizes the application database credentials with an existing
 MySQL container before the services start, so an update does not break an existing database.

@@ -7,6 +7,7 @@ $UpdateChecker = Join-Path $AppRoot 'deploy\check-xianyu-update.ps1'
 $DbCredentialSync = Join-Path $AppRoot 'deploy\sync-xianyu-db-credentials.ps1'
 $ProtocolRegistrar = Join-Path $AppRoot 'deploy\register-xianyu-update-protocol.ps1'
 $DockerBootstrap = Join-Path $PackageRoot 'resources\docker-bootstrap.ps1'
+$ClientUpdateApplier = Join-Path $PackageRoot 'scripts\apply-client-update.ps1'
 $ErrorHelper = Join-Path $AppRoot 'deploy\windows-error-reporting.ps1'
 if (Test-Path -LiteralPath $ErrorHelper) { . $ErrorHelper }
 $LogPath = if (Get-Command Start-XianyuLogSession -ErrorAction SilentlyContinue) { Start-XianyuLogSession -ProjectRoot $AppRoot -Name 'startup' } else { '' }
@@ -22,6 +23,13 @@ trap {
         Complete-XianyuFailure -Context 'The application could not be started.' -ErrorRecord $_ -LogPath $LogPath
     }
     exit 1
+}
+
+# A signed client maintenance package is staged by the updater and applied
+# before Compose starts. A failed replacement remains queued for retry and
+# never prevents the existing application from starting.
+if (Test-Path -LiteralPath $ClientUpdateApplier) {
+    try { & $ClientUpdateApplier -PackageRoot $PackageRoot } catch { Write-Host "[xianyu] Client maintenance update skipped: $($_.Exception.Message)" -ForegroundColor Yellow }
 }
 
 function Remove-StaleXianyuShortcuts {

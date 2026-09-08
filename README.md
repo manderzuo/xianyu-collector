@@ -75,6 +75,8 @@ GitHub Actions 只负责构建和校验镜像，发布时会把四个业务镜�
 启动器发现新版本后，会按镜像 ID 跳过未变化的服务，只下载变化的归档；每个归档先做 SHA-256
 校验，再执行 `docker load`，Compose 重启成功并通过前端检查后才写入本地版本标记。失败时恢复
 旧 `.env` 和旧服务配置，并保留更新日志。没有归档的旧清单仍兼容原来的 Compose pull 模式。
+清单同时可以携带小型客户端维护包；更新器先校验并暂存该包，下一次启动时再替换 GUI 和维护脚本，
+避免在当前更新进程运行期间覆盖自身。
 
 GitHub Actions 配置见 `.github/workflows/build-and-publish.yml`。工作流需要已有的四个
 `TENCENT_UPDATE_*` SSH secrets，`TENCENT_UPDATE_REMOTE_PATH` 必须是 Nginx `alias`

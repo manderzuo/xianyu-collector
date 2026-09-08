@@ -258,6 +258,35 @@ $worker = {
         }
     }
 
+    function Install-ClientMaintenance($Manifest, [string]$Version, [string]$Build) {
+        if ($null -eq $Manifest.client) { return '' }
+        $url = "$($Manifest.client.package_url)".Trim()
+        $expectedHash = "$($Manifest.client.package_sha256)".Trim().ToLowerInvariant()
+        if (-not $url -and -not $expectedHash) { return '' }
+        if (-not $url -or $expectedHash -notmatch '^[0-9a-f]{64}$') {
+            throw '客户端维护包清单字段不完整'
+        }
+        $uri = [Uri]$url
+        if ($uri.Scheme -ne 'https') { throw "客户端维护包必须使用 HTTPS：$url" }
+        $tempArchive = Join-Path ([IO.Path]::GetTempPath()) ('xianyu-client-' + [guid]::NewGuid().ToString('N') + '.zip')
+        $pendingRoot = Join-Path $Root 'updates\pending'
+        New-Item -ItemType Directory -Path $pendingRoot -Force | Out-Null
+        try {
+            Write-Detail "client_package_download url=$url"
+            Invoke-WebRequest -UseBasicParsing -Uri $uri.AbsoluteUri -TimeoutSec 900 -OutFile $tempArchive
+            $actualHash = (Get-FileHash -LiteralPath $tempArchive -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actualHash -ne $expectedHash) { throw '客户端维护包 SHA-256 校验失败' }
+            $safeBuild = ($Build -replace '[^A-Za-z0-9._-]', '-')
+            if (-not $safeBuild) { $safeBuild = $Version }
+            $pendingPath = Join-Path $pendingRoot "client-$safeBuild.zip"
+            Copy-Item -LiteralPath $tempArchive -Destination $pendingPath -Force
+            Write-Detail "client_package_staged path=$pendingPath sha256=$actualHash bytes=$((Get-Item -LiteralPath $pendingPath).Length)"
+            return $pendingPath
+        } finally {
+            Remove-Item -LiteralPath $tempArchive -Force -ErrorAction SilentlyContinue
+        }
+    }
+
     try {
         Write-Detail "update_start mode=$Mode root=$Root"
         if (-not (Test-Path -LiteralPath $compose) -or -not (Test-Path -LiteralPath $envFile)) { throw '缺少 docker-compose.yml 或 .env' }
@@ -270,6 +299,7 @@ $worker = {
         $manifestToken = "$($envMap['UPDATE_MANIFEST_TOKEN'])".Trim()
         if ($manifestToken) { $headers['Authorization'] = "Bearer $manifestToken"; Write-Detail 'manifest_auth configured=true' }
         $signatureInfo = [pscustomobject]@{ Verified = $false; Required = (Test-TrueValue "$($envMap['UPDATE_REQUIRE_SIGNATURE'])"); Url = ''; Algorithm = '' }
+        $pendingClientPath = ''
         if ($Mode -eq 'check') {
             $manifestPath = Join-Path ([IO.Path]::GetTempPath()) ('xianyu-manifest-' + [guid]::NewGuid().ToString('N') + '.json')
             try {
@@ -345,6 +375,7 @@ $worker = {
         $response = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:$port" -TimeoutSec 15
         Write-Detail "frontend_check status=$($response.StatusCode) port=$port"
         if ($response.StatusCode -lt 200 -or $response.StatusCode -ge 500) { throw "前端健康检查失败，HTTP $($response.StatusCode)" }
+        $pendingClientPath = Install-ClientMaintenance $manifest $latestVersion $latestBuild
         Set-Content -LiteralPath $versionFile -Value $latestVersion -Encoding UTF8
         Set-Content -LiteralPath $buildFile -Value $latestBuild -Encoding UTF8
         Write-Detail "update_completed version=$latestVersion build=$latestBuild"
@@ -352,6 +383,10 @@ $worker = {
     } catch {
         $detail = $_.Exception.ToString()
         Write-Detail "update_failed error=$detail"
+        if ($pendingClientPath -and (Test-Path -LiteralPath $pendingClientPath)) {
+            Remove-Item -LiteralPath $pendingClientPath -Force -ErrorAction SilentlyContinue
+            Write-Detail "client_package_discarded path=$pendingClientPath"
+        }
         if ($previousDeployMode -ne $null) {
             try {
                 Set-EnvValue $envFile 'XR_DEPLOY_MODE' $previousDeployMode

@@ -82,8 +82,41 @@ jobs:
           push: true
           tags: ${{ env.IMAGE_REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/xianyu-${{ matrix.name }}:${{ steps.release.outputs.version }}
 
+  client_package:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build client maintenance package
+        id: package
+        shell: pwsh
+        run: |
+          if ('${{ github.event_name }}' -eq 'workflow_dispatch') {
+            $version = '${{ inputs.version }}'
+          } elseif ('${{ github.ref_type }}' -eq 'tag') {
+            $version = '${{ github.ref_name }}'.Substring(1)
+          } else {
+            $version = (Get-Content -LiteralPath 'VERSION.txt' -Raw).Trim()
+          }
+          if ([string]::IsNullOrWhiteSpace($version)) { throw 'VERSION.txt is empty.' }
+          $buildId = "$(($env:GITHUB_SHA).Substring(0,12))-$version"
+          $packageFile = "xianyu-client-$buildId.zip"
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File '.\tools\build-windows-installer.ps1' -OutputDirectory '.\release\client' -Force
+          Compress-Archive -Path '.\release\client\*' -DestinationPath (Join-Path $PWD "release\$packageFile") -CompressionLevel Optimal -Force
+          "package_file=$packageFile" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Upload client maintenance package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: xianyu-client-package
+          path: release/*.zip
+          if-no-files-found: error
+
   manifest:
-    needs: build
+    needs: [build, client_package]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -115,7 +148,19 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "build_id=$build_id" >> "$GITHUB_OUTPUT"
           echo "signature_file=$signature_file" >> "$GITHUB_OUTPUT"
+          package_file="xianyu-client-${build_id}.zip"
+          echo "package_file=$package_file" >> "$GITHUB_OUTPUT"
           printf '%s' "$notes" > release-notes.txt
+
+      - name: Download client maintenance package
+        uses: actions/download-artifact@v4
+        with:
+          name: xianyu-client-package
+          path: release/client-download
+
+      - name: Place client maintenance package
+        shell: bash
+        run: cp release/client-download/*.zip release/
 
       - name: Login to GitHub Container Registry for packaging
         uses: docker/login-action@v3
@@ -164,6 +209,8 @@ jobs:
             --tag "${{ steps.release.outputs.version }}" \
             --notes "$(cat release-notes.txt)" \
             --image-artifacts-json release/image-artifacts.json \
+            --package-url "https://www.gemstory.cn/release/xianyu/${{ steps.release.outputs.package_file }}" \
+            --package-sha256 "$(sha256sum "release/${{ steps.release.outputs.package_file }}" | awk '{print $1}')" \
             --signature-url "https://www.gemstory.cn/release/xianyu/${{ steps.release.outputs.signature_file }}" \
             --signature-algorithm "RSA-SHA256" \
             --output release/latest.json
@@ -198,6 +245,17 @@ jobs:
           target: ${{ secrets.TENCENT_UPDATE_REMOTE_PATH }}
           strip_components: 1
           command_timeout: 30m
+
+      - name: Upload client maintenance package to Tencent server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.TENCENT_UPDATE_SSH_HOST }}
+          username: ${{ secrets.TENCENT_UPDATE_SSH_USER }}
+          key: ${{ secrets.TENCENT_UPDATE_SSH_KEY }}
+          source: release/${{ steps.release.outputs.package_file }}
+          target: ${{ secrets.TENCENT_UPDATE_REMOTE_PATH }}
+          strip_components: 1
+          command_timeout: 10m
 
       - name: Publish manifest signature before manifest
         uses: appleboy/scp-action@v0.1.7
@@ -234,6 +292,9 @@ jobs:
           test -n "${signature_url}"
           curl --fail --silent --show-error --retry 3 --retry-delay 2 "${signature_url}" -o release/remote-latest.json.sig
           test -s release/remote-latest.json.sig
+          package_url="$(jq -r '.client.package_url // empty' release/remote-latest.json)"
+          test -n "${package_url}"
+          curl --fail --silent --show-error --retry 3 --retry-delay 2 -I "${package_url}" >/dev/null
           jq -r '.image_artifacts[].url' release/remote-latest.json | while IFS= read -r url; do
             curl --fail --silent --show-error --retry 3 --retry-delay 2 -I "$url" >/dev/null
           done
