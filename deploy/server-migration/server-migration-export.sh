@@ -42,6 +42,10 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ -z "$REGISTRY_DATA" && -d /var/lib/gemstory/xianyu-registry ]]; then
+  REGISTRY_DATA=/var/lib/gemstory/xianyu-registry
+fi
+
 [[ -n "$APP_ROOT" ]] || die '--app-root is required.'
 [[ -n "$OUTPUT_DIR" ]] || die '--output is required.'
 [[ -d "$APP_ROOT" ]] || die "Application root does not exist: $APP_ROOT"

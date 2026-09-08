@@ -30,7 +30,7 @@ Optional arguments:
 --auth-data PATH       cloud-auth data directory
 --nginx-config PATH    reverse-proxy configuration to archive
 --include-images       include all current Compose images for offline restore
---include-registry PATH  include a Docker Registry data directory
+--include-registry PATH  include a Docker Registry data directory (auto-detects /var/lib/gemstory/xianyu-registry)
 ```
 
 The script asks for a migration passphrase without echoing it. The generated

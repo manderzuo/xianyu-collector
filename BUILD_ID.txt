@@ -1,1 +1,1 @@
-20260908-1.1.0-login-ui-and-commercial-delivery
+20260908-1.1.1-incremental-registry-update

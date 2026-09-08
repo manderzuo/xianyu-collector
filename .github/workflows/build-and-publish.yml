@@ -27,9 +27,44 @@ concurrency:
 env:
   IMAGE_REGISTRY: ghcr.io
   IMAGE_NAMESPACE: ${{ github.repository }}
+  CLIENT_IMAGE_REGISTRY: www.gemstory.cn
+  CLIENT_IMAGE_NAMESPACE: xianyu
 
 jobs:
+  registry_bootstrap:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Upload incremental registry installer
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.TENCENT_UPDATE_SSH_HOST }}
+          username: ${{ secrets.TENCENT_UPDATE_SSH_USER }}
+          key: ${{ secrets.TENCENT_UPDATE_SSH_KEY }}
+          source: deploy/registry/*
+          target: /tmp/xianyu-registry-bootstrap-${{ github.run_id }}
+          strip_components: 2
+          command_timeout: 5m
+
+      - name: Ensure incremental registry is available
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.TENCENT_UPDATE_SSH_HOST }}
+          username: ${{ secrets.TENCENT_UPDATE_SSH_USER }}
+          key: ${{ secrets.TENCENT_UPDATE_SSH_KEY }}
+          script_stop: true
+          command_timeout: 10m
+          script: |
+            deploy_dir="/tmp/xianyu-registry-bootstrap-${{ github.run_id }}"
+            status=0
+            sudo python3 "${deploy_dir}/install.py" || status=$?
+            sudo rm -rf "${deploy_dir}"
+            exit "${status}"
+
   build:
+    needs: registry_bootstrap
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -39,13 +74,13 @@ jobs:
       matrix:
         include:
           - name: backend
-            dockerfile: backend/Dockerfile
+            dockerfile: deploy/incremental/backend.Dockerfile
           - name: websocket
-            dockerfile: websocket/Dockerfile
+            dockerfile: deploy/incremental/websocket.Dockerfile
           - name: scheduler
-            dockerfile: scheduler/Dockerfile
+            dockerfile: deploy/incremental/scheduler.Dockerfile
           - name: frontend
-            dockerfile: deploy/frontend.Dockerfile
+            dockerfile: deploy/incremental/frontend.Dockerfile
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -89,8 +124,11 @@ jobs:
           push: true
           tags: ${{ env.IMAGE_REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/xianyu-${{ matrix.name }}:${{ steps.release.outputs.version }}
           build-args: |
+            BASE_IMAGE=${{ env.CLIENT_IMAGE_REGISTRY }}/${{ env.CLIENT_IMAGE_NAMESPACE }}/xianyu-${{ matrix.name }}:1.0.10
             APP_VERSION=${{ steps.release.outputs.version }}
             APP_BUILD_ID=${{ steps.release.outputs.build_id }}
+          cache-from: type=gha,scope=xianyu-${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=xianyu-${{ matrix.name }}
 
   client_package:
     runs-on: windows-latest
@@ -130,7 +168,7 @@ jobs:
           if-no-files-found: error
 
   manifest:
-    needs: [build, client_package]
+    needs: [registry_bootstrap, build, client_package]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -186,46 +224,82 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Prepare Tencent-hosted image archives
+      - name: Prepare registry import archives
         shell: bash
         env:
           RELEASE_VERSION: ${{ steps.release.outputs.version }}
-          RELEASE_BASE_URL: https://www.gemstory.cn/release/xianyu
         run: |
           set -Eeuo pipefail
-          mkdir -p release
-          artifacts='[]'
+          mkdir -p release/registry-upload
+          : > release/registry-upload/SHA256SUMS
           for service in backend websocket scheduler frontend; do
             image_ref="${IMAGE_REGISTRY}/${IMAGE_NAMESPACE}/xianyu-${service}:${RELEASE_VERSION}"
-            archive="xianyu-${service}-${RELEASE_VERSION}.tar.gz"
-            echo "Preparing ${image_ref} -> release/${archive}"
+            archive="xianyu-${service}.tar.gz"
+            echo "Preparing ${image_ref} for incremental registry import"
             docker pull "${image_ref}"
-            docker save "${image_ref}" | gzip -1 > "release/${archive}"
-            sha256="$(sha256sum "release/${archive}" | awk '{print $1}')"
-            bytes="$(stat -c '%s' "release/${archive}")"
-            image_id="$(docker image inspect "${image_ref}" --format '{{.Id}}')"
-            item="$(jq -n \
-              --arg service "${service}" \
-              --arg image_ref "${image_ref}" \
-              --arg url "${RELEASE_BASE_URL}/${archive}" \
-              --arg sha256 "${sha256}" \
-              --arg image_id "${image_id}" \
-              --argjson bytes "${bytes}" \
-              '{service:$service,image_ref:$image_ref,url:$url,sha256:$sha256,image_id:$image_id,bytes:$bytes,format:"docker"}')"
-            artifacts="$(jq --argjson item "${item}" '. + [$item]' <<<"${artifacts}")"
+            docker save "${image_ref}" | gzip -1 > "release/registry-upload/${archive}"
+            (cd release/registry-upload && sha256sum "${archive}" >> SHA256SUMS)
           done
-          printf '%s\n' "${artifacts}" > release/image-artifacts.json
+
+      - name: Upload images for registry import
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.TENCENT_UPDATE_SSH_HOST }}
+          username: ${{ secrets.TENCENT_UPDATE_SSH_USER }}
+          key: ${{ secrets.TENCENT_UPDATE_SSH_KEY }}
+          source: release/registry-upload/*
+          target: /tmp/xianyu-registry-import-${{ github.run_id }}
+          strip_components: 2
+          command_timeout: 30m
+
+      - name: Import image layers into Tencent registry
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.TENCENT_UPDATE_SSH_HOST }}
+          username: ${{ secrets.TENCENT_UPDATE_SSH_USER }}
+          key: ${{ secrets.TENCENT_UPDATE_SSH_KEY }}
+          script_stop: true
+          command_timeout: 30m
+          script: |
+            set -Eeuo pipefail
+            stage="/tmp/xianyu-registry-import-${{ github.run_id }}"
+            version="${{ steps.release.outputs.version }}"
+            trap 'rm -rf "${stage}"' EXIT
+            cd "${stage}"
+            sha256sum -c SHA256SUMS
+            for service in backend websocket scheduler frontend; do
+              archive="${stage}/xianyu-${service}.tar.gz"
+              image_tar="${stage}/xianyu-${service}.tar"
+              gzip -dc "${archive}" > "${image_tar}"
+              skopeo --insecure-policy copy --dest-tls-verify=false \
+                "docker-archive:${image_tar}" \
+                "docker://127.0.0.1:5000/xianyu/xianyu-${service}:${version}"
+              rm -f "${image_tar}"
+            done
+
+      - name: Verify incremental registry images
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -Eeuo pipefail
+          curl --fail --silent --show-error https://${CLIENT_IMAGE_REGISTRY}/v2/ >/dev/null
+          for service in backend websocket scheduler frontend; do
+            curl --fail --silent --show-error \
+              -H 'Accept: application/vnd.docker.distribution.manifest.v2+json' \
+              "https://${CLIENT_IMAGE_REGISTRY}/v2/${CLIENT_IMAGE_NAMESPACE}/xianyu-${service}/manifests/${RELEASE_VERSION}" \
+              >/dev/null
+          done
 
       - name: Create update manifest
         run: |
           python tools/build_xianyu_release_manifest.py \
             --version "${{ steps.release.outputs.version }}" \
             --build-id "${{ steps.release.outputs.build_id }}" \
-            --registry "${{ env.IMAGE_REGISTRY }}" \
-            --namespace "${{ env.IMAGE_NAMESPACE }}" \
+            --registry "${{ env.CLIENT_IMAGE_REGISTRY }}" \
+            --namespace "${{ env.CLIENT_IMAGE_NAMESPACE }}" \
             --tag "${{ steps.release.outputs.version }}" \
             --notes "$(cat release-notes.txt)" \
-            --image-artifacts-json release/image-artifacts.json \
             --package-url "https://www.gemstory.cn/release/xianyu/${{ steps.release.outputs.package_file }}" \
             --package-sha256 "$(sha256sum "release/${{ steps.release.outputs.package_file }}" | awk '{print $1}')" \
             --signature-url "https://www.gemstory.cn/release/xianyu/${{ steps.release.outputs.signature_file }}" \
@@ -251,17 +325,6 @@ jobs:
           base64 -w0 "${signature_file}.bin" > "${signature_file}"
           printf '\n' >> "${signature_file}"
           rm -f "${signature_file}.bin"
-
-      - name: Upload image archives to Tencent server
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.TENCENT_UPDATE_SSH_HOST }}
-          username: ${{ secrets.TENCENT_UPDATE_SSH_USER }}
-          key: ${{ secrets.TENCENT_UPDATE_SSH_KEY }}
-          source: release/*.tar.gz
-          target: ${{ secrets.TENCENT_UPDATE_REMOTE_PATH }}
-          strip_components: 1
-          command_timeout: 30m
 
       - name: Upload client maintenance package to Tencent server
         uses: appleboy/scp-action@v0.1.7
@@ -304,7 +367,7 @@ jobs:
           set -Eeuo pipefail
           curl --fail --silent --show-error --retry 3 --retry-delay 2 \
             "${RELEASE_BASE_URL}/latest.json" -o release/remote-latest.json
-          jq -e '.version and .build_id and (.image_artifacts | length == 4)' release/remote-latest.json >/dev/null
+          jq -e '.version and .build_id and .image_registry == "www.gemstory.cn" and .image_namespace == "xianyu" and (.image_artifacts | length == 0)' release/remote-latest.json >/dev/null
           signature_url="$(jq -r '.signature.url // empty' release/remote-latest.json)"
           test -n "${signature_url}"
           curl --fail --silent --show-error --retry 3 --retry-delay 2 "${signature_url}" -o release/remote-latest.json.sig
@@ -312,7 +375,11 @@ jobs:
           package_url="$(jq -r '.client.package_url // empty' release/remote-latest.json)"
           test -n "${package_url}"
           curl --fail --silent --show-error --retry 3 --retry-delay 2 -I "${package_url}" >/dev/null
-          jq -r '.image_artifacts[].url' release/remote-latest.json | while IFS= read -r url; do
-            curl --fail --silent --show-error --retry 3 --retry-delay 2 -I "$url" >/dev/null
+          version="$(jq -r '.version' release/remote-latest.json)"
+          for service in backend websocket scheduler frontend; do
+            curl --fail --silent --show-error --retry 3 --retry-delay 2 \
+              -H 'Accept: application/vnd.docker.distribution.manifest.v2+json' \
+              "https://www.gemstory.cn/v2/xianyu/xianyu-${service}/manifests/${version}" \
+              >/dev/null
           done
-          echo 'Tencent release manifest and all image archives are reachable.'
+          echo 'Tencent release manifest and incremental registry images are reachable.'

@@ -42,25 +42,25 @@
 
 ## 五、GitHub 免费镜像和自动更新
 
-源码仓库可以继续保持私有。每次推送到 `main`、创建版本标签或手动运行 GitHub Actions 时，都会读取仓库的 `VERSION.txt`，构建并推送四个业务镜像到 GitHub Container Registry（GHCR），同时把客户端维护包和 `release/latest.json` 上传到腾讯云更新目录。连续推送同一版本时，会使用新的构建号触发客户端更新。
+源码仓库可以继续保持私有。每次推送到 `main`、创建版本标签或手动运行 GitHub Actions 时，都会读取仓库的 `VERSION.txt`，在 GitHub Container Registry（GHCR）完成构建，再通过 SSH 将镜像导入腾讯云自建的只读分层仓库。客户端维护包和 `release/latest.json` 仍由腾讯云 HTTPS 站点发布。连续推送同一版本时，会使用新的构建号触发客户端更新。
 
 客户端启动器会读取 `.env` 中的 `UPDATE_MANIFEST_URL`。发现新版本后弹窗提示，用户确认后执行：
 
 1. 保存当前 `.env` 备份。
 2. 切换到清单中的镜像仓库和镜像标签。
-3. 拉取新镜像。
+3. 从 `www.gemstory.cn` 拉取镜像；Docker 自动复用本机已有层，只下载变化层。
 4. 使用原有数据卷重启服务。
 5. 检查前端健康状态。
 6. 成功后写入新的版本号和构建号。
 
 更新失败会恢复 `.env` 并尝试启动原镜像。更新不会删除数据库、Redis、上传文件或浏览器数据。
 
-GHCR 公开镜像支持匿名拉取，客户端不需要执行 `docker login`。公开镜像会暴露镜像内的程序文件，
-这是免镜像仓库费用和免客户端认证之间的取舍。
+客户电脑不再直接访问 GHCR，也不下载完整镜像压缩包。腾讯云 Nginx 只允许公开的 Docker Registry
+`GET`/`HEAD` 拉取请求，写入只允许服务器本机通过 SSH 导入，不需要在客户电脑保存仓库密码。
 
 镜像仓库地址、命名空间、更新清单地址和 Token 均从 `.env` 或部署配置读取，不写死盘符和本地目录。
 
-GitHub Actions 只需要配置腾讯云更新目录相关 Secrets：`TENCENT_UPDATE_SSH_HOST`、`TENCENT_UPDATE_SSH_USER`、`TENCENT_UPDATE_SSH_KEY`、`TENCENT_UPDATE_REMOTE_PATH`。镜像发布使用 GitHub 自动提供的 `GITHUB_TOKEN`，不需要 TCR 账号密码。
+GitHub Actions 只需要配置腾讯云更新目录相关 Secrets：`TENCENT_UPDATE_SSH_HOST`、`TENCENT_UPDATE_SSH_USER`、`TENCENT_UPDATE_SSH_KEY`、`TENCENT_UPDATE_REMOTE_PATH`。镜像发布使用 GitHub 自动提供的 `GITHUB_TOKEN`，腾讯云分层仓库由 `deploy/registry/install.py` 自动安装和维护，不需要购买 TCR，也不需要额外仓库密码。
 
 云端注册审批和客户端诊断服务通过单独的 `Deploy Xianyu cloud auth service` 工作流部署。进入仓库的 `Actions`，选择该工作流，点击 `Run workflow`，填写需要部署的分支、标签或提交号，然后等待服务健康检查通过。该工作流使用上面相同的腾讯云 SSH Secrets，不会覆盖云端认证数据库、会话密钥或诊断加密密钥。
 

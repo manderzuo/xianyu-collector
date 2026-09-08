@@ -179,6 +179,12 @@ if [[ "$RESTORE_REGISTRY" -eq 1 && -f "$STAGE/registry/data.tar.gz" && -f "$STAG
   REGISTRY_DATA="$(cat "$STAGE/registry/data.path")"
   mkdir -p "$REGISTRY_DATA"
   tar -xzf "$STAGE/registry/data.tar.gz" -C "$REGISTRY_DATA"
+  if id docker-registry >/dev/null 2>&1; then
+    chown -R docker-registry:docker-registry "$REGISTRY_DATA"
+  fi
+  if systemctl list-unit-files docker-registry.service >/dev/null 2>&1; then
+    systemctl restart docker-registry
+  fi
 fi
 
 systemctl daemon-reload 2>/dev/null || true
