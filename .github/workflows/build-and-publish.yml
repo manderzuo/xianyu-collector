@@ -215,42 +215,7 @@ jobs:
         shell: bash
         run: cp release/client-download/*.zip release/
 
-      - name: Login to GitHub Container Registry for packaging
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.IMAGE_REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Prepare registry import archives
-        shell: bash
-        env:
-          RELEASE_VERSION: ${{ steps.release.outputs.version }}
-        run: |
-          set -Eeuo pipefail
-          mkdir -p release/registry-upload
-          : > release/registry-upload/SHA256SUMS
-          for service in backend websocket scheduler frontend; do
-            image_ref="${IMAGE_REGISTRY}/${IMAGE_NAMESPACE}/xianyu-${service}:${RELEASE_VERSION}"
-            archive="xianyu-${service}.tar.gz"
-            echo "Preparing ${image_ref} for incremental registry import"
-            docker pull "${image_ref}"
-            docker save "${image_ref}" | gzip -1 > "release/registry-upload/${archive}"
-            (cd release/registry-upload && sha256sum "${archive}" >> SHA256SUMS)
-          done
-
-      - name: Upload images for registry import
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.TENCENT_UPDATE_SSH_HOST }}
-          username: ${{ secrets.TENCENT_UPDATE_SSH_USER }}
-          key: ${{ secrets.TENCENT_UPDATE_SSH_KEY }}
-          source: release/registry-upload/*
-          target: /tmp/xianyu-registry-import-${{ github.run_id }}
-          strip_components: 2
-          command_timeout: 30m
-
-      - name: Import image layers into Tencent registry
+      - name: Copy only missing image layers into Tencent registry
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.TENCENT_UPDATE_SSH_HOST }}
@@ -260,19 +225,11 @@ jobs:
           command_timeout: 30m
           script: |
             set -Eeuo pipefail
-            stage="/tmp/xianyu-registry-import-${{ github.run_id }}"
             version="${{ steps.release.outputs.version }}"
-            trap 'rm -rf "${stage}"' EXIT
-            cd "${stage}"
-            sha256sum -c SHA256SUMS
             for service in backend websocket scheduler frontend; do
-              archive="${stage}/xianyu-${service}.tar.gz"
-              image_tar="${stage}/xianyu-${service}.tar"
-              gzip -dc "${archive}" > "${image_tar}"
-              skopeo --insecure-policy copy --dest-tls-verify=false \
-                "docker-archive:${image_tar}" \
+              sudo skopeo --insecure-policy copy --src-tls-verify=true --dest-tls-verify=false \
+                "docker://${{ env.IMAGE_REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/xianyu-${service}:${version}" \
                 "docker://127.0.0.1:5000/xianyu/xianyu-${service}:${version}"
-              rm -f "${image_tar}"
             done
 
       - name: Verify incremental registry images
