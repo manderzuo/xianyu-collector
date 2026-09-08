@@ -1,0 +1,7 @@
+# Optional production overlay. Do not include this file in normal desktop
+# startup. It removes the fixed container name and host port from the API so
+# Compose can create multiple backend replicas behind the frontend Nginx.
+services:
+  backend:
+    container_name: !reset null
+    ports: !reset []

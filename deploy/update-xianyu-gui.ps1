@@ -107,6 +107,157 @@ $worker = {
         if ($exitCode -ne 0) { throw "Docker 操作失败：$Label（退出码 $exitCode）" }
     }
 
+    function Invoke-DockerCli([string[]]$Arguments, [string]$Label) {
+        Write-Detail "docker_cli_start label=$Label args=$($Arguments -join ' ')"
+        $previousPreference = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            $output = & docker @Arguments 2>&1
+            $exitCode = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $previousPreference
+        }
+        foreach ($line in $output) { Write-Detail "docker_cli_output label=$Label text=$line" }
+        Write-Detail "docker_cli_end label=$Label exit_code=$exitCode"
+        if ($exitCode -ne 0) { throw "Docker 操作失败：$Label（退出码 $exitCode）" }
+    }
+
+    function Get-LocalImageId([string]$ImageRef) {
+        $previousPreference = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            $result = & docker image inspect $ImageRef --format '{{.Id}}' 2>$null
+            if ($LASTEXITCODE -eq 0) {
+                $first = $result | Select-Object -First 1
+                if ($null -ne $first) { return $first.ToString().Trim() }
+            }
+        } finally {
+            $ErrorActionPreference = $previousPreference
+        }
+        return ''
+    }
+
+    function Find-LocalImageRefById([string]$ExpectedId) {
+        if (-not $ExpectedId) { return '' }
+        $previousPreference = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            $rows = & docker image ls --no-trunc --format '{{.Repository}}:{{.Tag}}|{{.ID}}' 2>$null
+            if ($LASTEXITCODE -ne 0) { return '' }
+            foreach ($row in $rows) {
+                $parts = "$row".Trim() -split '\|', 2
+                if ($parts.Count -eq 2 -and $parts[1].Trim() -eq $ExpectedId -and $parts[0].Trim() -notmatch '^<none>') {
+                    return $parts[0].Trim()
+                }
+            }
+        } finally {
+            $ErrorActionPreference = $previousPreference
+        }
+        return ''
+    }
+
+    function Test-TrueValue([string]$Value) {
+        return "$Value".Trim().ToLowerInvariant() -in @('1', 'true', 'yes', 'on', 'required')
+    }
+
+    function Resolve-ConfiguredPath([string]$Root, [string]$Value, [string]$Fallback) {
+        $candidate = "$Value".Trim()
+        if (-not $candidate) { $candidate = $Fallback }
+        if ([IO.Path]::IsPathRooted($candidate)) { return $candidate }
+        return (Join-Path $Root $candidate)
+    }
+
+    function Verify-ManifestSignature([byte[]]$ManifestBytes, [string]$ManifestUrl, $Headers, $EnvMap, [string]$DeclaredSignatureUrl = '') {
+        $required = Test-TrueValue "$($EnvMap['UPDATE_REQUIRE_SIGNATURE'])"
+        $keyPath = Resolve-ConfiguredPath $Root "$($EnvMap['UPDATE_MANIFEST_PUBLIC_KEY_PATH'])" 'deploy\update-signing-public-key.xml'
+        if (-not (Test-Path -LiteralPath $keyPath)) {
+            if ($required) { throw "更新签名公钥不存在：$keyPath" }
+            Write-Detail "manifest_signature_skipped required=$required reason=public_key_missing path=$keyPath"
+            return [pscustomobject]@{ Verified = $false; Required = $false; Url = ''; Algorithm = '' }
+        }
+
+        $signatureUrl = "$DeclaredSignatureUrl".Trim()
+        if (-not $signatureUrl) { $signatureUrl = "$($EnvMap['UPDATE_MANIFEST_SIGNATURE_URL'])".Trim() }
+        if (-not $signatureUrl) {
+            if ($ManifestUrl -match '(?i)\.json(?=$|\?)') {
+                $signatureUrl = [regex]::Replace($ManifestUrl, '(?i)\.json(?=$|\?)', '.json.sig')
+            } else { $signatureUrl = "$ManifestUrl.sig" }
+        }
+        $signatureUri = [Uri]$signatureUrl
+        if ($signatureUri.Scheme -notin @('http', 'https')) { throw "更新签名地址协议不受支持：$signatureUrl" }
+        $signaturePath = Join-Path ([IO.Path]::GetTempPath()) ('xianyu-manifest-' + [guid]::NewGuid().ToString('N') + '.sig')
+        try {
+            Write-Detail "manifest_signature_request url=$signatureUrl"
+            Invoke-WebRequest -UseBasicParsing -Uri $signatureUri.AbsoluteUri -TimeoutSec 20 -Headers $Headers -OutFile $signaturePath
+            $signatureText = ([IO.File]::ReadAllText($signaturePath, [Text.Encoding]::UTF8) -replace '\s', '')
+            if (-not $signatureText) { throw '更新签名文件为空' }
+            try { $signatureBytes = [Convert]::FromBase64String($signatureText) } catch { throw '更新签名不是有效的 Base64 内容' }
+            $publicKeyXml = [IO.File]::ReadAllText($keyPath, [Text.Encoding]::UTF8)
+            $rsa = New-Object Security.Cryptography.RSACryptoServiceProvider
+            $hashAlgorithm = New-Object Security.Cryptography.SHA256CryptoServiceProvider
+            try {
+                $rsa.FromXmlString($publicKeyXml)
+                $valid = $rsa.VerifyData($ManifestBytes, $hashAlgorithm, $signatureBytes)
+            } finally {
+                $hashAlgorithm.Dispose()
+                $rsa.Dispose()
+            }
+            if (-not $valid) { throw '更新清单签名校验失败，已拒绝本次更新' }
+            $signatureHash = (Get-FileHash -LiteralPath $signaturePath -Algorithm SHA256).Hash.ToLowerInvariant()
+            Write-Detail "manifest_signature_verified algorithm=RSA-SHA256 sha256=$signatureHash"
+            return [pscustomobject]@{ Verified = $true; Required = $required; Url = $signatureUrl; Algorithm = 'RSA-SHA256' }
+        } finally {
+            Remove-Item -LiteralPath $signaturePath -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    function Install-ImageArtifacts($Manifest) {
+        if ($null -eq $Manifest.image_artifacts) { return $false }
+        $artifacts = @($Manifest.image_artifacts | Where-Object { $null -ne $_ })
+        if ($artifacts.Count -eq 0) { return $false }
+        $tempDir = Join-Path ([IO.Path]::GetTempPath()) ('xianyu-update-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+        try {
+            $index = 0
+            foreach ($artifact in $artifacts) {
+                $index++
+                $url = "$($artifact.url)".Trim()
+                $imageRef = "$($artifact.image_ref)".Trim()
+                $expectedId = "$($artifact.image_id)".Trim()
+                $expectedHash = "$($artifact.sha256)".Trim().ToLowerInvariant()
+                if (-not $url -or -not $imageRef -or -not $expectedHash) { throw "更新包清单第 $index 项字段不完整" }
+                $currentId = Get-LocalImageId $imageRef
+                if ($expectedId -and $currentId -and $currentId -eq $expectedId) {
+                    Write-Detail "artifact_skip service=$($artifact.service) reason=image_id_match image_id=$currentId"
+                    continue
+                }
+                if ($expectedId) {
+                    $existingRef = Find-LocalImageRefById $expectedId
+                    if ($existingRef -and $existingRef -ne $imageRef) {
+                        Invoke-DockerCli @('tag', $existingRef, $imageRef) "复用 $($artifact.service) 未变化镜像"
+                        Write-Detail "artifact_skip service=$($artifact.service) reason=local_image_id_match source_ref=$existingRef image_id=$expectedId"
+                        continue
+                    }
+                }
+                $uri = [Uri]$url
+                if ($uri.Scheme -notin @('http', 'https')) { throw "更新包地址协议不受支持：$url" }
+                $archive = Join-Path $tempDir ('image-' + $index + '.tar.gz')
+                Write-Detail "artifact_download service=$($artifact.service) url=$url"
+                Invoke-WebRequest -UseBasicParsing -Uri $uri.AbsoluteUri -TimeoutSec 900 -OutFile $archive
+                $actualHash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+                if ($actualHash -ne $expectedHash) { throw "更新包校验失败：$($artifact.service)" }
+                Write-Detail "artifact_verified service=$($artifact.service) sha256=$actualHash bytes=$((Get-Item -LiteralPath $archive).Length)"
+                Invoke-DockerCli @('load', '--input', $archive) "导入 $($artifact.service) 镜像"
+                $loadedId = Get-LocalImageId $imageRef
+                if (-not $loadedId) { throw "镜像导入后未找到目标标签：$imageRef" }
+                if ($expectedId -and $loadedId -ne $expectedId) { throw "镜像导入后 ID 不一致：$($artifact.service)" }
+            }
+            return $true
+        } finally {
+            Remove-Item -LiteralPath $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
     try {
         Write-Detail "update_start mode=$Mode root=$Root"
         if (-not (Test-Path -LiteralPath $compose) -or -not (Test-Path -LiteralPath $envFile)) { throw '缺少 docker-compose.yml 或 .env' }
@@ -118,7 +269,36 @@ $worker = {
         $headers = @{ 'Cache-Control' = 'no-cache'; 'Accept' = 'application/json' }
         $manifestToken = "$($envMap['UPDATE_MANIFEST_TOKEN'])".Trim()
         if ($manifestToken) { $headers['Authorization'] = "Bearer $manifestToken"; Write-Detail 'manifest_auth configured=true' }
-        $manifest = if ($Mode -eq 'check') { (Invoke-WebRequest -UseBasicParsing -Uri $requestUrl -TimeoutSec 20 -Headers $headers).Content | ConvertFrom-Json } else { $ManifestJson | ConvertFrom-Json }
+        $signatureInfo = [pscustomobject]@{ Verified = $false; Required = (Test-TrueValue "$($envMap['UPDATE_REQUIRE_SIGNATURE'])"); Url = ''; Algorithm = '' }
+        if ($Mode -eq 'check') {
+            $manifestPath = Join-Path ([IO.Path]::GetTempPath()) ('xianyu-manifest-' + [guid]::NewGuid().ToString('N') + '.json')
+            try {
+                Invoke-WebRequest -UseBasicParsing -Uri $requestUrl -TimeoutSec 20 -Headers $headers -OutFile $manifestPath
+                $manifestBytes = [IO.File]::ReadAllBytes($manifestPath)
+                $manifestRaw = [Text.Encoding]::UTF8.GetString($manifestBytes)
+                $manifest = $manifestRaw | ConvertFrom-Json
+                $declaredSignatureUrl = "$($manifest.signature.url)".Trim()
+                $signatureInfo = Verify-ManifestSignature $manifestBytes $manifestUrl $headers $envMap $declaredSignatureUrl
+            } finally {
+                Remove-Item -LiteralPath $manifestPath -Force -ErrorAction SilentlyContinue
+            }
+        } else {
+            $received = $ManifestJson | ConvertFrom-Json
+            if ($null -ne $received.manifest) {
+                $manifest = $received.manifest
+                $signatureInfo = [pscustomobject]@{
+                    Verified = [bool]$received.signature_verified
+                    Required = (Test-TrueValue "$($envMap['UPDATE_REQUIRE_SIGNATURE'])")
+                    Url = "$($received.signature_url)"
+                    Algorithm = "$($received.signature_algorithm)"
+                }
+            } else {
+                $manifest = $received
+            }
+            if ($signatureInfo.Required -and -not $signatureInfo.Verified) {
+                throw '更新清单未通过签名校验，已拒绝本次更新'
+            }
+        }
         $latestVersion = "$($manifest.version)".Trim()
         $latestBuild = "$($manifest.build_id)".Trim()
         $registry = "$($manifest.image_registry)".Trim()
@@ -126,6 +306,10 @@ $worker = {
         $tag = "$($manifest.image_tag)".Trim()
         Write-Detail "manifest_response version=$latestVersion build=$latestBuild registry=$registry namespace=$namespace tag=$tag"
         if (-not $latestVersion -or -not $registry -or -not $namespace -or -not $tag) { throw '更新清单字段不完整' }
+        $declaredSignatureUrl = "$($manifest.signature.url)".Trim()
+        if ($signatureInfo.Verified -and $declaredSignatureUrl -and $declaredSignatureUrl -ne $signatureInfo.Url) {
+            throw '更新清单声明的签名地址与实际校验地址不一致'
+        }
         [void](Get-VersionParts $latestVersion)
         $currentVersion = (Get-Content -LiteralPath $versionFile -Raw).Trim()
         $currentBuild = if (Test-Path -LiteralPath $buildFile) { (Get-Content -LiteralPath $buildFile -Raw).Trim() } else { '' }
@@ -133,16 +317,25 @@ $worker = {
         $available = $versionResult -gt 0 -or ($versionResult -eq 0 -and $latestBuild -and $latestBuild -ne $currentBuild)
         Write-Detail "version_compare current=$currentVersion/$currentBuild latest=$latestVersion/$latestBuild available=$available"
         if ($Mode -eq 'check') {
-            if ($available) { Send-Message 'available' "发现新版本 $latestVersion" 8 ($manifest | ConvertTo-Json -Compress) } else { Send-Message 'latest' "当前已是最新版本 $currentVersion" 100 }
+            if ($available) {
+                $payload = [ordered]@{ manifest = $manifest; signature_verified = [bool]$signatureInfo.Verified; signature_url = $signatureInfo.Url; signature_algorithm = $signatureInfo.Algorithm }
+                Send-Message 'available' "发现新版本 $latestVersion" 8 ($payload | ConvertTo-Json -Compress -Depth 20)
+            } else { Send-Message 'latest' "当前已是最新版本 $currentVersion" 100 }
             return
         }
         if (-not $available) { Send-Message 'latest' "当前已是最新版本 $currentVersion" 100; return }
+        $previousDeployMode = "$($envMap['XR_DEPLOY_MODE'])"
+        $previousRegistry = "$($envMap['XR_IMAGE_REGISTRY'])"
+        $previousNamespace = "$($envMap['XR_IMAGE_NAMESPACE'])"
+        $previousTag = "$($envMap['XR_IMAGE_TAG'])"
         Set-EnvValue $envFile 'XR_DEPLOY_MODE' 'remote'
         Set-EnvValue $envFile 'XR_IMAGE_REGISTRY' $registry
         Set-EnvValue $envFile 'XR_IMAGE_NAMESPACE' $namespace
         Set-EnvValue $envFile 'XR_IMAGE_TAG' $tag
         Send-Message 'phase' '正在准备更新环境...' 15
-        Invoke-Docker @('pull') '拉取应用镜像'
+        if (-not (Install-ImageArtifacts $manifest)) {
+            Invoke-Docker @('pull') '拉取应用镜像'
+        }
         Send-Message 'phase' '镜像拉取完成，正在重启服务...' 78
         Invoke-Docker @('up', '-d', '--no-build') '重启应用服务'
         Send-Message 'phase' '正在检查容器状态...' 90
@@ -159,6 +352,16 @@ $worker = {
     } catch {
         $detail = $_.Exception.ToString()
         Write-Detail "update_failed error=$detail"
+        if ($previousDeployMode -ne $null) {
+            try {
+                Set-EnvValue $envFile 'XR_DEPLOY_MODE' $previousDeployMode
+                Set-EnvValue $envFile 'XR_IMAGE_REGISTRY' $previousRegistry
+                Set-EnvValue $envFile 'XR_IMAGE_NAMESPACE' $previousNamespace
+                Set-EnvValue $envFile 'XR_IMAGE_TAG' $previousTag
+                Write-Detail "rollback_config_restored deploy_mode=$previousDeployMode registry=$previousRegistry namespace=$previousNamespace tag=$previousTag"
+                Invoke-Docker @('up', '-d', '--no-build') '失败后恢复旧版本'
+            } catch { Write-Detail "rollback_failed error=$($_.Exception.ToString())" }
+        }
         try { Invoke-Docker @('ps') '失败后检查容器状态' } catch { Write-Detail "docker_status_failed error=$($_.Exception.ToString())" }
         Send-Message 'failed' '更新失败，请查看下方详细日志' 100 $detail
     }
@@ -349,7 +552,8 @@ $timer.Add_Tick({
         if ($message.Kind -eq 'available') {
             $manifestJson = $message.Data
             try {
-                $manifest = $manifestJson | ConvertFrom-Json
+                $payload = $manifestJson | ConvertFrom-Json
+                $manifest = if ($null -ne $payload.manifest) { $payload.manifest } else { $payload }
                 $version.Text = "当前版本：$((Get-Content -LiteralPath $VersionFile -Raw).Trim())    最新版本：$($manifest.version)"
                 $notes.Text = if ($manifest.notes) { $manifest.notes } else { '本次更新包含功能优化和稳定性修复。' }
             } catch { }

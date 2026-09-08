@@ -21,6 +21,8 @@ logs/
 *.log
 *.sqlite
 *.db
+*.pem
+release-signing-key/
 static/
 backups/
 browser_data/

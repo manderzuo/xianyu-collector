@@ -46,8 +46,8 @@ foreach ($line in Get-Content -LiteralPath $EnvFile) {
 # The launcher itself runs hidden to avoid a console window.  Start the GUI in
 # a separate visible process; otherwise Windows may keep the WinForms window
 # hidden on machines where the parent PowerShell process is hidden.
-$guiArguments = "-NoProfile -STA -ExecutionPolicy Bypass -File `"$GuiScript`" -ProjectRoot `"$ProjectRoot`""
-if ($Force) { $guiArguments += ' -Force' }
+$guiArguments = @('-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-File', $GuiScript, '-ProjectRoot', $ProjectRoot)
+if ($Force) { $guiArguments += '-Force' }
 Write-XianyuLog -LogPath $LogPath -Message "gui_launch path=$GuiScript force=$Force"
 $guiProcess = Start-Process -FilePath 'powershell.exe' -ArgumentList $guiArguments -WindowStyle Normal -Wait -PassThru
 Write-XianyuLog -LogPath $LogPath -Message "gui_exit code=$($guiProcess.ExitCode)"

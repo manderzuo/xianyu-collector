@@ -29,6 +29,8 @@ services:
     image: ${XR_IMAGE_REGISTRY:-local}/${XR_IMAGE_NAMESPACE:-xianyu}/xianyu-backend:${XR_IMAGE_TAG:-local}
     container_name: ${XR_CONTAINER_PREFIX:-xr}-backend
     restart: unless-stopped
+    working_dir: /app
+    command: ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8089"]
     environment:
       ENVIRONMENT: production
       MYSQL_HOST: mysql
@@ -66,6 +68,8 @@ services:
     image: ${XR_IMAGE_REGISTRY:-local}/${XR_IMAGE_NAMESPACE:-xianyu}/xianyu-websocket:${XR_IMAGE_TAG:-local}
     container_name: ${XR_CONTAINER_PREFIX:-xr}-websocket
     restart: unless-stopped
+    working_dir: /app
+    command: ["uvicorn", "websocket.main:app", "--host", "0.0.0.0", "--port", "8090"]
     environment:
       ENVIRONMENT: production
       MYSQL_HOST: mysql
@@ -96,6 +100,8 @@ services:
     image: ${XR_IMAGE_REGISTRY:-local}/${XR_IMAGE_NAMESPACE:-xianyu}/xianyu-scheduler:${XR_IMAGE_TAG:-local}
     container_name: ${XR_CONTAINER_PREFIX:-xr}-scheduler
     restart: unless-stopped
+    working_dir: /app
+    command: ["uvicorn", "scheduler.main:app", "--host", "0.0.0.0", "--port", "8091"]
     environment:
       ENVIRONMENT: production
       MYSQL_HOST: mysql
@@ -126,6 +132,8 @@ services:
     image: ${XR_IMAGE_REGISTRY:-local}/${XR_IMAGE_NAMESPACE:-xianyu}/xianyu-frontend:${XR_IMAGE_TAG:-local}
     container_name: ${XR_CONTAINER_PREFIX:-xr}-frontend
     restart: unless-stopped
+    entrypoint: ["/docker-entrypoint.sh"]
+    command: ["nginx", "-g", "daemon off;"]
     ports: ["${FRONTEND_PORT:-9000}:80"]
     networks: [xr-net]
     depends_on: {backend: {condition: service_healthy}}

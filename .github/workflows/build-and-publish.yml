@@ -62,8 +62,10 @@ jobs:
             exit 1
           fi
           build_id="${GITHUB_SHA:0:12}-${version}"
+          signature_file="xianyu-${build_id}.json.sig"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "build_id=$build_id" >> "$GITHUB_OUTPUT"
+          echo "signature_file=$signature_file" >> "$GITHUB_OUTPUT"
 
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
@@ -85,6 +87,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      packages: read
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -108,9 +111,48 @@ jobs:
             exit 1
           fi
           build_id="${GITHUB_SHA:0:12}-${version}"
+          signature_file="xianyu-${build_id}.json.sig"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "build_id=$build_id" >> "$GITHUB_OUTPUT"
+          echo "signature_file=$signature_file" >> "$GITHUB_OUTPUT"
           printf '%s' "$notes" > release-notes.txt
+
+      - name: Login to GitHub Container Registry for packaging
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.IMAGE_REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Prepare Tencent-hosted image archives
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+          RELEASE_BASE_URL: https://www.gemstory.cn/release/xianyu
+        run: |
+          set -Eeuo pipefail
+          mkdir -p release
+          artifacts='[]'
+          for service in backend websocket scheduler frontend; do
+            image_ref="${IMAGE_REGISTRY}/${IMAGE_NAMESPACE}/xianyu-${service}:${RELEASE_VERSION}"
+            archive="xianyu-${service}-${RELEASE_VERSION}.tar.gz"
+            echo "Preparing ${image_ref} -> release/${archive}"
+            docker pull "${image_ref}"
+            docker save "${image_ref}" | gzip -1 > "release/${archive}"
+            sha256="$(sha256sum "release/${archive}" | awk '{print $1}')"
+            bytes="$(stat -c '%s' "release/${archive}")"
+            image_id="$(docker image inspect "${image_ref}" --format '{{.Id}}')"
+            item="$(jq -n \
+              --arg service "${service}" \
+              --arg image_ref "${image_ref}" \
+              --arg url "${RELEASE_BASE_URL}/${archive}" \
+              --arg sha256 "${sha256}" \
+              --arg image_id "${image_id}" \
+              --argjson bytes "${bytes}" \
+              '{service:$service,image_ref:$image_ref,url:$url,sha256:$sha256,image_id:$image_id,bytes:$bytes,format:"docker"}')"
+            artifacts="$(jq --argjson item "${item}" '. + [$item]' <<<"${artifacts}")"
+          done
+          printf '%s\n' "${artifacts}" > release/image-artifacts.json
 
       - name: Create update manifest
         run: |
@@ -121,9 +163,54 @@ jobs:
             --namespace "${{ env.IMAGE_NAMESPACE }}" \
             --tag "${{ steps.release.outputs.version }}" \
             --notes "$(cat release-notes.txt)" \
+            --image-artifacts-json release/image-artifacts.json \
+            --signature-url "https://www.gemstory.cn/release/xianyu/${{ steps.release.outputs.signature_file }}" \
+            --signature-algorithm "RSA-SHA256" \
             --output release/latest.json
 
-      - name: Upload manifest to Tencent server
+      - name: Sign update manifest
+        shell: bash
+        env:
+          UPDATE_SIGNING_PRIVATE_KEY: ${{ secrets.UPDATE_SIGNING_PRIVATE_KEY }}
+        run: |
+          set -Eeuo pipefail
+          if [ -z "${UPDATE_SIGNING_PRIVATE_KEY}" ]; then
+            echo 'UPDATE_SIGNING_PRIVATE_KEY repository secret is required for signed releases.' >&2
+            exit 1
+          fi
+          key_file="$(mktemp)"
+          trap 'rm -f "$key_file"' EXIT
+          umask 077
+          printf '%s\n' "${UPDATE_SIGNING_PRIVATE_KEY}" > "${key_file}"
+          signature_file="release/${{ steps.release.outputs.signature_file }}"
+          openssl dgst -sha256 -sign "${key_file}" -out "${signature_file}.bin" release/latest.json
+          base64 -w0 "${signature_file}.bin" > "${signature_file}"
+          printf '\n' >> "${signature_file}"
+          rm -f "${signature_file}.bin"
+
+      - name: Upload image archives to Tencent server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.TENCENT_UPDATE_SSH_HOST }}
+          username: ${{ secrets.TENCENT_UPDATE_SSH_USER }}
+          key: ${{ secrets.TENCENT_UPDATE_SSH_KEY }}
+          source: release/*.tar.gz
+          target: ${{ secrets.TENCENT_UPDATE_REMOTE_PATH }}
+          strip_components: 1
+          command_timeout: 30m
+
+      - name: Publish manifest signature before manifest
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.TENCENT_UPDATE_SSH_HOST }}
+          username: ${{ secrets.TENCENT_UPDATE_SSH_USER }}
+          key: ${{ secrets.TENCENT_UPDATE_SSH_KEY }}
+          source: release/${{ steps.release.outputs.signature_file }}
+          target: ${{ secrets.TENCENT_UPDATE_REMOTE_PATH }}
+          strip_components: 1
+          command_timeout: 5m
+
+      - name: Publish latest manifest last
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.TENCENT_UPDATE_SSH_HOST }}
@@ -132,3 +219,22 @@ jobs:
           source: release/latest.json
           target: ${{ secrets.TENCENT_UPDATE_REMOTE_PATH }}
           strip_components: 1
+          command_timeout: 5m
+
+      - name: Verify Tencent release is readable
+        shell: bash
+        env:
+          RELEASE_BASE_URL: https://www.gemstory.cn/release/xianyu
+        run: |
+          set -Eeuo pipefail
+          curl --fail --silent --show-error --retry 3 --retry-delay 2 \
+            "${RELEASE_BASE_URL}/latest.json" -o release/remote-latest.json
+          jq -e '.version and .build_id and (.image_artifacts | length == 4)' release/remote-latest.json >/dev/null
+          signature_url="$(jq -r '.signature.url // empty' release/remote-latest.json)"
+          test -n "${signature_url}"
+          curl --fail --silent --show-error --retry 3 --retry-delay 2 "${signature_url}" -o release/remote-latest.json.sig
+          test -s release/remote-latest.json.sig
+          jq -r '.image_artifacts[].url' release/remote-latest.json | while IFS= read -r url; do
+            curl --fail --silent --show-error --retry 3 --retry-delay 2 -I "$url" >/dev/null
+          done
+          echo 'Tencent release manifest and all image archives are reachable.'

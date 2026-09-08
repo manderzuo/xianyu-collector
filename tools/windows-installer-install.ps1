@@ -6,6 +6,8 @@ $EnvExample = Join-Path $AppRoot '.env.example'
 $EnvFile = Join-Path $AppRoot '.env'
 $DockerBootstrap = Join-Path $PackageRoot 'resources\docker-bootstrap.ps1'
 $WslBootstrap = Join-Path $PackageRoot 'resources\prepare-wsl.ps1'
+$OfflineImageImporter = Join-Path $PackageRoot 'resources\import-offline-image-bundle.ps1'
+$OfflineImageManifest = Join-Path $PackageRoot 'resources\images\offline-manifest.json'
 $DbCredentialSync = Join-Path $AppRoot 'deploy\sync-xianyu-db-credentials.ps1'
 $ProtocolRegistrar = Join-Path $AppRoot 'deploy\register-xianyu-update-protocol.ps1'
 $ErrorHelper = Join-Path $AppRoot 'deploy\windows-error-reporting.ps1'
@@ -105,6 +107,42 @@ $envMap = Get-EnvMap $EnvFile
 if (-not $envMap.ContainsKey('XIANYU_CLOUD_AUTH_URL') -or [string]::IsNullOrWhiteSpace($envMap['XIANYU_CLOUD_AUTH_URL'])) {
     Set-EnvValue $EnvFile 'XIANYU_CLOUD_AUTH_URL' 'https://www.gemstory.cn'
 }
+
+# A package that carries the release public key must fail closed on unsigned
+# manifests. Existing installations without the key retain legacy compatibility.
+$publicKeyPath = Join-Path $AppRoot 'deploy\update-signing-public-key.xml'
+if (Test-Path -LiteralPath $publicKeyPath) {
+    Set-EnvValue $EnvFile 'UPDATE_REQUIRE_SIGNATURE' 'true'
+    if (-not $envMap.ContainsKey('UPDATE_MANIFEST_PUBLIC_KEY_PATH') -or [string]::IsNullOrWhiteSpace($envMap['UPDATE_MANIFEST_PUBLIC_KEY_PATH'])) {
+        Set-EnvValue $EnvFile 'UPDATE_MANIFEST_PUBLIC_KEY_PATH' 'deploy/update-signing-public-key.xml'
+    }
+    if (-not $envMap.ContainsKey('UPDATE_MANIFEST_SIGNATURE_URL') -or [string]::IsNullOrWhiteSpace($envMap['UPDATE_MANIFEST_SIGNATURE_URL'])) {
+        Set-EnvValue $EnvFile 'UPDATE_MANIFEST_SIGNATURE_URL' 'https://www.gemstory.cn/release/xianyu/latest.json.sig'
+    }
+}
+
+# A full offline package carries the exact image set used by this release.
+# Import it before Compose starts so a first install never needs Docker Hub.
+$envMap = Get-EnvMap $EnvFile
+$deployMode = "$($envMap['XR_DEPLOY_MODE'])".Trim().ToLowerInvariant()
+$offlinePackageAvailable = Test-Path -LiteralPath $OfflineImageManifest
+$useOfflineImages = $offlinePackageAvailable -and ($newEnv -or $deployMode -in @('', 'local', 'offline'))
+if ($useOfflineImages) {
+    if (-not (Test-Path -LiteralPath $OfflineImageImporter)) {
+        Fail 'Offline image manifest exists but the image importer is missing from the package.'
+    }
+    Write-Host '[xianyu] Offline image bundle detected. Docker image downloads will be skipped.' -ForegroundColor Cyan
+    & $OfflineImageImporter -PackageRoot $PackageRoot
+    if ($LASTEXITCODE -ne 0) { Fail "Offline image import failed with exit code $LASTEXITCODE." }
+    $offlineManifest = Get-Content -LiteralPath $OfflineImageManifest -Raw | ConvertFrom-Json
+    if ([string]::IsNullOrWhiteSpace("$($offlineManifest.image_tag)")) {
+        Fail 'Offline image manifest does not contain image_tag.'
+    }
+    Set-EnvValue $EnvFile 'XR_DEPLOY_MODE' 'offline'
+    Set-EnvValue $EnvFile 'XR_IMAGE_REGISTRY' 'local'
+    Set-EnvValue $EnvFile 'XR_IMAGE_NAMESPACE' 'xianyu'
+    Set-EnvValue $EnvFile 'XR_IMAGE_TAG' "$($offlineManifest.image_tag)"
+}
 $folderName = Split-Path -Leaf $PackageRoot
 $safeName = ($folderName.ToLower() -replace '[^a-z0-9]+', '-') -replace '(^-+|-+$)', ''
 if ([string]::IsNullOrWhiteSpace($safeName)) { $safeName = 'xianyu-installer' }
@@ -157,13 +195,19 @@ Write-Host '[xianyu] Old port 19000 is not used.' -ForegroundColor Cyan
 
 docker compose --project-directory $AppRoot --env-file $EnvFile -f $ComposeFile config *> $null
 if ($LASTEXITCODE -ne 0) { Fail 'Docker Compose configuration validation failed.' }
-if ("$($envMap['XR_DEPLOY_MODE'])".ToLowerInvariant() -eq 'remote') {
+$envMap = Get-EnvMap $EnvFile
+$deployMode = "$($envMap['XR_DEPLOY_MODE'])".Trim().ToLowerInvariant()
+if ($deployMode -eq 'offline') {
+    Write-Host '[xianyu] Starting services from locally imported images.' -ForegroundColor Cyan
+    docker compose --project-directory $AppRoot --env-file $EnvFile -f $ComposeFile up -d --no-build
+    if ($LASTEXITCODE -ne 0) { Fail 'Docker Compose could not start the offline image set.' }
+} elseif ($deployMode -eq 'remote') {
     if ([string]::IsNullOrWhiteSpace("$($envMap['XR_IMAGE_REGISTRY'])") -or [string]::IsNullOrWhiteSpace("$($envMap['XR_IMAGE_NAMESPACE'])") -or [string]::IsNullOrWhiteSpace("$($envMap['XR_IMAGE_TAG'])")) {
         Fail 'Remote mode requires XR_IMAGE_REGISTRY, XR_IMAGE_NAMESPACE and XR_IMAGE_TAG in app\.env.'
     }
     Write-Host '[xianyu] Pulling remote application images.' -ForegroundColor Cyan
     docker compose --project-directory $AppRoot --env-file $EnvFile -f $ComposeFile pull
-    if ($LASTEXITCODE -ne 0) { Fail 'Remote image pull failed. Check the GHCR image visibility, image address and network.' }
+    if ($LASTEXITCODE -ne 0) { Fail 'Remote image pull failed. Check the image registry address, credentials and network.' }
     docker compose --project-directory $AppRoot --env-file $EnvFile -f $ComposeFile up -d --no-build
 } else {
     Write-Host '[xianyu] Checking and preloading Docker base images.' -ForegroundColor Cyan
@@ -198,6 +242,7 @@ if (-not $ready) { Write-Host '[xianyu] WARNING: frontend did not respond within
 $desktop = [Environment]::GetFolderPath('Desktop')
 $shortcutTitle = -join ([char[]](0x95f2, 0x9c7c, 0x7ba1, 0x7406, 0x7cfb, 0x7edf))
 $shortcutPath = Join-Path $desktop "$shortcutTitle.lnk"
+$launcherPath = Join-Path $PackageRoot "$shortcutTitle.exe"
 $oldShortcutPath = Join-Path $desktop 'Xianyu System.lnk'
 $iconPath = Join-Path $PackageRoot 'xianyu-launcher.ico'
 if (-not (Test-Path -LiteralPath $iconPath)) {
@@ -221,8 +266,13 @@ if (Test-Path -LiteralPath $oldShortcutPath) {
 }
 $shell = New-Object -ComObject WScript.Shell
 $shortcut = $shell.CreateShortcut($shortcutPath)
-$shortcut.TargetPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-$shortcut.Arguments = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$(Join-Path $PSScriptRoot 'start.ps1')`""
+if (Test-Path -LiteralPath $launcherPath) {
+    $shortcut.TargetPath = $launcherPath
+    $shortcut.Arguments = ''
+} else {
+    $shortcut.TargetPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $shortcut.Arguments = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$(Join-Path $PSScriptRoot 'start.ps1')`""
+}
 $shortcut.WorkingDirectory = $PackageRoot
 $shortcut.Description = $shortcutTitle
 if (Test-Path -LiteralPath $iconPath) { $shortcut.IconLocation = "$iconPath,0" }

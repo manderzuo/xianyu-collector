@@ -34,3 +34,55 @@ API 地址、模型、代理和任务参数会保存到当前 Windows 用户的 
 API 地址填写兼容 OpenAI Chat Completions 的服务根地址，例如 `https://api.openai.com/v1`。工具会向 `/chat/completions` 发请求。API Key 不会写入导出文件。
 
 生成结果是合成内容，不是事实来源。导入现有系统前应先检查价格、库存、有效期、退款承诺和变量是否正确。
+
+## 离线安装包
+
+先使用 `build-windows-installer.ps1` 生成便携安装目录，再将本机已经验证过的
+业务镜像和基础镜像放入安装包：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\build-windows-installer.ps1 `
+  -OutputDirectory .\xianyu-one-click-installer `
+  -Force -IncludeDockerImages
+```
+
+该模式把镜像导出到 `resources\images`，安装时由 `install.bat` 自动校验并导入。
+业务镜像使用根文件系统导出，以兼容 Docker Desktop 的 containerd 镜像存储；
+MySQL 和 Redis 使用标准 Docker 镜像归档。导出校验失败会中止打包，不会生成可疑的
+小型空归档。
+
+## 服务器迁移
+
+服务器迁移脚本位于 `deploy/server-migration`。导出和导入前请先做腾讯云快照，
+并保留旧服务器到新服务器验收完成：
+
+```bash
+sudo bash ./deploy/server-migration/server-migration-export.sh \
+  --app-root /path/to/xianyu \
+  --output /tmp/xianyu-migrations
+
+sudo bash ./deploy/server-migration/server-migration-import.sh \
+  --app-root /path/to/xianyu \
+  --bundle /tmp/xianyu-migrations/xianyu-migration-....tar.gz.enc
+
+sudo bash ./deploy/server-migration/server-healthcheck.sh \
+  --app-root /path/to/xianyu
+```
+
+迁移包包含加密的数据库、业务文件、云端认证数据和部署文件；默认不会修改 DNS，
+也不会在目标目录已有内容时强制覆盖。
+
+## 更新签名密钥
+
+正式发布前只生成一次密钥，并把私钥安全保存到 GitHub 仓库的
+`UPDATE_SIGNING_PRIVATE_KEY` Actions secret；私钥不要提交到仓库或复制到客户电脑：
+
+```powershell
+python .\tools\generate-update-signing-key.py `
+  --output-dir "$env:USERPROFILE\xianyu-release-signing-key"
+```
+
+将输出目录中的 `update-signing-public.xml` 复制为
+`deploy\update-signing-public-key.xml` 后再构建客户安装包。客户端只携带公钥，
+发布工作流使用私钥生成 `latest.json.sig`，客户端用 RSA-SHA256 校验清单后才会更新。
+如果 GitHub secret 未配置，发布工作流会在上传前失败，不会切换线上清单。

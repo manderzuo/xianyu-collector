@@ -1,6 +1,10 @@
 param(
     [string]$OutputDirectory = (Join-Path (Split-Path -Parent $PSScriptRoot) 'xianyu-one-click-installer'),
-    [switch]$Force
+    [switch]$Force,
+    [switch]$IncludeDockerImages,
+    [string]$ImageSourceRegistry = 'ghcr.io',
+    [string]$ImageSourceNamespace = 'manderzuo/xianyu-collector',
+    [string]$ImageSourceTag = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -26,7 +30,7 @@ $ResourcesRoot = Join-Path $OutputDirectory 'resources'
 New-Item -ItemType Directory -Path $AppRoot, $ScriptsRoot, $ResourcesRoot -Force | Out-Null
 
 $excludedDirectoryNames = @(
-    '.git', '.pytest_cache', '.venv', 'venv', 'node_modules', 'dist', 'build',
+    '.git', '.pytest_cache', '__pycache__', '.mypy_cache', '.ruff_cache', '.venv', 'venv', 'node_modules', 'dist', 'build',
     'static', 'backups', 'browser_data', 'logs', 'release', 'xianyu-one-click-installer'
 )
 $excludedFileNames = @('.env', '.env.local')
@@ -59,6 +63,7 @@ Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows-installer-diagnostics.p
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows-installer-update.ps1') -Destination (Join-Path $ScriptsRoot 'update.ps1') -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows-installer-docker.ps1') -Destination (Join-Path $ResourcesRoot 'docker-bootstrap.ps1') -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows-installer-wsl.ps1') -Destination (Join-Path $ResourcesRoot 'prepare-wsl.ps1') -Force
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'import-offline-image-bundle.ps1') -Destination (Join-Path $ResourcesRoot 'import-offline-image-bundle.ps1') -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows-installer-install.bat') -Destination (Join-Path $OutputDirectory 'install.bat') -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows-installer-start.bat') -Destination (Join-Path $OutputDirectory 'start.bat') -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows-installer-stop.bat') -Destination (Join-Path $OutputDirectory 'stop.bat') -Force
@@ -75,6 +80,11 @@ if (Test-Path -LiteralPath $versionPath) {
     $candidate = (Get-Content -LiteralPath $versionPath -Raw).Trim()
     if ($candidate) { $version = $candidate }
 }
+$launcherBuilder = Join-Path $PSScriptRoot 'build-launcher.ps1'
+if (Test-Path -LiteralPath $launcherBuilder) {
+    & $launcherBuilder -OutputDirectory $OutputDirectory -Force
+    if ($LASTEXITCODE -ne 0) { throw "Launcher build failed with exit code $LASTEXITCODE." }
+}
 $manifest = [ordered]@{
     product = 'xianyu-rewrite'
     package_type = 'windows-portable-docker'
@@ -84,19 +94,45 @@ $manifest = [ordered]@{
     install_entry = 'install.bat'
     start_entry = 'start.bat'
     stop_entry = 'stop.bat'
+    launcher_entry = ((-join ([char[]](0x95f2, 0x9c7c, 0x7ba1, 0x7406, 0x7cfb, 0x7edf))) + '.exe')
+    installer_entry = ((-join ([char[]](0x5b89, 0x88c5, 0x95f2, 0x9c7c, 0x7ba1, 0x7406, 0x7cfb, 0x7edf))) + '.exe')
+    maintenance_entries = @(
+        ((-join ([char[]](0x66f4, 0x65b0, 0x95f2, 0x9c7c, 0x7ba1, 0x7406, 0x7cfb, 0x7edf))) + '.exe'),
+        ((-join ([char[]](0x505c, 0x6b62, 0x95f2, 0x9c7c, 0x7ba1, 0x7406, 0x7cfb, 0x7edf))) + '.exe'),
+        ((-join ([char[]](0x8bca, 0x65ad, 0x95f2, 0x9c7c, 0x7ba1, 0x7406, 0x7cfb, 0x7edf))) + '.exe')
+    )
     data_location = 'Docker named volumes managed by the generated compose project'
-    requires = @('Windows 10 or later', 'Docker Desktop with Linux containers', 'Internet access for the first image build unless images are preloaded')
+    offline_images = [bool]$IncludeDockerImages
+    offline_image_manifest = if ($IncludeDockerImages) { 'resources/images/offline-manifest.json' } else { $null }
+    requires = if ($IncludeDockerImages) {
+        @('Windows 10 or later', 'Docker Desktop with Linux containers', 'At least 5 GB of free disk space for image import and Docker volumes')
+    } else {
+        @('Windows 10 or later', 'Docker Desktop with Linux containers', 'Internet access for the first image build unless images are preloaded')
+    }
 }
 $manifest | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $OutputDirectory 'package-manifest.json') -Encoding UTF8
 
+if ($IncludeDockerImages) {
+    $offlineBuilder = Join-Path $PSScriptRoot 'build-offline-image-bundle.ps1'
+    if (-not (Test-Path -LiteralPath $offlineBuilder)) { throw "Offline image builder not found: $offlineBuilder" }
+    & $offlineBuilder -PackageRoot $OutputDirectory -Version $version -SourceRegistry $ImageSourceRegistry -SourceNamespace $ImageSourceNamespace -SourceTag $ImageSourceTag
+    if ($LASTEXITCODE -ne 0) { throw "Offline image bundle creation failed with exit code $LASTEXITCODE." }
+}
+
+$launcherDisplayName = (-join ([char[]](0x95f2, 0x9c7c, 0x7ba1, 0x7406, 0x7cfb, 0x7edf))) + '.exe'
+$installerDisplayName = (-join ([char[]](0x5b89, 0x88c5, 0x95f2, 0x9c7c, 0x7ba1, 0x7406, 0x7cfb, 0x7edf))) + '.exe'
+$updaterDisplayName = (-join ([char[]](0x66f4, 0x65b0, 0x95f2, 0x9c7c, 0x7ba1, 0x7406, 0x7cfb, 0x7edf))) + '.exe'
+$stopperDisplayName = (-join ([char[]](0x505c, 0x6b62, 0x95f2, 0x9c7c, 0x7ba1, 0x7406, 0x7cfb, 0x7edf))) + '.exe'
+$diagnosticsDisplayName = (-join ([char[]](0x8bca, 0x65ad, 0x95f2, 0x9c7c, 0x7ba1, 0x7406, 0x7cfb, 0x7edf))) + '.exe'
+$centralDeploymentDoc = -join ([char[]](0x817e, 0x8baf, 0x4e91, 0x4e2d, 0x5fc3, 0x5316, 0x90e8, 0x7f72, 0x8bf4, 0x660e))
 $readme = @'
 Xianyu One-Click Installer
 
 Copy this whole folder to another Windows computer. Do not move only one file.
 
 1. Install or start Docker Desktop.
-2. Double-click install.bat.
-3. Open the desktop shortcut named 闲鱼管理系统.
+2. Double-click __INSTALLER__ (install.bat remains available as a compatibility fallback).
+3. Open the desktop shortcut named __LAUNCHER__.
 
 On the first run, install.bat checks and configures WSL 2 prerequisites. Windows may ask for administrator permission and a restart. Run install.bat again after the restart.
 
@@ -104,29 +140,34 @@ The installer uses its own folder as the project root. It does not depend on a f
 The installer chooses free ports beginning at 20000 and never uses the old 19000 deployment.
 The app source, compose file, environment template, scripts and Docker bootstrap helper are all under this folder.
 
-This package is for standalone deployment. If multiple computers must share users and registration approvals, deploy one central copy on your Tencent Cloud server and let all computers access that same URL. Do not run separate local databases for that scenario. See app\docs\腾讯云中心化部署说明.md.
+This package is for standalone deployment. If multiple computers must share users and registration approvals, deploy one central copy on your Tencent Cloud server and let all computers access that same URL. Do not run separate local databases for that scenario. See app\docs\__CENTRAL_DOC__.md.
 
 Docker Desktop is not included in this package. Install Docker Desktop separately, then run install.bat.
 You may also place your installer at resources\DockerDesktopInstaller.exe before copying the package.
 If Docker Desktop is missing, install.bat first tries winget and then offers to download the official installer.
 The target computer needs administrator permission for Docker Desktop installation.
 
-First startup builds the four application images and downloads base images. This can take several minutes.
-After installation, start.bat starts the existing containers without deleting data.
-Each start.bat run opens the Xianyu update window and checks the Tencent-hosted release
+An offline package may include all application, MySQL and Redis images. When resources\images\offline-manifest.json is present, install.bat imports those images locally and does not download Docker images.
+Without an offline image bundle, first startup builds the four application images and downloads base images. This can take several minutes.
+After installation, __LAUNCHER__ starts the existing containers without deleting data.
+__UPDATER__, __STOPPER__ and __DIAGNOSTICS__ are GUI
+maintenance shortcuts; the original update.bat, stop.bat and diagnostics.bat remain available
+as compatibility fallbacks.
+Each launcher start checks the Tencent-hosted release
 manifest. If a newer image release is available, the window shows the release notes and
-asks for confirmation, then pulls the images and restarts the services while preserving
-Docker volumes. The detailed update log is saved at app\logs\update.log, including the
-manifest response, Docker command output, exit codes and post-failure container status.
+asks for confirmation, then downloads only changed Tencent-hosted image archives, verifies
+their SHA-256 values, imports them and restarts the services while preserving Docker
+volumes. The detailed update log is saved at app\logs\update.log, including the manifest
+response, download and Docker command output, exit codes and post-failure container status.
 A temporary network or registry failure is logged and the current installation still starts.
 The installer also synchronizes the application database credentials with an existing
 MySQL container before the services start, so an update does not break an existing database.
 If an older package left a garbled desktop shortcut, copy this package over the same
 installation folder and run start.bat once. The launcher will remove the stale Xianyu
 shortcut and recreate it with the correct Chinese name.
-stop.bat stops containers without deleting data.
-diagnostics.bat prints Docker and service status for troubleshooting.
-update.bat opens the graphical updater directly. Launcher failures are also
+The launcher can stop containers, check updates and open diagnostics without a console window.
+The original stop.bat, diagnostics.bat and update.bat remain available for recovery.
+Launcher failures are also
 recorded in app\logs\updater-launch.log and shown in a visible error dialog.
 diagnostics.bat also creates app\logs\diagnostics-latest.txt, opens it in
 Notepad, and includes Docker status, recent logs from every service, and cloud
@@ -141,6 +182,12 @@ click Close.
 Default first-login credentials are created by the application. Change them after first login.
 Never share app\.env: it contains database passwords, JWT secrets and external API keys.
 '@
+$readme = $readme.Replace('__INSTALLER__', $installerDisplayName)
+$readme = $readme.Replace('__LAUNCHER__', $launcherDisplayName)
+$readme = $readme.Replace('__UPDATER__', $updaterDisplayName)
+$readme = $readme.Replace('__STOPPER__', $stopperDisplayName)
+$readme = $readme.Replace('__DIAGNOSTICS__', $diagnosticsDisplayName)
+$readme = $readme.Replace('__CENTRAL_DOC__', $centralDeploymentDoc)
 $readme | Set-Content -LiteralPath (Join-Path $OutputDirectory 'README.txt') -Encoding UTF8
 
 Write-Host "Package created: $OutputDirectory" -ForegroundColor Green

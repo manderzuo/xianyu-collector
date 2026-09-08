@@ -65,16 +65,22 @@ npm run build && npm run preview -- --host 0.0.0.0 --port 9001
 后续双击桌面启动器或 `start-xianyu.bat` 即可启动已有部署；需要停止服务时使用
 `stop-xianyu.bat`。详细说明见 `docs/Windows-Docker-自动部署说明.md`。
 
-## GitHub 免费镜像更新
+## 腾讯云自动更新
 
-项目支持本地构建和远程镜像两种模式。GitHub Actions 使用 GitHub Container Registry（GHCR）
-构建并发布四个公开镜像，腾讯云服务器只托管更新清单。客户电脑可以在 `.env` 中设置
-`XR_DEPLOY_MODE=remote`，无需 Docker 登录即可拉取镜像。桌面启动器会检查
-`UPDATE_MANIFEST_URL`，发现新版本后提示确认，再拉取新镜像并重启，不会删除本地数据卷。
-GitHub Actions 配置见 `.github/workflows/build-and-publish.yml`。
+GitHub Actions 只负责构建和校验镜像，发布时会把四个业务镜像分别导出为压缩归档，
+上传到现有腾讯云 HTTPS 站点的 `/release/xianyu/`，并最后更新 `latest.json`。客户端只访问
+`UPDATE_MANIFEST_URL`（默认 `https://www.gemstory.cn/release/xianyu/latest.json`）和同域名的
+镜像归档，不需要访问 GitHub、GHCR 或配置翻墙代理，也不需要购买腾讯云 TCR。
 
-公开镜像不需要额外购买腾讯云 TCR，但镜像内的程序文件可以被公开拉取；如果后续需要保护镜像内容，
-再切换到私有镜像仓库并为客户端配置只读访问权限。
+启动器发现新版本后，会按镜像 ID 跳过未变化的服务，只下载变化的归档；每个归档先做 SHA-256
+校验，再执行 `docker load`，Compose 重启成功并通过前端检查后才写入本地版本标记。失败时恢复
+旧 `.env` 和旧服务配置，并保留更新日志。没有归档的旧清单仍兼容原来的 Compose pull 模式。
+
+GitHub Actions 配置见 `.github/workflows/build-and-publish.yml`。工作流需要已有的四个
+`TENCENT_UPDATE_*` SSH secrets，`TENCENT_UPDATE_REMOTE_PATH` 必须是 Nginx `alias`
+对应的真实目录，例如 `/var/www/gemstory/release/xianyu`，并需要配置
+`UPDATE_SIGNING_PRIVATE_KEY`。发布流程生成 `latest.json.sig`，客户端安装包内只保存
+`deploy/update-signing-public-key.xml`；签名缺失或不匹配时，客户端拒绝更新。
 
 ## Cloudflare 隔离部署（前端上 CF Pages，后端走临时托管）
 - 构建：`frontend` Root=`frontend` Build=`npm ci && npm run build` Output=`dist`

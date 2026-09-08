@@ -13,6 +13,7 @@ $LogPath = if (Get-Command Start-XianyuLogSession -ErrorAction SilentlyContinue)
 $Desktop = [Environment]::GetFolderPath('Desktop')
 $ShortcutTitle = -join ([char[]](0x95f2, 0x9c7c, 0x7ba1, 0x7406, 0x7cfb, 0x7edf))
 $ShortcutPath = Join-Path $Desktop "$ShortcutTitle.lnk"
+$LauncherPath = Join-Path $PackageRoot "$ShortcutTitle.exe"
 $OldShortcutPath = Join-Path $Desktop 'Xianyu System.lnk'
 $IconPath = Join-Path $AppRoot 'assets\xianyu-launcher.ico'
 
@@ -47,8 +48,13 @@ function Update-DesktopShortcut {
         Remove-StaleXianyuShortcuts -KeepPath $ShortcutPath
         $shell = New-Object -ComObject WScript.Shell
         $shortcut = $shell.CreateShortcut($ShortcutPath)
-        $shortcut.TargetPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-        $shortcut.Arguments = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$(Join-Path $PSScriptRoot 'start.ps1')`""
+        if (Test-Path -LiteralPath $LauncherPath) {
+            $shortcut.TargetPath = $LauncherPath
+            $shortcut.Arguments = ''
+        } else {
+            $shortcut.TargetPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+            $shortcut.Arguments = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$(Join-Path $PSScriptRoot 'start.ps1')`""
+        }
         $shortcut.WorkingDirectory = $PackageRoot
         $shortcut.Description = $ShortcutTitle
         if (Test-Path -LiteralPath $IconPath) { $shortcut.IconLocation = "$IconPath,0" }
@@ -72,24 +78,11 @@ if (Test-Path -LiteralPath $DbCredentialSync) {
     & $DbCredentialSync -ProjectRoot $AppRoot
 }
 
-# Check the Tencent-hosted release manifest before starting the local stack.
-# The checker runs in a separate process. A failed update check displays its
-# own persistent error window, but must not prevent the installed version from
-# starting.
-if (Test-Path -LiteralPath $UpdateChecker) {
-    $checkArguments = "-NoProfile -STA -ExecutionPolicy Bypass -File `"$UpdateChecker`""
-    $checkProcess = Start-Process -FilePath 'powershell.exe' -ArgumentList $checkArguments -WindowStyle Hidden -Wait -PassThru
-    Write-XianyuLog -LogPath $LogPath -Message "update_check_exit code=$($checkProcess.ExitCode)"
-    if ($checkProcess.ExitCode -ne 0) {
-        Write-Host "[xianyu] Update check failed with exit code $($checkProcess.ExitCode). The installed version will still start." -ForegroundColor Yellow
-    }
-}
-
 Write-XianyuLog -LogPath $LogPath -Message 'docker_compose_up_start'
 $previousPreference = $ErrorActionPreference
 $ErrorActionPreference = 'Continue'
 try {
-    $dockerOutput = & docker compose --project-directory $AppRoot --env-file $EnvFile -f $ComposeFile up -d 2>&1
+    $dockerOutput = & docker compose --project-directory $AppRoot --env-file $EnvFile -f $ComposeFile up -d --no-build 2>&1
     $dockerExitCode = $LASTEXITCODE
 } finally {
     $ErrorActionPreference = $previousPreference
@@ -100,4 +93,18 @@ if ($dockerExitCode -ne 0) { throw "Docker Compose could not start the applicati
 $frontendPort = ((Get-Content -LiteralPath $EnvFile | Where-Object { $_ -match '^FRONTEND_PORT=' }) -replace '^FRONTEND_PORT=', '').Trim()
 if ($frontendPort -match '^\d+$') { Start-Process "http://127.0.0.1:$frontendPort" }
 Write-XianyuLog -LogPath $LogPath -Message "startup_completed frontend_port=$frontendPort"
+
+# Start the update check after the existing stack is available. It is a
+# background process so a slow registry or a failed update check never blocks
+# the local application from opening. Use an argument array instead of a
+# hand-built quoted command line so paths with spaces remain valid.
+if (Test-Path -LiteralPath $UpdateChecker) {
+    $checkArguments = @('-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-File', $UpdateChecker)
+    try {
+        $checkProcess = Start-Process -FilePath 'powershell.exe' -ArgumentList $checkArguments -WindowStyle Hidden -PassThru
+        Write-XianyuLog -LogPath $LogPath -Message "update_check_started pid=$($checkProcess.Id)"
+    } catch {
+        Write-XianyuLog -LogPath $LogPath -Message "update_check_start_failed error=$($_.Exception.ToString())"
+    }
+}
 Stop-XianyuLogSession
