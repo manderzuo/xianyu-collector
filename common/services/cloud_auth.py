@@ -2,9 +2,13 @@
 from __future__ import annotations
 
 import os
+import asyncio
+import logging
 from typing import Any
 
 import httpx
+
+logger = logging.getLogger("xr.cloud_auth")
 
 
 class CloudAuthError(RuntimeError):
@@ -24,15 +28,35 @@ async def cloud_auth_request(action: str, payload: dict[str, Any], token: str = 
     base = cloud_auth_url()
     if not base:
         return None
+    endpoint = f"{base}/api/xianyu/auth/{action}"
+    response: httpx.Response | None = None
+    last_error: httpx.HTTPError | None = None
+    for attempt in range(1, 4):
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(15, connect=8), follow_redirects=False) as client:
+                headers = {"Authorization": f"Bearer {token}"} if token else {}
+                response = await client.post(endpoint, json=payload, headers=headers)
+            break
+        except httpx.HTTPError as exc:
+            last_error = exc
+            logger.warning(
+                "cloud auth request failed action=%s attempt=%s error_type=%s error=%s",
+                action,
+                attempt,
+                type(exc).__name__,
+                str(exc)[:300],
+            )
+            if attempt < 3:
+                await asyncio.sleep(0.5 * attempt)
+    if response is None:
+        message = "无法连接云端账号服务，请检查 Docker 网络或 DNS 设置"
+        if isinstance(last_error, httpx.ConnectTimeout):
+            message = "连接云端账号服务超时，请检查当前网络或代理设置"
+        elif isinstance(last_error, httpx.ReadTimeout):
+            message = "云端账号服务响应超时，请稍后重试"
+        raise CloudAuthError("connection_failed", message, 503) from last_error
     try:
-        async with httpx.AsyncClient(timeout=10, follow_redirects=False) as client:
-            headers = {"Authorization": f"Bearer {token}"} if token else {}
-            response = await client.post(f"{base}/api/xianyu/auth/{action}", json=payload, headers=headers)
         body = response.json()
-    except httpx.HTTPError as exc:
-        raise CloudAuthError(
-            "connection_failed", "云端账号服务暂时不可用，请稍后重试", 503
-        ) from exc
     except ValueError as exc:
         raise CloudAuthError(
             "invalid_response", "云端账号服务返回内容无效", 502

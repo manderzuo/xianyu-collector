@@ -128,6 +128,15 @@ stop.bat stops containers without deleting data.
 diagnostics.bat prints Docker and service status for troubleshooting.
 update.bat opens the graphical updater directly. Launcher failures are also
 recorded in app\logs\updater-launch.log and shown in a visible error dialog.
+diagnostics.bat also creates app\logs\diagnostics-latest.txt, opens it in
+Notepad, and includes Docker status, recent logs from every service, and cloud
+connectivity checks. It does not dump app\.env or intentionally collect secrets;
+review service logs before sharing because they may contain application data.
+Startup, installation, shutdown and update-check logs are saved as startup.log,
+install.log, shutdown.log and update-check.log in app\logs. If a PowerShell
+operation fails, a persistent window displays the full error and provides
+buttons to copy it or open the log folder. The window closes only when you
+click Close.
 
 Default first-login credentials are created by the application. Change them after first login.
 Never share app\.env: it contains database passwords, JWT secrets and external API keys.

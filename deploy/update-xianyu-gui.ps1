@@ -89,8 +89,19 @@ $worker = {
 
     function Invoke-Docker([string[]]$Arguments, [string]$Label) {
         Write-Detail "docker_start label=$Label args=$($Arguments -join ' ')"
-        $output = & docker compose --project-directory $Root --env-file $envFile -f $compose @Arguments 2>&1
-        $exitCode = $LASTEXITCODE
+        # Docker Compose writes normal progress/status lines (for example
+        # "Container ... Running") to stderr. Windows PowerShell turns those
+        # lines into ErrorRecord objects and, with Stop enabled, may abort an
+        # otherwise successful update. Capture them with Continue and decide
+        # success exclusively from the native process exit code.
+        $previousPreference = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            $output = & docker compose --project-directory $Root --env-file $envFile -f $compose @Arguments 2>&1
+            $exitCode = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $previousPreference
+        }
         foreach ($line in $output) { Write-Detail "docker_output label=$Label text=$line" }
         Write-Detail "docker_end label=$Label exit_code=$exitCode"
         if ($exitCode -ne 0) { throw "Docker 操作失败：$Label（退出码 $exitCode）" }

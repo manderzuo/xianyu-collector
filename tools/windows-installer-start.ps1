@@ -7,11 +7,21 @@ $UpdateChecker = Join-Path $AppRoot 'deploy\check-xianyu-update.ps1'
 $DbCredentialSync = Join-Path $AppRoot 'deploy\sync-xianyu-db-credentials.ps1'
 $ProtocolRegistrar = Join-Path $AppRoot 'deploy\register-xianyu-update-protocol.ps1'
 $DockerBootstrap = Join-Path $PackageRoot 'resources\docker-bootstrap.ps1'
+$ErrorHelper = Join-Path $AppRoot 'deploy\windows-error-reporting.ps1'
+if (Test-Path -LiteralPath $ErrorHelper) { . $ErrorHelper }
+$LogPath = if (Get-Command Start-XianyuLogSession -ErrorAction SilentlyContinue) { Start-XianyuLogSession -ProjectRoot $AppRoot -Name 'startup' } else { '' }
 $Desktop = [Environment]::GetFolderPath('Desktop')
 $ShortcutTitle = -join ([char[]](0x95f2, 0x9c7c, 0x7ba1, 0x7406, 0x7cfb, 0x7edf))
 $ShortcutPath = Join-Path $Desktop "$ShortcutTitle.lnk"
 $OldShortcutPath = Join-Path $Desktop 'Xianyu System.lnk'
 $IconPath = Join-Path $AppRoot 'assets\xianyu-launcher.ico'
+
+trap {
+    if (Get-Command Complete-XianyuFailure -ErrorAction SilentlyContinue) {
+        Complete-XianyuFailure -Context 'The application could not be started.' -ErrorRecord $_ -LogPath $LogPath
+    }
+    exit 1
+}
 
 function Remove-StaleXianyuShortcuts {
     param([string]$KeepPath)
@@ -49,27 +59,45 @@ function Update-DesktopShortcut {
 }
 
 if (-not (Test-Path -LiteralPath $EnvFile)) {
-    Write-Host '[xianyu] Environment is missing. Run install.bat first.' -ForegroundColor Red
-    exit 1
+    throw 'Environment is missing. Run install.bat first.'
 }
+Write-XianyuLog -LogPath $LogPath -Message "startup_begin package_root=$PackageRoot"
 Update-DesktopShortcut
 if (Test-Path -LiteralPath $ProtocolRegistrar) {
     try { & $ProtocolRegistrar -ProjectRoot $AppRoot } catch { Write-Host "[xianyu] Update protocol registration skipped: $($_.Exception.Message)" -ForegroundColor Yellow }
 }
-try { & $DockerBootstrap } catch { Write-Host "[xianyu] $($_.Exception.Message)" -ForegroundColor Red; exit 1 }
+& $DockerBootstrap
 
 if (Test-Path -LiteralPath $DbCredentialSync) {
     & $DbCredentialSync -ProjectRoot $AppRoot
 }
 
 # Check the Tencent-hosted release manifest before starting the local stack.
-# The checker is deliberately best-effort: a temporary network or registry
-# failure must not prevent an already-installed local version from starting.
+# The checker runs in a separate process. A failed update check displays its
+# own persistent error window, but must not prevent the installed version from
+# starting.
 if (Test-Path -LiteralPath $UpdateChecker) {
-    try { & $UpdateChecker } catch { Write-Host "[xianyu] Update check skipped: $($_.Exception.Message)" -ForegroundColor Yellow }
+    $checkArguments = "-NoProfile -STA -ExecutionPolicy Bypass -File `"$UpdateChecker`""
+    $checkProcess = Start-Process -FilePath 'powershell.exe' -ArgumentList $checkArguments -WindowStyle Hidden -Wait -PassThru
+    Write-XianyuLog -LogPath $LogPath -Message "update_check_exit code=$($checkProcess.ExitCode)"
+    if ($checkProcess.ExitCode -ne 0) {
+        Write-Host "[xianyu] Update check failed with exit code $($checkProcess.ExitCode). The installed version will still start." -ForegroundColor Yellow
+    }
 }
 
-docker compose --project-directory $AppRoot --env-file $EnvFile -f $ComposeFile up -d
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+Write-XianyuLog -LogPath $LogPath -Message 'docker_compose_up_start'
+$previousPreference = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+try {
+    $dockerOutput = & docker compose --project-directory $AppRoot --env-file $EnvFile -f $ComposeFile up -d 2>&1
+    $dockerExitCode = $LASTEXITCODE
+} finally {
+    $ErrorActionPreference = $previousPreference
+}
+foreach ($line in $dockerOutput) { Write-Host $line }
+Write-XianyuLog -LogPath $LogPath -Message "docker_compose_up_end exit_code=$dockerExitCode"
+if ($dockerExitCode -ne 0) { throw "Docker Compose could not start the application (exit code $dockerExitCode)." }
 $frontendPort = ((Get-Content -LiteralPath $EnvFile | Where-Object { $_ -match '^FRONTEND_PORT=' }) -replace '^FRONTEND_PORT=', '').Trim()
 if ($frontendPort -match '^\d+$') { Start-Process "http://127.0.0.1:$frontendPort" }
+Write-XianyuLog -LogPath $LogPath -Message "startup_completed frontend_port=$frontendPort"
+Stop-XianyuLogSession

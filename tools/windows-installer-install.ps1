@@ -8,10 +8,19 @@ $DockerBootstrap = Join-Path $PackageRoot 'resources\docker-bootstrap.ps1'
 $WslBootstrap = Join-Path $PackageRoot 'resources\prepare-wsl.ps1'
 $DbCredentialSync = Join-Path $AppRoot 'deploy\sync-xianyu-db-credentials.ps1'
 $ProtocolRegistrar = Join-Path $AppRoot 'deploy\register-xianyu-update-protocol.ps1'
+$ErrorHelper = Join-Path $AppRoot 'deploy\windows-error-reporting.ps1'
+if (Test-Path -LiteralPath $ErrorHelper) { . $ErrorHelper }
+$LogPath = if (Get-Command Start-XianyuLogSession -ErrorAction SilentlyContinue) { Start-XianyuLogSession -ProjectRoot $AppRoot -Name 'install' } else { '' }
+
+trap {
+    if (Get-Command Complete-XianyuFailure -ErrorAction SilentlyContinue) {
+        Complete-XianyuFailure -Context 'Installation failed. The window will remain open until you close it.' -ErrorRecord $_ -LogPath $LogPath
+    }
+    exit 1
+}
 
 function Fail([string]$Message) {
-    Write-Host "[xianyu] ERROR: $Message" -ForegroundColor Red
-    exit 1
+    throw $Message
 }
 
 function Get-EnvMap([string]$Path) {
@@ -74,7 +83,7 @@ if (-not (Test-Path -LiteralPath $EnvExample)) { Fail 'The package is incomplete
 if (Test-Path -LiteralPath $WslBootstrap) {
     powershell.exe -NoProfile -ExecutionPolicy Bypass -File $WslBootstrap
     $wslExitCode = $LASTEXITCODE
-    if ($wslExitCode -ne 0) { exit $wslExitCode }
+    if ($wslExitCode -ne 0) { throw "WSL preparation failed with exit code $wslExitCode." }
 }
 try { & $DockerBootstrap -Install } catch { Fail $_.Exception.Message }
 if (-not (Get-Command docker -ErrorAction SilentlyContinue)) { Fail 'Docker CLI is unavailable. Start Docker Desktop and run install.bat again.' }
@@ -141,6 +150,7 @@ foreach ($entry in @(
 }
 
 $envMap = Get-EnvMap $EnvFile
+Write-XianyuLog -LogPath $LogPath -Message "install_begin package_root=$PackageRoot new_environment=$newEnv"
 Write-Host "[xianyu] Package root: $PackageRoot" -ForegroundColor Cyan
 Write-Host "[xianyu] Frontend: http://127.0.0.1:$($envMap['FRONTEND_PORT'])" -ForegroundColor Cyan
 Write-Host '[xianyu] Old port 19000 is not used.' -ForegroundColor Cyan
@@ -220,5 +230,7 @@ $shortcut.Save()
 
 Write-Host '[xianyu] Installation completed.' -ForegroundColor Green
 Write-Host "[xianyu] Open: $frontendUrl" -ForegroundColor Green
+Write-XianyuLog -LogPath $LogPath -Message "install_completed frontend_url=$frontendUrl"
+Stop-XianyuLogSession
 Start-Process $frontendUrl
 exit 0
