@@ -42,7 +42,7 @@
 
 ## 五、GitHub 免费镜像和自动更新
 
-源码仓库可以继续保持私有。GitHub Actions 只在创建版本标签或手动运行时构建四个业务镜像，并推送到 GitHub Container Registry（GHCR）；同时把 `release/latest.json` 上传到腾讯云更新目录。普通 `main` 提交不会触发客户更新。
+源码仓库可以继续保持私有。每次推送到 `main`、创建版本标签或手动运行 GitHub Actions 时，都会读取仓库的 `VERSION.txt`，构建并推送四个业务镜像到 GitHub Container Registry（GHCR），同时把客户端维护包和 `release/latest.json` 上传到腾讯云更新目录。连续推送同一版本时，会使用新的构建号触发客户端更新。
 
 客户端启动器会读取 `.env` 中的 `UPDATE_MANIFEST_URL`。发现新版本后弹窗提示，用户确认后执行：
 
