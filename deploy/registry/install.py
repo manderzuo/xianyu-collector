@@ -33,6 +33,7 @@ def run(args: list[str]) -> None:
 storage = configured_path("XIANYU_REGISTRY_DATA", "/var/lib/gemstory/xianyu-registry")
 config = configured_path("XIANYU_REGISTRY_CONFIG", "/etc/docker/registry/config.yml")
 nginx = configured_path("XIANYU_NGINX_CONFIG", "/etc/nginx/sites-available/filmcrew.conf")
+tools_dir = configured_path("XIANYU_REGISTRY_TOOLS", "/opt/gemstory/xianyu-registry-tools")
 stamp = datetime.now().strftime("%Y%m%d%H%M%S")
 
 missing = [name for name in ("docker-registry", "skopeo") if not command_exists(name)]
@@ -45,6 +46,11 @@ storage.mkdir(parents=True, exist_ok=True)
 shutil.chown(storage, "docker-registry", "docker-registry")
 storage.chmod(0o750)
 config.parent.mkdir(parents=True, exist_ok=True)
+tools_dir.mkdir(parents=True, exist_ok=True)
+source_promoter = Path(__file__).resolve().with_name("promote_incremental.py")
+if not source_promoter.exists():
+    raise RuntimeError(f"Incremental promotion tool is missing: {source_promoter}")
+shutil.copy2(source_promoter, tools_dir / source_promoter.name)
 
 registry_config = f"""version: 0.1
 log:

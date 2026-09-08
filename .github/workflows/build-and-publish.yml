@@ -68,6 +68,8 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.base.outputs.version }}
+      image_prefix: ${{ steps.base.outputs.image_prefix }}
+      build_version: ${{ steps.base.outputs.build_version }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -105,8 +107,21 @@ jobs:
               "https://${CLIENT_IMAGE_REGISTRY}/v2/${CLIENT_IMAGE_NAMESPACE}/xianyu-${service}/manifests/${base_version}" \
               >/dev/null
           done
+          target_probe="${IMAGE_REGISTRY}/${IMAGE_NAMESPACE}/xianyu-backend:${target_version}"
+          if docker manifest inspect "${target_probe}" >/dev/null 2>&1; then
+            image_prefix="${IMAGE_REGISTRY}/${IMAGE_NAMESPACE}"
+            build_version="${target_version}"
+          elif [ "${base_version}" = "1.0.10" ]; then
+            image_prefix="${CLIENT_IMAGE_REGISTRY}/${CLIENT_IMAGE_NAMESPACE}"
+            build_version="${base_version}"
+          else
+            image_prefix="${IMAGE_REGISTRY}/${IMAGE_NAMESPACE}"
+            build_version="${base_version}"
+          fi
           echo "version=${base_version}" >> "$GITHUB_OUTPUT"
-          echo "Incremental base version: ${base_version}; target version: ${target_version}"
+          echo "image_prefix=${image_prefix}" >> "$GITHUB_OUTPUT"
+          echo "build_version=${build_version}" >> "$GITHUB_OUTPUT"
+          echo "Stable base version: ${base_version}; build parent: ${image_prefix}:${build_version}; target version: ${target_version}"
 
   build:
     needs: release_base
@@ -167,9 +182,10 @@ jobs:
           context: .
           file: ${{ matrix.dockerfile }}
           push: true
+          provenance: false
           tags: ${{ env.IMAGE_REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/xianyu-${{ matrix.name }}:${{ steps.release.outputs.version }}
           build-args: |
-            BASE_IMAGE=${{ env.CLIENT_IMAGE_REGISTRY }}/${{ env.CLIENT_IMAGE_NAMESPACE }}/xianyu-${{ matrix.name }}:${{ needs.release_base.outputs.version }}
+            BASE_IMAGE=${{ needs.release_base.outputs.image_prefix }}/xianyu-${{ matrix.name }}:${{ needs.release_base.outputs.build_version }}
             APP_VERSION=${{ steps.release.outputs.version }}
             APP_BUILD_ID=${{ steps.release.outputs.build_id }}
 
@@ -211,7 +227,7 @@ jobs:
           if-no-files-found: error
 
   manifest:
-    needs: [registry_bootstrap, build, client_package]
+    needs: [registry_bootstrap, release_base, build, client_package]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -260,7 +276,7 @@ jobs:
         shell: bash
         run: cp release/client-download/*.zip release/
 
-      - name: Copy only missing image layers into Tencent registry
+      - name: Promote only new layers into Tencent registry
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.TENCENT_UPDATE_SSH_HOST }}
@@ -271,10 +287,14 @@ jobs:
           script: |
             set -Eeuo pipefail
             version="${{ steps.release.outputs.version }}"
+            base_version="${{ needs.release_base.outputs.version }}"
             for service in backend websocket scheduler frontend; do
-              sudo skopeo --insecure-policy copy --src-tls-verify=true --dest-tls-verify=false \
-                "docker://${{ env.IMAGE_REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/xianyu-${service}:${version}" \
-                "docker://127.0.0.1:5000/xianyu/xianyu-${service}:${version}"
+              sudo python3 /opt/gemstory/xianyu-registry-tools/promote_incremental.py \
+                --source-repository "${{ env.IMAGE_NAMESPACE }}/xianyu-${service}" \
+                --source-reference "${version}" \
+                --destination-repository "xianyu/xianyu-${service}" \
+                --base-reference "${base_version}" \
+                --target-reference "${version}"
             done
 
       - name: Verify incremental registry images
