@@ -127,8 +127,6 @@ jobs:
             BASE_IMAGE=${{ env.CLIENT_IMAGE_REGISTRY }}/${{ env.CLIENT_IMAGE_NAMESPACE }}/xianyu-${{ matrix.name }}:1.0.10
             APP_VERSION=${{ steps.release.outputs.version }}
             APP_BUILD_ID=${{ steps.release.outputs.build_id }}
-          cache-from: type=gha,scope=xianyu-${{ matrix.name }}
-          cache-to: type=gha,mode=max,scope=xianyu-${{ matrix.name }}
 
   client_package:
     runs-on: windows-latest
