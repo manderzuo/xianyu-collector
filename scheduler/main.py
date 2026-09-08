@@ -19,6 +19,7 @@ from common.config import settings
 from common.db.session import async_session_maker, get_session, init_db
 from common.models import ScheduledTask
 from common.task_catalog import LEGACY_TASK_NAMES, TASK_CATALOG, canonical_task_name
+from common.version import app_version
 from scheduler.app.registry import REGISTRY, LAST_RUN, RUNNING_TASKS, interval_from_cron, run_task, sync_task_catalog
 
 scheduler = AsyncIOScheduler(timezone="Asia/Shanghai")
@@ -91,7 +92,7 @@ async def lifespan(app: FastAPI):
     scheduler.shutdown(wait=False)
 
 
-app = FastAPI(title=f"{settings.brand_name} Scheduler", version="1.0.7", lifespan=lifespan)
+app = FastAPI(title=f"{settings.brand_name} Scheduler", version=app_version(), lifespan=lifespan)
 
 
 @app.middleware("http")

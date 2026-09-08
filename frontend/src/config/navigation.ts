@@ -152,6 +152,7 @@ export const adminNavItems: NavEntry[] = [
     adminOnly: true,
     children: [
       { key: 'admin-system-logs', icon: FileText, label: '系统日志', path: '/admin/logs', adminOnly: true },
+      { key: 'admin-client-diagnostics', icon: AlertTriangle, label: '客户端错误日志', path: '/admin/client-diagnostics', adminOnly: true },
       { key: 'admin-redelivery-batches', icon: Repeat, label: '补发货日志', path: '/admin/redelivery-batches', adminOnly: true },
       { key: 'admin-account-login-logs', icon: LogIn, label: '账号登录日志', path: '/admin/account-login-logs', adminOnly: true },
       { key: 'admin-rate-batches', icon: Star, label: '补评价日志', path: '/admin/rate-batches', adminOnly: true },

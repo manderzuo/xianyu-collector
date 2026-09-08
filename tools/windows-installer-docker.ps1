@@ -1,4 +1,4 @@
-param([switch]$Install)
+param([switch]$Install, [switch]$NonInteractive)
 
 $ErrorActionPreference = 'Stop'
 
@@ -23,15 +23,34 @@ function Test-DockerReady {
     return $LASTEXITCODE -eq 0
 }
 
+function Wait-DockerReady {
+    param([int]$TimeoutSeconds = 600)
+    $startedAt = Get-Date
+    $attempts = [Math]::Max(1, [int][Math]::Ceiling($TimeoutSeconds / 2))
+    for ($i = 0; $i -lt $attempts; $i++) {
+        if (Test-DockerReady) {
+            Write-Host '[xianyu] Docker Desktop is ready.' -ForegroundColor Green
+            return $true
+        }
+        if (($i % 5) -eq 0) {
+            $elapsed = [int]((Get-Date) - $startedAt).TotalSeconds
+            Write-Host "[xianyu] Waiting for Docker Desktop. If it shows Try again, click it once. elapsed=${elapsed}s" -ForegroundColor Cyan
+        }
+        Start-Sleep -Seconds 2
+    }
+    return $false
+}
+
 if (Test-DockerReady) { exit 0 }
 
 $desktop = Find-DockerDesktop
 if ($desktop) {
+    Write-Host '[xianyu] Starting Docker Desktop.' -ForegroundColor Cyan
     Start-Process -FilePath $desktop | Out-Null
-    for ($i = 0; $i -lt 90; $i++) {
-        if (Test-DockerReady) { exit 0 }
-        Start-Sleep -Seconds 2
-    }
+    if (Wait-DockerReady -TimeoutSeconds 600) { exit 0 }
+    Write-Host '[xianyu] Docker Desktop is installed but did not become ready within 10 minutes.' -ForegroundColor Red
+    Write-Host '[xianyu] Click Try again in Docker Desktop, wait until it reports running, then reopen the installer.' -ForegroundColor Yellow
+    exit 2
 }
 
 if (-not $Install) {
@@ -54,6 +73,9 @@ if (Test-Path -LiteralPath $installerPath) {
             Write-Host '[xianyu] Docker Desktop was installed. Start it and run install.bat again.' -ForegroundColor Yellow
             exit 3
         }
+    }
+    if ($NonInteractive) {
+        throw 'Docker Desktop is missing. Install Docker Desktop, then open the installer again.'
     }
     $answer = Read-Host 'Docker Desktop is missing. Download the official installer now? (Y/N)'
     if ($answer -notmatch '^[Yy]$') { exit 4 }

@@ -72,6 +72,7 @@ const CollectFallbackAccount = React.lazy(() => import('@/pages/product-monitor/
 const Users = React.lazy(() => import('@/pages/admin/Users').then(m => ({ default: m.Users })))
 const Entitlements = React.lazy(() => import('@/pages/admin/Entitlements').then(m => ({ default: m.Entitlements })))
 const Logs = React.lazy(() => import('@/pages/admin/Logs').then(m => ({ default: m.Logs })))
+const ClientDiagnostics = React.lazy(() => import('@/pages/admin/ClientDiagnostics').then(m => ({ default: m.ClientDiagnostics })))
 const AutoReplyLogs = React.lazy(() => import('@/pages/autoReplyLogs/AutoReplyLogs').then(m => ({ default: m.AutoReplyLogs })))
 const RiskLogs = React.lazy(() => import('@/pages/admin/RiskLogs').then(m => ({ default: m.RiskLogs })))
 const AccountLoginLogs = React.lazy(() => import('@/pages/admin/AccountLoginLogs').then(m => ({ default: m.AccountLoginLogs })))
@@ -388,6 +389,7 @@ function App() {
             <Route path="admin/users" element={<Users />} />
             <Route path="admin/entitlements" element={<Entitlements />} />
             <Route path="admin/logs" element={<Logs />} />
+            <Route path="admin/client-diagnostics" element={<ClientDiagnostics />} />
             <Route path="admin/account-login-logs" element={<AccountLoginLogs />} />
             <Route path="admin/db-backup-logs" element={<DbBackupLogs />} />
             <Route path="admin/auto-reply-logs" element={<Navigate to="/message-logs" replace />} />

@@ -13,13 +13,20 @@ function Start-XianyuLogSession {
     }
     $path = Join-Path $logDir "$Name.log"
     $header = "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fff') session_start name=$Name computer=$env:COMPUTERNAME user=$env:USERNAME powershell=$($PSVersionTable.PSVersion)"
-    Add-Content -LiteralPath $path -Value $header -Encoding UTF8
+    try {
+        Add-Content -LiteralPath $path -Value $header -Encoding UTF8 -ErrorAction Stop
+    } catch {
+        # A second launcher may still have Start-Transcript holding the shared
+        # file. Fall back to a process-specific log instead of failing setup.
+        $path = Join-Path $logDir ("{0}-{1}-{2}.log" -f $Name, $PID, (Get-Date -Format 'yyyyMMddHHmmssfff'))
+        try { Add-Content -LiteralPath $path -Value $header -Encoding UTF8 -ErrorAction Stop } catch { return $path }
+    }
     try {
         Start-Transcript -LiteralPath $path -Append -Force | Out-Null
         $script:XianyuTranscriptActive = $true
         $script:XianyuTranscriptPath = $path
     } catch {
-        Add-Content -LiteralPath $path -Value "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fff') transcript_unavailable error=$($_.Exception.Message)" -Encoding UTF8
+        try { Add-Content -LiteralPath $path -Value "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fff') transcript_unavailable error=$($_.Exception.Message)" -Encoding UTF8 } catch { }
     }
     return $path
 }
@@ -112,7 +119,12 @@ function Show-XianyuErrorDialog {
         [void]$form.ShowDialog()
     } catch {
         Write-Host $content -ForegroundColor Red
-        try { Read-Host 'Press Enter to close' | Out-Null } catch { }
+        # The GUI launcher intentionally starts PowerShell without a console.
+        # Do not leave that hidden process waiting for input if WinForms is
+        # unavailable; the caller will present the captured error instead.
+        if ($env:XIANYU_NONINTERACTIVE -ne '1') {
+            try { Read-Host 'Press Enter to close' | Out-Null } catch { }
+        }
     }
 }
 

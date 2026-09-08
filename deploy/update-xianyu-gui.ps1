@@ -177,6 +177,18 @@ $worker = {
         return "$Value".Trim().ToLowerInvariant() -in @('1', 'true', 'yes', 'on', 'required')
     }
 
+    function Assert-SecureUrl([string]$Value, [string]$Label, [hashtable]$EnvMap) {
+        try { $uri = [Uri]$Value } catch { throw "$Label 地址格式无效：$Value" }
+        if (-not $uri.Host) { throw "$Label 地址缺少主机名：$Value" }
+        if ($uri.UserInfo) { throw "$Label 地址不安全，请使用不含账号密码的地址" }
+        if ($uri.Scheme -eq 'https') { return $uri }
+        if ($uri.Scheme -eq 'http' -and (Test-TrueValue "$($EnvMap['UPDATE_ALLOW_INSECURE_HTTP'])")) {
+            Write-Detail "$($Label)_insecure_http_allowed host=$($uri.Host)"
+            return $uri
+        }
+        throw "$Label 必须使用 HTTPS：$Value"
+    }
+
     function Resolve-ConfiguredPath([string]$Root, [string]$Value, [string]$Fallback) {
         $candidate = "$Value".Trim()
         if (-not $candidate) { $candidate = $Fallback }
@@ -200,8 +212,7 @@ $worker = {
                 $signatureUrl = [regex]::Replace($ManifestUrl, '(?i)\.json(?=$|\?)', '.json.sig')
             } else { $signatureUrl = "$ManifestUrl.sig" }
         }
-        $signatureUri = [Uri]$signatureUrl
-        if ($signatureUri.Scheme -notin @('http', 'https')) { throw "更新签名地址协议不受支持：$signatureUrl" }
+        $signatureUri = Assert-SecureUrl $signatureUrl '更新签名' $EnvMap
         $signatureTempDir = New-UpdateTempDirectory 'manifest-signature'
         $signaturePath = Join-Path $signatureTempDir 'manifest.sig'
         try {
@@ -256,8 +267,7 @@ $worker = {
                         continue
                     }
                 }
-                $uri = [Uri]$url
-                if ($uri.Scheme -notin @('http', 'https')) { throw "更新包地址协议不受支持：$url" }
+                $uri = Assert-SecureUrl $url '镜像更新包' $EnvMap
                 $archive = Join-Path $tempDir ('image-' + $index + '.tar.gz')
                 Write-Detail "artifact_download service=$($artifact.service) url=$url"
                 Invoke-WebRequest -UseBasicParsing -Uri $uri.AbsoluteUri -TimeoutSec 900 -OutFile $archive
@@ -283,8 +293,7 @@ $worker = {
         if (-not $url -or $expectedHash -notmatch '^[0-9a-f]{64}$') {
             throw '客户端维护包清单字段不完整'
         }
-        $uri = [Uri]$url
-        if ($uri.Scheme -ne 'https') { throw "客户端维护包必须使用 HTTPS：$url" }
+        $uri = Assert-SecureUrl $url '客户端维护包' $envMap
         $tempDir = New-UpdateTempDirectory 'client'
         $tempArchive = Join-Path $tempDir 'client.zip'
         $pendingRoot = Join-Path $Root 'updates\pending'
@@ -311,7 +320,8 @@ $worker = {
         $envMap = Get-EnvMap $envFile
         $manifestUrl = "$($envMap['UPDATE_MANIFEST_URL'])".Trim()
         if (-not $manifestUrl) { throw '未配置更新清单地址' }
-        $requestUrl = $manifestUrl + ($(if ($manifestUrl.Contains('?')) { '&' } else { '?' })) + '_client_check=' + [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+        $manifestUri = Assert-SecureUrl $manifestUrl '更新清单' $envMap
+        $requestUrl = $manifestUri.AbsoluteUri + ($(if ($manifestUri.AbsoluteUri.Contains('?')) { '&' } else { '?' })) + '_client_check=' + [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
         Write-Detail "manifest_request url=$manifestUrl request_url=$requestUrl"
         $headers = @{ 'Cache-Control' = 'no-cache'; 'Accept' = 'application/json' }
         $manifestToken = "$($envMap['UPDATE_MANIFEST_TOKEN'])".Trim()

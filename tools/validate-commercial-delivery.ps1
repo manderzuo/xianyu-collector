@@ -13,10 +13,10 @@ function Require-Path([string]$Path, [string]$Label) {
 }
 
 function Check-PowerShell([string]$Path) {
-    $tokens = $null
-    $errors = $null
-    [System.Management.Automation.Language.Parser]::ParseFile($Path, [ref]$tokens, [ref]$errors) | Out-Null
-    if ($errors.Count -gt 0) { $failures.Add("PowerShell parse failed: $Path") }
+    $parseTokens = $null
+    $parseErrors = $null
+    [System.Management.Automation.Language.Parser]::ParseFile($Path, [ref]$parseTokens, [ref]$parseErrors) | Out-Null
+    if ($parseErrors.Count -gt 0) { $failures.Add("PowerShell parse failed: $Path") }
 }
 
 function Check-BatAscii([string]$Path) {
@@ -29,8 +29,8 @@ foreach ($path in @(
     'docker-compose.yml', 'VERSION.txt', 'deploy\update-xianyu-gui.ps1',
     'deploy\update-signing-public-key.xml', 'tools\build-windows-installer.ps1',
     'tools\build-offline-image-bundle.ps1', 'tools\import-offline-image-bundle.ps1',
-    'tools\windows-installer-apply-client-update.ps1', 'tools\windows-reset-xianyu-docker.ps1',
-    '.github\workflows\build-and-publish.yml'
+    'tools\windows-installer-apply-client-update.ps1', 'tools\windows-installer-cleanup-rdp.ps1', 'tools\windows-reset-xianyu-docker.ps1',
+    '.github\workflows\build-and-publish.yml', '.github\workflows\deploy-cloud-auth.yml'
 )) { Require-Path (Join-Path $ProjectRoot $path) $path }
 
 Get-ChildItem -LiteralPath (Join-Path $ProjectRoot 'deploy') -Filter '*.ps1' -File -Recurse | ForEach-Object { Check-PowerShell $_.FullName }
@@ -49,11 +49,15 @@ if (Get-Command bash -ErrorAction SilentlyContinue) {
 } else { Write-Host '[xianyu] bash not found; migration syntax check skipped.' -ForegroundColor Yellow }
 
 if (Get-Command python -ErrorAction SilentlyContinue) {
-    & python -m py_compile (Join-Path $ProjectRoot 'tools\build_xianyu_release_manifest.py'), (Join-Path $ProjectRoot 'tools\generate-update-signing-key.py')
+    $pythonFiles = @(
+        (Join-Path $ProjectRoot 'tools\build_xianyu_release_manifest.py'),
+        (Join-Path $ProjectRoot 'tools\generate-update-signing-key.py')
+    ) + @(Get-ChildItem -LiteralPath (Join-Path $ProjectRoot 'deploy\cloud_auth') -Filter '*.py' -File | Select-Object -ExpandProperty FullName)
+    & python -m py_compile $pythonFiles
     if ($LASTEXITCODE -ne 0) { $failures.Add('Python syntax check failed.') }
     Push-Location $ProjectRoot
     try {
-        & python -c "import pathlib,yaml; yaml.safe_load(pathlib.Path('.github/workflows/build-and-publish.yml').read_text(encoding='utf-8')); print('workflow yaml ok')" 2>$null
+        & python -c "import pathlib,yaml; [yaml.safe_load(p.read_text(encoding='utf-8')) for p in pathlib.Path('.github/workflows').glob('*.yml')]; print('workflow yaml ok')" 2>$null
         if ($LASTEXITCODE -ne 0) { $failures.Add('Workflow YAML check failed.') }
     } finally { Pop-Location }
 } else { Write-Host '[xianyu] python not found; Python checks skipped.' -ForegroundColor Yellow }
@@ -74,12 +78,13 @@ if ($PackageRoot) {
     foreach ($path in @(
         'package-manifest.json', 'README.txt', 'resources\images\offline-manifest.json',
         'app\deploy\update-signing-public-key.xml', 'scripts\apply-client-update.ps1',
-        'resources\reset-xianyu-docker.ps1'
+        'resources\reset-xianyu-docker.ps1', 'resources\cleanup-rdp.ps1', 'xianyu-installer.exe', 'xianyu-launcher.exe',
+        'xianyu-updater.exe', 'xianyu-stopper.exe', 'xianyu-diagnostics.exe'
     )) { Require-Path (Join-Path $package $path) "package\$path" }
     $imageCount = @(Get-ChildItem -LiteralPath (Join-Path $package 'resources\images') -Filter '*.tar.gz' -File -ErrorAction SilentlyContinue).Count
     if ($imageCount -ne 6) { $failures.Add("Package must contain 6 image archives; found $imageCount") }
     $guiCount = @(Get-ChildItem -LiteralPath $package -Filter '*.exe' -File -ErrorAction SilentlyContinue).Count
-    if ($guiCount -ne 5) { $failures.Add("Package must contain 5 GUI executables; found $guiCount") }
+    if ($guiCount -ne 10) { $failures.Add("Package must contain 10 GUI executables; found $guiCount") }
     if (Test-Path -LiteralPath (Join-Path $package 'README.txt')) {
         $readme = Get-Content -LiteralPath (Join-Path $package 'README.txt') -Raw
         if ($readme -match '[\u95c2\u7e60\u7487\u7f01\u951f]') { $failures.Add('Package README contains mojibake.') }

@@ -50,6 +50,7 @@ const routeTitles: Record<string, string> = {
   '/tutorial': '使用教程',
   '/admin/users': '用户管理',
   '/admin/logs': '系统日志',
+  '/admin/client-diagnostics': '客户端错误日志',
   '/admin/auto-reply-logs': '消息日志',
   '/admin/account-login-logs': '账号登录日志',
   '/admin/risk-logs': '风控日志',

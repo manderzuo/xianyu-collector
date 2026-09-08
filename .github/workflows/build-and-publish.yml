@@ -4,8 +4,6 @@ on:
   push:
     tags:
       - 'v*.*.*'
-    branches:
-      - main
   workflow_dispatch:
     inputs:
       version:
@@ -55,7 +53,8 @@ jobs:
           elif [ "${{ github.ref_type }}" = "tag" ]; then
             version="${GITHUB_REF_NAME#v}"
           else
-            version="$(tr -d '\r\n' < VERSION.txt)"
+            echo 'Unsupported event.' >&2
+            exit 1
           fi
           if [ -z "$version" ]; then
             echo 'VERSION.txt is empty.' >&2
@@ -81,6 +80,9 @@ jobs:
           file: ${{ matrix.dockerfile }}
           push: true
           tags: ${{ env.IMAGE_REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/xianyu-${{ matrix.name }}:${{ steps.release.outputs.version }}
+          build-args: |
+            APP_VERSION=${{ steps.release.outputs.version }}
+            APP_BUILD_ID=${{ steps.release.outputs.build_id }}
 
   client_package:
     runs-on: windows-latest
@@ -99,13 +101,15 @@ jobs:
           } elseif ('${{ github.ref_type }}' -eq 'tag') {
             $version = '${{ github.ref_name }}'.Substring(1)
           } else {
-            $version = (Get-Content -LiteralPath 'VERSION.txt' -Raw).Trim()
+            throw 'Unsupported event.'
           }
           if ([string]::IsNullOrWhiteSpace($version)) { throw 'VERSION.txt is empty.' }
           $buildId = "$(($env:GITHUB_SHA).Substring(0,12))-$version"
           $packageFile = "xianyu-client-$buildId.zip"
-          powershell.exe -NoProfile -ExecutionPolicy Bypass -File '.\tools\build-windows-installer.ps1' -OutputDirectory '.\release\client' -Force
-          Compress-Archive -Path '.\release\client\*' -DestinationPath (Join-Path $PWD "release\$packageFile") -CompressionLevel Optimal -Force
+          $clientRoot = Join-Path $env:RUNNER_TEMP 'xianyu-client-package'
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File '.\tools\build-windows-installer.ps1' -OutputDirectory $clientRoot -VersionOverride $version -BuildIdOverride $buildId -Force
+          New-Item -ItemType Directory -Path (Join-Path $PWD 'release') -Force | Out-Null
+          Compress-Archive -Path (Join-Path $clientRoot '*') -DestinationPath (Join-Path $PWD "release\$packageFile") -CompressionLevel Optimal -Force
           "package_file=$packageFile" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
       - name: Upload client maintenance package artifact
@@ -136,8 +140,8 @@ jobs:
             version="${GITHUB_REF_NAME#v}"
             notes=""
           else
-            version="$(tr -d '\r\n' < VERSION.txt)"
-            notes="Automatic build from ${GITHUB_SHA:0:12}"
+            echo 'Unsupported event.' >&2
+            exit 1
           fi
           if [ -z "$version" ]; then
             echo 'VERSION.txt is empty.' >&2

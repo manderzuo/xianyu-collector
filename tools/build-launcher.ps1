@@ -1,9 +1,20 @@
 param(
-    [string]$OutputDirectory = (Join-Path (Split-Path -Parent $PSScriptRoot) 'xianyu-one-click-installer'),
+    [string]$OutputDirectory = '',
     [switch]$Force
 )
 
 $ErrorActionPreference = 'Stop'
+$OutputDirectory = if ([string]::IsNullOrWhiteSpace($OutputDirectory)) { "$env:XIANYU_PACKAGE_OUTPUT_DIRECTORY".Trim() } else { $OutputDirectory }
+if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
+    throw 'OutputDirectory is required. Choose a destination outside the source tree, for example D:\xianyu-release.'
+}
+$resolvedSource = (Resolve-Path -LiteralPath $PSScriptRoot).Path.TrimEnd('\')
+$resolvedOutputCandidate = [IO.Path]::GetFullPath($OutputDirectory).TrimEnd('\')
+if ($resolvedOutputCandidate -eq $resolvedSource -or
+    $resolvedOutputCandidate.StartsWith($resolvedSource + '\', [StringComparison]::OrdinalIgnoreCase) -or
+    $resolvedSource.StartsWith($resolvedOutputCandidate + '\', [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'OutputDirectory must be outside the source tree.'
+}
 $source = Join-Path $PSScriptRoot 'launcher\XianyuLauncher.cs'
 $icon = Join-Path (Split-Path -Parent $PSScriptRoot) 'assets\xianyu-launcher.ico'
 if (-not (Test-Path -LiteralPath $source)) { throw "Launcher source not found: $source" }
@@ -44,5 +55,12 @@ Copy-Item -LiteralPath $launcherPath -Destination $installerPath -Force
 Copy-Item -LiteralPath $launcherPath -Destination (Join-Path $OutputDirectory $updaterName) -Force
 Copy-Item -LiteralPath $launcherPath -Destination (Join-Path $OutputDirectory $stopperName) -Force
 Copy-Item -LiteralPath $launcherPath -Destination (Join-Path $OutputDirectory $diagnosticsName) -Force
+# ASCII aliases keep the legacy BAT wrappers free of non-ASCII text. The
+# launcher receives the role as an argument, so these aliases remain GUI-only.
+Copy-Item -LiteralPath $launcherPath -Destination (Join-Path $OutputDirectory 'xianyu-launcher.exe') -Force
+Copy-Item -LiteralPath $launcherPath -Destination (Join-Path $OutputDirectory 'xianyu-installer.exe') -Force
+Copy-Item -LiteralPath $launcherPath -Destination (Join-Path $OutputDirectory 'xianyu-updater.exe') -Force
+Copy-Item -LiteralPath $launcherPath -Destination (Join-Path $OutputDirectory 'xianyu-stopper.exe') -Force
+Copy-Item -LiteralPath $launcherPath -Destination (Join-Path $OutputDirectory 'xianyu-diagnostics.exe') -Force
 Write-Host "[xianyu] Launcher created: $launcherPath" -ForegroundColor Green
 Write-Host "[xianyu] Installer entry created: $installerPath" -ForegroundColor Green

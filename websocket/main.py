@@ -14,12 +14,13 @@ from sqlalchemy import select
 from common.config import settings
 from common.db.session import async_session_maker, init_db
 from common.models.accounts import Account
+from common.version import app_version
 from websocket.app.connection import ConnectionManager
 from websocket.app.handler import handle_socket
 from websocket.app.xianyu_runtime import runtime_manager
 from websocket.app.browser_cookie_renew import renew_browser_cookies, renew_password_cookies
 
-app = FastAPI(title=f"{settings.brand_name} WebSocket", version="1.0.7")
+app = FastAPI(title=f"{settings.brand_name} WebSocket", version=app_version())
 manager = ConnectionManager()
 logger = logging.getLogger("xr.websocket")
 

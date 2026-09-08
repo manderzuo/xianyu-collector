@@ -1,0 +1,63 @@
+name: Deploy Xianyu cloud auth service
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'deploy/cloud_auth/**'
+      - '.github/workflows/deploy-cloud-auth.yml'
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Branch, tag or commit to deploy'
+        required: true
+        default: 'main'
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout requested revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+
+      - name: Upload cloud auth service
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.TENCENT_UPDATE_SSH_HOST }}
+          username: ${{ secrets.TENCENT_UPDATE_SSH_USER }}
+          key: ${{ secrets.TENCENT_UPDATE_SSH_KEY }}
+          source: deploy/cloud_auth/*
+          target: /tmp/xianyu-auth-${{ github.run_id }}
+          strip_components: 2
+          command_timeout: 5m
+
+      - name: Install and restart cloud auth service
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.TENCENT_UPDATE_SSH_HOST }}
+          username: ${{ secrets.TENCENT_UPDATE_SSH_USER }}
+          key: ${{ secrets.TENCENT_UPDATE_SSH_KEY }}
+          script_stop: true
+          command_timeout: 10m
+          script: |
+            deploy_dir="/tmp/xianyu-auth-${{ github.run_id }}"
+            status=0
+            sudo python3 "${deploy_dir}/install.py" || status=$?
+            if [ "${status}" -eq 0 ]; then
+              for attempt in $(seq 1 10); do
+                if curl --fail --silent --show-error --max-time 5 http://127.0.0.1:8766/api/xianyu/auth/health >/dev/null; then
+                  break
+                fi
+                status=1
+                sleep 2
+              done
+            fi
+            sudo rm -rf "${deploy_dir}"
+            exit "${status}"

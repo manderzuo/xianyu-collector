@@ -1,12 +1,82 @@
-<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>闲鱼注册审批</title>
-<style>body{font:16px system-ui;background:#f3f6fb;color:#182337;margin:40px auto;max-width:1050px;padding:20px}section{background:white;padding:25px;border-radius:16px;margin:20px 0}input,button{font:inherit;padding:10px;margin:5px;border:1px solid #cbd5e1;border-radius:8px}button{cursor:pointer;background:#2563eb;color:white}td,th{text-align:left;padding:14px;border-bottom:1px solid #eee}table{width:100%}#message{color:#b45309}</style>
-<h1>闲鱼注册审批</h1><p>在任意电脑审核闲鱼平台注册申请。与采集平台的用户数据独立存储。</p>
-<section id="login"><input id="username" placeholder="管理员账号" autocomplete="username"><input id="password" type="password" placeholder="管理员密码" autocomplete="current-password"><button id="signin">登录</button></section>
-<p id="message" role="status"></p><section id="panel" hidden><button id="reload">刷新申请</button><button id="logout">退出</button><table><thead><tr><th>用户名</th><th>姓名</th><th>状态</th><th>操作</th></tr></thead><tbody id="rows"></tbody></table></section>
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>闲鱼云端管理</title>
+  <style>
+    :root{font-family:Inter,"Microsoft YaHei",system-ui,sans-serif;color:#172033;background:#f3f6fb}
+    *{box-sizing:border-box}body{margin:0;padding:32px 20px}main{max-width:1180px;margin:0 auto}
+    h1{margin:0;font-size:28px}h2{margin:0;font-size:19px}p{color:#64748b}
+    section{background:#fff;border:1px solid #dbe4ef;border-radius:16px;padding:24px;margin:18px 0;box-shadow:0 8px 24px #1e3a8a0b}
+    input,select,button{font:inherit;padding:10px 12px;border:1px solid #cbd5e1;border-radius:9px;margin:4px 6px 4px 0}
+    input,select{background:#fff;color:#172033}button{cursor:pointer;background:#2563eb;color:#fff;border-color:#2563eb}button.secondary{background:#fff;color:#2563eb}button.danger{background:#fff;color:#dc2626;border-color:#fecaca}
+    .toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:4px}.muted{color:#64748b}.message{min-height:24px;color:#b45309}
+    table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:12px 10px;border-bottom:1px solid #edf1f6;vertical-align:top}th{color:#64748b;font-weight:600;background:#f8fafc}
+    .status{display:inline-block;padding:3px 8px;border-radius:999px;background:#e2e8f0;color:#475569;font-size:13px}.status.pending{background:#fef3c7;color:#92400e}.status.resolved{background:#dcfce7;color:#166534}.status.processing{background:#dbeafe;color:#1d4ed8}.status.ignored{background:#e2e8f0;color:#475569}
+    .stats{display:grid;grid-template-columns:repeat(6,minmax(110px,1fr));gap:10px;margin:18px 0}.stat{padding:14px;border-radius:12px;background:#f8fafc}.stat strong{display:block;font-size:24px;color:#2563eb;margin-top:4px}.stat small{color:#64748b}
+    .table-wrap{overflow:auto}.empty{text-align:center;color:#94a3b8;padding:32px}.code{font-family:ui-monospace,Consolas,monospace;color:#1d4ed8}.meta{font-size:12px;color:#64748b;line-height:1.6}.hidden{display:none!important}
+    @media(max-width:800px){.stats{grid-template-columns:repeat(3,1fr)}body{padding:18px 10px}section{padding:16px}}
+  </style>
+</head>
+<body>
+<main>
+  <h1>闲鱼云端管理</h1>
+  <p>在任意电脑审核注册申请，并集中查看客户端安装、更新和运行错误日志。</p>
+  <p id="message" class="message" role="status"></p>
+  <section id="login">
+    <input id="username" placeholder="管理员账号" autocomplete="username">
+    <input id="password" type="password" placeholder="管理员密码" autocomplete="current-password">
+    <button id="signin">登录管理中心</button>
+  </section>
+  <div id="panel" class="hidden">
+    <section>
+      <div class="toolbar"><h2 style="margin-right:auto">注册申请</h2><button id="reloadUsers" class="secondary">刷新申请</button><button id="logout" class="secondary">退出</button></div>
+      <div class="table-wrap"><table><thead><tr><th>用户名</th><th>姓名</th><th>状态</th><th>注册时间</th><th>操作</th></tr></thead><tbody id="rows"></tbody></table></div>
+    </section>
+    <section>
+      <div class="toolbar"><h2 style="margin-right:auto">客户端错误日志</h2><button id="reloadDiagnostics" class="secondary">刷新日志</button></div>
+      <div id="stats" class="stats"></div>
+      <div class="toolbar">
+        <select id="diagnosticStatus"><option value="">全部状态</option><option value="pending">待处理</option><option value="processing">处理中</option><option value="resolved">已解决</option><option value="ignored">已忽略</option></select>
+        <select id="diagnosticSeverity"><option value="">全部级别</option><option value="critical">严重</option><option value="error">错误</option><option value="warning">警告</option><option value="info">信息</option></select>
+        <input id="diagnosticSearch" placeholder="搜索报告编号、用户、版本或摘要" style="min-width:260px;flex:1">
+      </div>
+      <div class="table-wrap"><table><thead><tr><th>报告编号</th><th>用户 / 设备</th><th>版本 / 阶段</th><th>摘要</th><th>级别</th><th>状态</th><th>提交时间</th><th>操作</th></tr></thead><tbody id="diagnosticRows"></tbody></table></div>
+      <div id="diagnosticPager" class="toolbar" style="justify-content:space-between;margin-top:12px"></div>
+    </section>
+  </div>
+</main>
 <script>
-let token='';const el=id=>document.getElementById(id);const labels={pending:'待审核',approved:'已通过',rejected:'已拒绝',disabled:'已停用'};
-async function api(action,body={}){const r=await fetch('/api/xianyu/auth/'+action,{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+token},body:JSON.stringify(body)});const d=await r.json();if(!r.ok||!d.ok)throw Error(d.message||'请求失败');return d}
-async function refresh(){try{const d=await api('list_users');el('rows').replaceChildren();for(const u of d.items){const tr=document.createElement('tr');for(const text of [u.username,u.employee_name,labels[u.status]||u.status]){const td=document.createElement('td');td.textContent=text;tr.append(td)}const td=document.createElement('td');if(u.role!=='admin'){for(const [a,title] of [['approve_user','通过'],['reject_user','拒绝'],['disable_user','停用']]){const b=document.createElement('button');b.textContent=title;b.onclick=async()=>{if(!confirm(title+' '+u.username+'？'))return;try{await api(a,{user_id:u.id});await refresh()}catch(e){el('message').textContent=e.message}};td.append(b)}}tr.append(td);el('rows').append(tr)}el('message').textContent='共 '+d.items.filter(u=>u.status==='pending').length+' 条待审核申请'}catch(e){el('message').textContent=e.message}}
-el('signin').onclick=async()=>{try{const d=await api('login',{username:el('username').value,password:el('password').value});if(d.user.role!=='admin')throw Error('仅管理员可进入审批页面');token=d.session_token;el('password').value='';el('login').hidden=true;el('panel').hidden=false;await refresh()}catch(e){el('message').textContent=e.message}};
-el('reload').onclick=refresh;el('logout').onclick=async()=>{try{await api('logout')}finally{token='';el('panel').hidden=true;el('rows').replaceChildren();el('login').hidden=false}};setInterval(()=>{if(token)refresh()},15000);
-</script></html>
+  let token='';
+  const el=id=>document.getElementById(id);
+  const labels={pending:'待处理',processing:'处理中',resolved:'已解决',ignored:'已忽略'};
+  const severityLabels={critical:'严重',error:'错误',warning:'警告',info:'信息'};
+  const diagnosticPageSize=50;let diagnosticPage=0;
+  async function api(action,body={}){
+    const r=await fetch('/api/xianyu/auth/'+action,{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+token},body:JSON.stringify(body)});
+    let d={};try{d=await r.json()}catch(e){}
+    if(!r.ok||!d.ok)throw Error(d.message||'请求失败');return d;
+  }
+  function setMessage(text,good){el('message').textContent=text||'';el('message').style.color=good?'#15803d':'#b45309'}
+  function formatBytes(value){if(value<1024)return value+' B';if(value<1048576)return (value/1024).toFixed(1)+' KB';return (value/1048576).toFixed(1)+' MB'}
+  function statusBadge(value){const span=document.createElement('span');const safe=Object.prototype.hasOwnProperty.call(labels,value)?value:'';span.className='status '+safe;span.textContent=labels[value]||'未知状态';return span}
+  function renderDiagnosticPager(total){const pager=el('diagnosticPager');pager.replaceChildren();if(total<=diagnosticPageSize)return;const text=document.createElement('span');text.className='muted';text.textContent='第 '+(diagnosticPage+1)+' / '+Math.ceil(total/diagnosticPageSize)+' 页，共 '+total+' 份报告';const group=document.createElement('span');const previous=document.createElement('button');previous.textContent='上一页';previous.className='secondary';previous.disabled=diagnosticPage===0;previous.onclick=()=>{diagnosticPage--;refreshDiagnostics()};const next=document.createElement('button');next.textContent='下一页';next.className='secondary';next.disabled=diagnosticPage+1>=Math.ceil(total/diagnosticPageSize);next.onclick=()=>{diagnosticPage++;refreshDiagnostics()};group.append(previous,next);pager.append(text,group)}
+  async function refreshUsers(){
+    try{const d=await api('list_users');el('rows').replaceChildren();for(const u of d.items||[]){const tr=document.createElement('tr');for(const text of [u.username,u.employee_name,labels[u.status]||u.status,new Date(u.created_at).toLocaleString()]){const td=document.createElement('td');td.textContent=text||'-';if(text===labels[u.status]){td.replaceChildren(statusBadge(u.status))}tr.append(td)}const td=document.createElement('td');if(u.role!=='admin'){for(const pair of [['approve_user','通过'],['reject_user','拒绝'],['disable_user','停用']]){const b=document.createElement('button');b.textContent=pair[1];b.className=pair[0]==='reject_user'||pair[0]==='disable_user'?'danger':'';b.onclick=async()=>{if(!confirm(pair[1]+' '+u.username+'？'))return;try{await api(pair[0],{user_id:u.id});await refreshUsers();setMessage('用户状态已更新',true)}catch(e){setMessage(e.message,false)}};td.append(b)}}tr.append(td);el('rows').append(tr)}setMessage('当前待审核申请：'+(d.items||[]).filter(u=>u.status==='pending').length+' 条',true)}catch(e){setMessage(e.message,false)}
+  }
+  function renderStats(s){el('stats').replaceChildren();for(const item of [['全部报告',s.total],['待处理',s.pending],['处理中',s.processing],['已解决',s.resolved],['已忽略',s.ignored],['近24小时',s.last_24_hours]]){const div=document.createElement('div');div.className='stat';const small=document.createElement('small');small.textContent=item[0];const strong=document.createElement('strong');strong.textContent=item[1]||0;div.append(small,strong);el('stats').append(div)}}
+  async function refreshDiagnostics(){
+    try{const filters={status:el('diagnosticStatus').value,severity:el('diagnosticSeverity').value,search:el('diagnosticSearch').value.trim(),limit:diagnosticPageSize,offset:diagnosticPage*diagnosticPageSize};const [s,d]=await Promise.all([api('diagnostics_stats'),api('diagnostics_list',filters)]);renderStats(s.stats||{});renderDiagnosticPager(d.total||0);el('diagnosticRows').replaceChildren();if(!(d.items||[]).length){if(diagnosticPage>0){diagnosticPage--;return refreshDiagnostics()}const tr=document.createElement('tr');const cell=document.createElement('td');cell.colSpan=8;cell.className='empty';cell.textContent='暂无客户端错误日志';tr.append(cell);el('diagnosticRows').append(tr);return}for(const report of d.items){const tr=document.createElement('tr');const code=document.createElement('td');const codeButton=document.createElement('button');codeButton.textContent=report.report_code;codeButton.className='secondary code';codeButton.onclick=()=>alert(JSON.stringify(report.metadata||{},null,2));code.append(codeButton);const size=document.createElement('div');size.className='meta';size.textContent=formatBytes(report.size_bytes);code.append(size);tr.append(code);const owner=document.createElement('td');owner.textContent=report.owner_username||'未登录设备';const device=document.createElement('div');device.className='meta';device.textContent='设备 '+(report.device_hash||'-');owner.append(device);tr.append(owner);const version=document.createElement('td');version.textContent='v'+(report.version||'-');const stage=document.createElement('div');stage.className='meta';stage.textContent=report.stage||'未知阶段';version.append(stage);tr.append(version);const summary=document.createElement('td');summary.textContent=report.summary||'-';tr.append(summary);const sev=document.createElement('td');sev.textContent=severityLabels[report.severity]||report.severity;tr.append(sev);const status=document.createElement('td');status.append(statusBadge(report.status));tr.append(status);const created=document.createElement('td');created.textContent=new Date(report.created_at).toLocaleString();tr.append(created);const actions=document.createElement('td');const download=document.createElement('button');download.textContent='下载';download.onclick=()=>downloadReport(report);actions.append(download);if(report.status!=='resolved'){const resolve=document.createElement('button');resolve.textContent='已解决';resolve.className='secondary';resolve.onclick=()=>setDiagnosticStatus(report,'resolved');actions.append(resolve)}const remove=document.createElement('button');remove.textContent='删除';remove.className='danger';remove.onclick=()=>deleteReport(report);actions.append(remove);tr.append(actions);el('diagnosticRows').append(tr)}}catch(e){setMessage(e.message,false)}
+  }
+  async function setDiagnosticStatus(report,status){try{await api('diagnostics_status',{report_id:report.id,status:status});await refreshDiagnostics();setMessage('诊断报告状态已更新',true)}catch(e){setMessage(e.message,false)}}
+  async function deleteReport(report){if(!confirm('确认删除诊断报告 '+report.report_code+'？删除后无法恢复。'))return;try{await api('diagnostics_delete',{report_id:report.id});await refreshDiagnostics();setMessage('诊断报告已删除',true)}catch(e){setMessage(e.message,false)}}
+  async function downloadReport(report){try{const r=await fetch('/api/xianyu/auth/diagnostics_download',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+token},body:JSON.stringify({report_id:report.id})});if(!r.ok)throw Error('日志下载失败');const blob=await r.blob();const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=report.report_code+'.zip';a.click();URL.revokeObjectURL(a.href)}catch(e){setMessage(e.message,false)}}
+  async function refreshAll(){await Promise.all([refreshUsers(),refreshDiagnostics()])}
+  el('signin').onclick=async()=>{try{const d=await api('login',{username:el('username').value,password:el('password').value});if(!d.user||d.user.role!=='admin')throw Error('仅管理员可进入管理页面');token=d.session_token;el('password').value='';el('login').classList.add('hidden');el('panel').classList.remove('hidden');await refreshAll()}catch(e){setMessage(e.message,false)}};
+  el('reloadUsers').onclick=refreshUsers;el('reloadDiagnostics').onclick=refreshDiagnostics;el('diagnosticStatus').onchange=()=>{diagnosticPage=0;refreshDiagnostics()};el('diagnosticSeverity').onchange=()=>{diagnosticPage=0;refreshDiagnostics()};let searchTimer;el('diagnosticSearch').oninput=()=>{clearTimeout(searchTimer);searchTimer=setTimeout(()=>{diagnosticPage=0;refreshDiagnostics()},300)};
+  el('logout').onclick=async()=>{try{await api('logout')}finally{token='';el('panel').classList.add('hidden');el('login').classList.remove('hidden');el('rows').replaceChildren();el('diagnosticRows').replaceChildren()}};
+  setInterval(()=>{if(token)refreshAll()},15000);
+</script>
+</body>
+</html>

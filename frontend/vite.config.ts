@@ -5,6 +5,7 @@ import path from 'path'
 import fs from 'fs'
 
 const packageVersion = JSON.parse(fs.readFileSync(path.resolve(__dirname, 'package.json'), 'utf-8')).version
+const appVersion = process.env.APP_VERSION?.trim() || packageVersion
 
 /**
  * 拦截非法 URI 编码和危险文件路径请求的插件
@@ -62,7 +63,7 @@ function rejectUnsafeDevServerPaths(): Plugin {
 
 // https://vitejs.dev/config/
 export default defineConfig({
-  define: { __APP_VERSION__: JSON.stringify(packageVersion) },
+  define: { __APP_VERSION__: JSON.stringify(appVersion) },
   plugins: [rejectUnsafeDevServerPaths(), react()],
   resolve: {
     alias: {

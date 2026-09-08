@@ -11,6 +11,7 @@ from fastapi import HTTPException
 from sqlalchemy import text
 
 from common.config import settings
+from common.version import app_version
 from common.db.session import async_session_maker, init_db
 from backend.app.core.response import ok
 from backend.app.api.routes.auth import router as auth_router
@@ -68,10 +69,11 @@ from backend.app.api.routes.captcha import router as captcha_router
 from backend.app.api.routes.geetest import router as geetest_router
 from backend.app.api.routes.admin_backup import router as admin_backup_router
 from backend.app.api.routes.qrcode import router as qrcode_router
+from backend.app.api.routes.client_diagnostics import router as client_diagnostics_router
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("xr.backend")
-app = FastAPI(title=f"{settings.brand_name} API", version="1.0.10", docs_url="/docs", redoc_url="/redoc")
+app = FastAPI(title=f"{settings.brand_name} API", version=app_version(), docs_url="/docs", redoc_url="/redoc")
 
 origins = [item.strip() for item in settings.cors_origins.split(",") if item.strip()]
 app.add_middleware(CORSMiddleware, allow_origins=origins or ["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
@@ -157,6 +159,7 @@ app.include_router(captcha_router)
 app.include_router(geetest_router)
 app.include_router(admin_backup_router)
 app.include_router(qrcode_router)
+app.include_router(client_diagnostics_router)
 app.include_router(legacy_compat_router)
 app.include_router(shared_scan_router)
 app.include_router(face_verification_router)

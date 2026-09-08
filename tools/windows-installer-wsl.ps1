@@ -1,4 +1,4 @@
-param([switch]$Elevated)
+param([switch]$Elevated, [switch]$NonInteractive)
 
 $ErrorActionPreference = 'Stop'
 
@@ -15,8 +15,9 @@ function Fail([string]$Message, [int]$Code = 1) {
 
 if (-not (Test-IsAdministrator)) {
     $argumentList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"", '-Elevated')
+    if ($NonInteractive) { $argumentList += '-NonInteractive' }
     try {
-        $child = Start-Process -FilePath 'powershell.exe' -ArgumentList $argumentList -Verb RunAs -Wait -PassThru
+        $child = Start-Process -FilePath 'powershell.exe' -ArgumentList $argumentList -Verb RunAs -WindowStyle Hidden -Wait -PassThru
         exit $child.ExitCode
     } catch {
         Fail 'Administrator permission is required to configure WSL and Windows optional features.'
@@ -54,6 +55,10 @@ if ($bcdOutput -match 'hypervisorlaunchtype\s+Off') {
 
 if ($restartNeeded) {
     Write-Host '[xianyu] Windows needs to restart before WSL 2 can be updated.' -ForegroundColor Yellow
+    if ($NonInteractive) {
+        Write-Host '[xianyu] Restart Windows, then open the installer again to continue.' -ForegroundColor Yellow
+        exit 3010
+    }
     $answer = Read-Host 'Restart this computer now? (Y/N)'
     if ($answer -match '^[Yy]$') {
         shutdown.exe /r /t 10 /c 'Xianyu setup requires a restart to enable WSL 2.' | Out-Null

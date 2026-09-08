@@ -22,7 +22,7 @@ from common.services.registration_invites import (
     hash_invite_code,
     preview_invite_code,
 )
-from common.services.cloud_auth import cloud_auth_request, cloud_auth_url
+from common.services.cloud_auth import CloudAuthError, cloud_auth_request, cloud_auth_url
 
 router = APIRouter(prefix="/api/v1/admin/invites", tags=["管理员邀请码"])
 CODE_ALPHABET = string.ascii_uppercase + string.digits
@@ -87,9 +87,21 @@ async def _sync_cloud_invites(user: dict[str, Any], items: list[dict[str, Any]])
     try:
         await cloud_auth_request(
             "sync_invites",
-            {"items": [{"code": item.get("code"), "status": item.get("status", "active")} for item in items if item.get("code")]},
+            {
+                "items": [
+                    {
+                        "code": item.get("code"),
+                        "status": item.get("status", "active"),
+                        "expires_at": item.get("expires_at"),
+                    }
+                    for item in items
+                    if item.get("code")
+                ]
+            },
             str(user.get("cloud_session_token")),
         )
+    except CloudAuthError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
@@ -178,7 +190,17 @@ async def create_invites(
         await db.rollback()
         raise HTTPException(status_code=500, detail="邀请码生成失败，请重试") from exc
 
-    await _sync_cloud_invites(user, [{"code": entry["code"], "status": "active"} for entry in created])
+    await _sync_cloud_invites(
+        user,
+        [
+            {
+                "code": entry["code"],
+                "status": "active",
+                "expires_at": expires_at.isoformat() if expires_at else None,
+            }
+            for entry in created
+        ],
+    )
 
     return ok({
         "items": [

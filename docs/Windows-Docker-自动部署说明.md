@@ -8,7 +8,7 @@
 
 ## 二、首次安装
 
-双击项目根目录下的 `install-xianyu.bat`。
+双击项目根目录下的 `install.bat`。
 
 脚本会自动完成：
 
@@ -24,11 +24,13 @@
 
 如果 `.env` 中 `XR_DEPLOY_MODE=remote`，安装脚本会从更新清单指定的 GHCR 镜像拉取镜像，不会在客户电脑上编译源码。
 
+制作离线包时请把输出目录显式指定到数据盘，例如 `D:\xianyu-release`。离线镜像导出产生的大型临时 tar 文件默认也会放在这个包目录所在磁盘，完成后自动清理；如需指定其他磁盘，可使用 `-OfflineTempDirectory`。
+
 ## 三、后续启动
 
-以后可以双击桌面上的 `闲鱼管理系统`，或者双击项目根目录的 `start-xianyu.bat`。启动器会按当前 `.env` 的端口启动已有容器并打开浏览器。
+以后可以双击桌面上的 `闲鱼管理系统`，或者双击项目根目录的 `start.bat`。启动器会按当前 `.env` 的端口启动已有容器并打开浏览器。
 
-停止服务可以双击 `stop-xianyu.bat`。该操作只停止容器，不删除数据库、Redis、上传文件或浏览器数据。
+停止服务可以双击 `stop.bat`。该操作只停止容器，不删除数据库、Redis、上传文件或浏览器数据。
 
 ## 四、端口和旧环境保护
 
@@ -40,7 +42,7 @@
 
 ## 五、GitHub 免费镜像和自动更新
 
-源码仓库可以继续保持私有。GitHub Actions 在 `main` 有新提交、创建版本标签或手动运行时，构建四个业务镜像，并推送到 GitHub Container Registry（GHCR）；同时把 `release/latest.json` 上传到腾讯云更新目录。
+源码仓库可以继续保持私有。GitHub Actions 只在创建版本标签或手动运行时构建四个业务镜像，并推送到 GitHub Container Registry（GHCR）；同时把 `release/latest.json` 上传到腾讯云更新目录。普通 `main` 提交不会触发客户更新。
 
 客户端启动器会读取 `.env` 中的 `UPDATE_MANIFEST_URL`。发现新版本后弹窗提示，用户确认后执行：
 
@@ -59,6 +61,8 @@ GHCR 公开镜像支持匿名拉取，客户端不需要执行 `docker login`。
 镜像仓库地址、命名空间、更新清单地址和 Token 均从 `.env` 或部署配置读取，不写死盘符和本地目录。
 
 GitHub Actions 只需要配置腾讯云更新目录相关 Secrets：`TENCENT_UPDATE_SSH_HOST`、`TENCENT_UPDATE_SSH_USER`、`TENCENT_UPDATE_SSH_KEY`、`TENCENT_UPDATE_REMOTE_PATH`。镜像发布使用 GitHub 自动提供的 `GITHUB_TOKEN`，不需要 TCR 账号密码。
+
+云端注册审批和客户端诊断服务通过单独的 `Deploy Xianyu cloud auth service` 工作流部署。进入仓库的 `Actions`，选择该工作流，点击 `Run workflow`，填写需要部署的分支、标签或提交号，然后等待服务健康检查通过。该工作流使用上面相同的腾讯云 SSH Secrets，不会覆盖云端认证数据库、会话密钥或诊断加密密钥。
 
 ## 六、数据迁移
 
@@ -96,13 +100,13 @@ docker compose --env-file .env logs --tail=100 frontend
 
 | 文件 | 作用 |
 | --- | --- |
-| `install-xianyu.bat` | 首次安装、构建、启动和创建桌面启动器 |
-| `start-xianyu.bat` | 启动现有部署并打开浏览器 |
-| `stop-xianyu.bat` | 停止当前部署，不删除数据 |
-| `deploy/install-xianyu.ps1` | 安装主逻辑 |
-| `deploy/start-xianyu.ps1` | 启动逻辑 |
-| `deploy/stop-xianyu.ps1` | 停止逻辑 |
-| `deploy/check-xianyu-update.ps1` | 检查并执行镜像更新 |
+| `install.bat` | 首次安装、构建、启动和创建桌面启动器 |
+| `start.bat` | 启动现有部署并打开浏览器 |
+| `stop.bat` | 停止当前部署，不删除数据 |
+| `scripts/install.ps1` | 安装主逻辑 |
+| `scripts/start.ps1` | 启动逻辑 |
+| `scripts/stop.ps1` | 停止逻辑 |
+| `app/deploy/check-xianyu-update.ps1` | 检查并执行镜像更新 |
 | `.env` | 当前电脑的实际端口、密钥和部署标识 |
 
 三个 `.bat` 文件只使用英文、数字和 ASCII 符号，避免 Windows 批处理文件因中文编码产生执行错误。

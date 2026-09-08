@@ -26,6 +26,7 @@ from common.models import Account, AccountCookie, FeatureRecord, SystemSetting, 
 from common.services.account_identity import extract_account_nickname
 from common.services.account_renewal import renew_account_session
 from common.services.goofish_mtop import parse_cookie_string
+from common.version import app_version
 from backend.app.services.account_settings import save_account_settings
 from backend.app.services.entitlements import FEATURE_ACCOUNT, ensure_quota, finalize_quota, reserve_quota
 
@@ -410,7 +411,7 @@ def _local_version() -> str:
                 return value
         except OSError:
             continue
-    return os.getenv("APP_VERSION", "1.0.3").strip() or "1.0.3"
+    return app_version()
 
 
 def _version_parts(value: str) -> tuple[int, ...]:

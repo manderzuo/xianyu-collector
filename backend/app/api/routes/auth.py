@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 from sqlalchemy import select
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 from common.schemas.api import LoginRequest
 from common.db.session import get_session
@@ -179,13 +179,16 @@ async def logout(user=Depends(get_current_user)):
 
 @router.post("/register")
 async def register(request: RegisterRequest, session: AsyncSession = Depends(get_session)):
-    registration_enabled = (
-        await session.execute(
-            select(SystemSetting.setting_value)
-            .where(SystemSetting.setting_key == "registration_enabled")
-            .limit(1)
-        )
-    ).scalar_one_or_none()
+    try:
+        registration_enabled = (
+            await session.execute(
+                select(SystemSetting.setting_value)
+                .where(SystemSetting.setting_key == "registration_enabled")
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+    except SQLAlchemyError as exc:
+        raise HTTPException(status_code=503, detail="数据库暂不可用，请稍后重试") from exc
     if registration_enabled is not None and str(registration_enabled).strip().lower() not in {"1", "true", "yes", "on"}:
         raise HTTPException(status_code=403, detail="注册功能已关闭，请联系管理员")
     invite_code = normalize_invite_code(request.invite_code)
@@ -204,23 +207,32 @@ async def register(request: RegisterRequest, session: AsyncSession = Depends(get
                 "nickname": request.nickname or request.username.strip(),
                 "invite_code": invite_code,
             })
-        except RuntimeError as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except CloudAuthError as exc:
+            # Preserve the cloud service's classified status so invalid
+            # invites, duplicate usernames and throttling are not shown as a
+            # generic network failure.
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
         if remote is not None:
             return ok(remote.get("user") or {}, remote.get("message") or "注册申请已提交，请等待管理员审核")
 
-    existing = (await session.execute(select(User).where(User.username == request.username.strip()))).scalar_one_or_none()
+    try:
+        existing = (await session.execute(select(User).where(User.username == request.username.strip()))).scalar_one_or_none()
+    except SQLAlchemyError as exc:
+        raise HTTPException(status_code=503, detail="数据库暂不可用，请稍后重试") from exc
     if existing is not None:
         raise HTTPException(status_code=409, detail="用户名已存在")
 
     # 锁定邀请码记录后再核销，保证同一个邀请码在并发注册时只能成功一次。
-    invite = (
-        await session.execute(
-            select(RegistrationInvite)
-            .where(RegistrationInvite.code_hash == hash_invite_code(invite_code))
-            .with_for_update()
-        )
-    ).scalar_one_or_none()
+    try:
+        invite = (
+            await session.execute(
+                select(RegistrationInvite)
+                .where(RegistrationInvite.code_hash == hash_invite_code(invite_code))
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+    except SQLAlchemyError as exc:
+        raise HTTPException(status_code=503, detail="数据库暂不可用，请稍后重试") from exc
     if invite is None:
         raise HTTPException(status_code=400, detail="邀请码无效，请向管理员索取有效邀请码")
     now = datetime.now()
@@ -244,8 +256,10 @@ async def register(request: RegisterRequest, session: AsyncSession = Depends(get
         await session.flush()
         invite.used_by = user.id
         await session.commit(); await session.refresh(user)
-    except SQLAlchemyError as exc:
+    except IntegrityError as exc:
         await session.rollback(); raise HTTPException(status_code=409, detail="注册失败，用户名可能已存在") from exc
+    except SQLAlchemyError as exc:
+        await session.rollback(); raise HTTPException(status_code=503, detail="数据库暂不可用，请稍后重试") from exc
     return ok({"id": user.id, "username": user.username, "role": user.role, "status": "PENDING"}, "注册申请已提交，请等待管理员审核")
 
 

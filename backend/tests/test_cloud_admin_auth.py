@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, patch
 from fastapi import HTTPException
 
 from backend.app.api.routes.admin_users import _list_remote_users
-from common.services.cloud_auth import CloudAuthError
+from common.services.cloud_auth import CloudAuthError, cloud_auth_request
 
 
 class CloudAdminAuthTests(unittest.IsolatedAsyncioTestCase):
@@ -35,6 +35,20 @@ class CloudAdminAuthTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(raised.exception.status_code, 400)
         self.assertEqual(raised.exception.detail, "邀请码无效")
+
+    async def test_cloud_auth_rejects_http_without_explicit_development_override(self):
+        with patch.dict(
+            os.environ,
+            {
+                "XIANYU_CLOUD_AUTH_URL": "http://auth.example",
+                "XIANYU_ALLOW_INSECURE_CLOUD_AUTH": "false",
+            },
+        ):
+            with self.assertRaises(CloudAuthError) as raised:
+                await cloud_auth_request("health", {})
+
+        self.assertEqual(raised.exception.code, "insecure_configuration")
+        self.assertEqual(raised.exception.status_code, 503)
 
 
 if __name__ == "__main__":

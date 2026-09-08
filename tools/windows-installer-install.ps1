@@ -1,11 +1,40 @@
+param([string]$InstallPath = '')
+
 $ErrorActionPreference = 'Stop'
 $PackageRoot = Split-Path -Parent $PSScriptRoot
+$sourcePackageRoot = [IO.Path]::GetFullPath($PackageRoot).TrimEnd('\')
+
+function Copy-PackageContents([string]$Source, [string]$Destination) {
+    foreach ($entry in Get-ChildItem -LiteralPath $Source -Force) {
+        if ($entry.Name -in @('.env', '.env.local', 'logs', 'backups', 'browser_data')) { continue }
+        $target = Join-Path $Destination $entry.Name
+        if ($entry.PSIsContainer) {
+            New-Item -ItemType Directory -Path $target -Force | Out-Null
+            Copy-PackageContents -Source $entry.FullName -Destination $target
+        } else {
+            Copy-Item -LiteralPath $entry.FullName -Destination $target -Force
+        }
+    }
+}
+
+if (-not [string]::IsNullOrWhiteSpace($InstallPath)) {
+    $targetPackageRoot = [IO.Path]::GetFullPath($InstallPath).TrimEnd('\')
+    if ($targetPackageRoot -ne $sourcePackageRoot) {
+        if ($targetPackageRoot.StartsWith($sourcePackageRoot + '\', [StringComparison]::OrdinalIgnoreCase) -or $sourcePackageRoot.StartsWith($targetPackageRoot + '\', [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'The selected installation folder cannot contain or be contained by the current package folder.'
+        }
+        New-Item -ItemType Directory -Path $targetPackageRoot -Force | Out-Null
+        Copy-PackageContents -Source $sourcePackageRoot -Destination $targetPackageRoot
+        $PackageRoot = $targetPackageRoot
+    }
+}
 $AppRoot = Join-Path $PackageRoot 'app'
 $ComposeFile = Join-Path $AppRoot 'docker-compose.yml'
 $EnvExample = Join-Path $AppRoot '.env.example'
 $EnvFile = Join-Path $AppRoot '.env'
 $DockerBootstrap = Join-Path $PackageRoot 'resources\docker-bootstrap.ps1'
 $WslBootstrap = Join-Path $PackageRoot 'resources\prepare-wsl.ps1'
+$RdpCleanup = Join-Path $PackageRoot 'resources\cleanup-rdp.ps1'
 $OfflineImageImporter = Join-Path $PackageRoot 'resources\import-offline-image-bundle.ps1'
 $OfflineImageManifest = Join-Path $PackageRoot 'resources\images\offline-manifest.json'
 $DbCredentialSync = Join-Path $AppRoot 'deploy\sync-xianyu-db-credentials.ps1'
@@ -83,11 +112,18 @@ if (-not (Test-Path -LiteralPath $ComposeFile)) { Fail 'The package is incomplet
 if (-not (Test-Path -LiteralPath $EnvExample)) { Fail 'The package is incomplete: .env.example is missing.' }
 
 if (Test-Path -LiteralPath $WslBootstrap) {
-    powershell.exe -NoProfile -ExecutionPolicy Bypass -File $WslBootstrap
+    powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File $WslBootstrap -NonInteractive
     $wslExitCode = $LASTEXITCODE
+    if ($wslExitCode -eq 3010) {
+        Write-Host '[xianyu] WSL setup needs a Windows restart before installation can continue.' -ForegroundColor Yellow
+        exit 3010
+    }
     if ($wslExitCode -ne 0) { throw "WSL preparation failed with exit code $wslExitCode." }
 }
-try { & $DockerBootstrap -Install } catch { Fail $_.Exception.Message }
+if (Test-Path -LiteralPath $RdpCleanup) {
+    try { & $RdpCleanup -NonInteractive } catch { Write-Host "[xianyu] RDP residue cleanup skipped: $($_.Exception.Message)" -ForegroundColor Yellow }
+}
+try { & $DockerBootstrap -Install -NonInteractive } catch { Fail $_.Exception.Message }
 if (-not (Get-Command docker -ErrorAction SilentlyContinue)) { Fail 'Docker CLI is unavailable. Start Docker Desktop and run install.bat again.' }
 docker compose version *> $null
 if ($LASTEXITCODE -ne 0) { Fail 'Docker Compose is unavailable. Update Docker Desktop and try again.' }
@@ -271,7 +307,7 @@ if (Test-Path -LiteralPath $launcherPath) {
     $shortcut.Arguments = ''
 } else {
     $shortcut.TargetPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-    $shortcut.Arguments = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$(Join-Path $PSScriptRoot 'start.ps1')`""
+    $shortcut.Arguments = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$(Join-Path $PackageRoot 'scripts\start.ps1')`""
 }
 $shortcut.WorkingDirectory = $PackageRoot
 $shortcut.Description = $shortcutTitle

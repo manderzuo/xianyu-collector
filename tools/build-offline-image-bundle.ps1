@@ -92,8 +92,12 @@ if (-not $SkipInfrastructure) {
     )
 }
 
-$tempBase = if ([string]::IsNullOrWhiteSpace($TempDirectory)) {
-    [System.IO.Path]::GetTempPath()
+$usesPackageTemp = [string]::IsNullOrWhiteSpace($TempDirectory)
+$tempBase = if ($usesPackageTemp) {
+    # Image exports can be several gigabytes. Keep the default staging area on
+    # the same disk as the explicitly selected package instead of silently
+    # consuming the system drive's TEMP directory.
+    Join-Path $resolvedPackage '.offline-build-temp'
 } else {
     $resolvedTempBase = [System.IO.Path]::GetFullPath($TempDirectory)
     New-Item -ItemType Directory -Path $resolvedTempBase -Force | Out-Null
@@ -170,4 +174,5 @@ try {
     Write-Host "[xianyu] Offline image bundle created: $imageRoot" -ForegroundColor Green
 } finally {
     if (Test-Path -LiteralPath $staging) { Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue }
+    if ($usesPackageTemp -and (Test-Path -LiteralPath $tempBase)) { Remove-Item -LiteralPath $tempBase -Recurse -Force -ErrorAction SilentlyContinue }
 }

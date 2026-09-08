@@ -47,7 +47,7 @@ Add-Report "EnvironmentFileExists: $(Test-Path -LiteralPath $EnvFile)"
 
 if (Test-Path -LiteralPath $EnvFile) {
     Add-Section 'Non-secret configuration'
-    $safeNames = @('FRONTEND_PORT', 'BACKEND_WEB_PORT', 'WEBSOCKET_PORT', 'SCHEDULER_PORT', 'XIANYU_CLOUD_AUTH_URL', 'XIANYU_CLOUD_AUTH_HOST_IP', 'XR_DEPLOY_MODE', 'XR_IMAGE_REGISTRY', 'XR_IMAGE_NAMESPACE', 'XR_IMAGE_TAG', 'UPDATE_MANIFEST_URL')
+    $safeNames = @('FRONTEND_PORT', 'BACKEND_WEB_PORT', 'WEBSOCKET_PORT', 'SCHEDULER_PORT', 'XIANYU_CLOUD_AUTH_URL', 'XR_DEPLOY_MODE', 'XR_IMAGE_REGISTRY', 'XR_IMAGE_NAMESPACE', 'XR_IMAGE_TAG', 'UPDATE_MANIFEST_URL')
     foreach ($line in Get-Content -LiteralPath $EnvFile) {
         if ($line -match '^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$' -and $safeNames -contains $Matches[1]) {
             Add-Report "$($Matches[1])=$($Matches[2])"

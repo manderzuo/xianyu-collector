@@ -1,29 +1,86 @@
 """Xianyu authentication API; business data stays on customer computers."""
 import argparse
 import json
+import logging
+import secrets
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from auth_store import AuthError, AuthStore
+from diagnostic_store import DiagnosticStore
+
+logger = logging.getLogger("xianyu.cloud_auth")
+if not logging.getLogger().handlers:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 
 
 class Handler(BaseHTTPRequestHandler):
-    def log_message(self, *args):
-        pass
+    def log_message(self, format, *args):
+        logger.info("http request_id=%s %s", getattr(self, "request_id", "-"), format % args)
+
+    def client_source(self):
+        # The service is bound to localhost and is reached through Nginx.
+        # Nginx overwrites X-Real-IP, while the last X-Forwarded-For entry is
+        # the address it observed. Do not use the first, client-controlled XFF
+        # entry for anonymous upload throttling.
+        real_ip = str(self.headers.get('X-Real-IP', '')).strip()
+        if real_ip:
+            return real_ip[:128]
+        forwarded = [item.strip() for item in str(self.headers.get('X-Forwarded-For', '')).split(',') if item.strip()]
+        if forwarded:
+            return forwarded[-1][:128]
+        return str(self.client_address[0] if self.client_address else '').strip()[:128]
 
     def reply(self, status, data):
         raw = json.dumps(data, ensure_ascii=False).encode()
         self.send_response(status)
         self.send_header('Content-Type', 'application/json; charset=utf-8')
         self.send_header('Cache-Control', 'no-store')
+        request_id = getattr(self, 'request_id', '')
+        if request_id:
+            self.send_header('X-Request-ID', request_id)
         self.send_header('Content-Length', str(len(raw)))
         self.end_headers()
         self.wfile.write(raw)
 
+    def reply_bytes(self, status, data, filename):
+        safe_filename = Path(str(filename or 'diagnostic-report.zip')).name.replace('\r', '').replace('\n', '').replace('"', '')
+        self.send_response(status)
+        self.send_header('Content-Type', 'application/zip')
+        self.send_header('Cache-Control', 'no-store')
+        self.send_header('Content-Disposition', "attachment; filename*=UTF-8''" + safe_filename)
+        self.send_header('Content-Length', str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    @staticmethod
+    def auth_error_status(code):
+        return {
+            'invalid_input': 400,
+            'invalid_invite': 400,
+            'username_exists': 409,
+            'invalid_credentials': 401,
+            'account_pending': 403,
+            'account_rejected': 403,
+            'account_disabled': 403,
+            'not_found': 404,
+            'rate_limited': 429,
+            'insecure_configuration': 503,
+            'connection_failed': 503,
+            'not_configured': 503,
+            'invalid_response': 502,
+            'cloud_auth_error': 502,
+            'storage_full': 503,
+            'configuration_error': 503,
+            'server_error': 500,
+        }.get(str(code or ''), 403)
+
     def do_GET(self):
-        if self.path.rstrip('/') == '/api/xianyu/auth/health':
+        self.request_id = secrets.token_hex(8)
+        if urlsplit(self.path).path.rstrip('/') == '/api/xianyu/auth/health':
             return self.reply(200, {'ok': True, 'service': 'xianyu-auth'})
-        if self.path.rstrip('/') == '/api/xianyu/auth/admin':
+        if urlsplit(self.path).path.rstrip('/') == '/api/xianyu/auth/admin':
             raw = Path(__file__).with_name('admin.html').read_bytes()
             self.send_response(200)
             self.send_header('Content-Type', 'text/html; charset=utf-8')
@@ -35,22 +92,33 @@ class Handler(BaseHTTPRequestHandler):
         self.reply(404, {'ok': False, 'message': '接口不存在'})
 
     def do_POST(self):
-        if not self.path.startswith('/api/xianyu/auth/'):
+        path = urlsplit(self.path).path
+        self.request_id = secrets.token_hex(8)
+        if not path.startswith('/api/xianyu/auth/'):
             return self.reply(404, {'ok': False, 'message': '接口不存在'})
         try:
             length = int(self.headers.get('Content-Length', '0'))
-            if not 0 < length <= 262144:
+            if not 0 < length <= 16 * 1024 * 1024:
                 return self.reply(413, {'ok': False, 'message': '请求大小无效'})
             body = json.loads(self.rfile.read(length))
             if not isinstance(body, dict):
                 raise ValueError()
-            action = self.path.rstrip('/').rsplit('/', 1)[-1]
+            action = path.rstrip('/').rsplit('/', 1)[-1]
             store = self.server.store
+            diagnostics = self.server.diagnostics
+            if action == 'diagnostics_upload':
+                header = self.headers.get('Authorization', '')
+                token = header[7:] if header.startswith('Bearer ') else ''
+                owner = store.get_session_user(token) if token else None
+                if token and not owner:
+                    return self.reply(401, {'ok': False, 'message': '登录已失效，请重新登录'})
+                report = diagnostics.save_upload(body, owner, self.client_source())
+                return self.reply(200, {'ok': True, 'report': report, 'message': '诊断日志已上传'})
             if action == 'register':
-                user = store.register(body.get('username'), body.get('password'), body.get('nickname') or body.get('username'), body.get('invite_code'))
+                user = store.register(body.get('username'), body.get('password'), body.get('nickname') or body.get('username'), body.get('invite_code'), self.client_source())
                 return self.reply(200, {'ok': True, 'user': user, 'message': '注册申请已提交，请等待管理员审核'})
             if action == 'login':
-                user = store.authenticate(body.get('username'), body.get('password'))
+                user = store.authenticate(body.get('username'), body.get('password'), self.client_source())
                 return self.reply(200, {'ok': True, 'user': user, 'session_token': store.create_session(user['id'])})
             header = self.headers.get('Authorization', '')
             token = header[7:] if header.startswith('Bearer ') else ''
@@ -78,6 +146,22 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(200, {'ok': True, 'deleted': True})
             if user['role'] != 'admin':
                 return self.reply(403, {'ok': False, 'message': '只有管理员可以审批'})
+            if action == 'diagnostics_list':
+                result = diagnostics.list_reports(status=body.get('status') or '', severity=body.get('severity') or '', search=body.get('search') or '', limit=body.get('limit') or 50, offset=body.get('offset') or 0)
+                return self.reply(200, {'ok': True, **result})
+            if action == 'diagnostics_stats':
+                return self.reply(200, {'ok': True, 'stats': diagnostics.stats()})
+            if action == 'diagnostics_detail':
+                return self.reply(200, {'ok': True, 'report': diagnostics.get_public(int(body.get('report_id') or 0))})
+            if action == 'diagnostics_download':
+                data, filename, _ = diagnostics.download(int(body.get('report_id') or 0))
+                return self.reply_bytes(200, data, filename)
+            if action == 'diagnostics_status':
+                report = diagnostics.set_status(int(body.get('report_id') or 0), body.get('status'), user['id'], body.get('note') or '')
+                return self.reply(200, {'ok': True, 'report': report})
+            if action == 'diagnostics_delete':
+                diagnostics.delete(int(body.get('report_id') or 0), user['id'])
+                return self.reply(200, {'ok': True, 'deleted': True})
             if action == 'list_users':
                 return self.reply(200, {'ok': True, 'items': store.list_users()})
             if action == 'sync_invites':
@@ -100,10 +184,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(200, {'ok': True, **result})
             return self.reply(404, {'ok': False, 'message': '接口不存在'})
         except AuthError as exc:
-            self.reply(400 if exc.code == 'invalid_input' else 403, {'ok': False, 'code': exc.code, 'message': exc.message})
+            logger.info("auth request rejected request_id=%s path=%s code=%s", self.request_id, path, exc.code)
+            self.reply(self.auth_error_status(exc.code), {'ok': False, 'code': exc.code, 'message': exc.message})
         except (ValueError, TypeError):
+            logger.info("auth request invalid request_id=%s path=%s", self.request_id, path)
             self.reply(400, {'ok': False, 'message': '请求格式无效'})
         except Exception:
+            logger.exception("auth request failed request_id=%s path=%s", self.request_id, path)
             self.reply(500, {'ok': False, 'message': '认证服务暂不可用'})
 
 
@@ -114,4 +201,5 @@ if __name__ == '__main__':
     args = parser.parse_args()
     server = ThreadingHTTPServer(('127.0.0.1', args.port), Handler)
     server.store = AuthStore(args.db)
+    server.diagnostics = DiagnosticStore(args.db)
     server.serve_forever()

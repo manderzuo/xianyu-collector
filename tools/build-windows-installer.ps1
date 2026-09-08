@@ -1,15 +1,31 @@
 param(
-    [string]$OutputDirectory = (Join-Path (Split-Path -Parent $PSScriptRoot) 'xianyu-one-click-installer'),
+    [string]$OutputDirectory = '',
     [switch]$Force,
     [switch]$IncludeDockerImages,
     [string]$ImageSourceRegistry = 'ghcr.io',
     [string]$ImageSourceNamespace = 'manderzuo/xianyu-collector',
     [string]$ImageSourceTag = '',
-    [string]$OfflineTempDirectory = ''
+    [string]$OfflineTempDirectory = '',
+    [string]$VersionOverride = '',
+    [string]$BuildIdOverride = ''
 )
 
 $ErrorActionPreference = 'Stop'
 $SourceRoot = Split-Path -Parent $PSScriptRoot
+
+if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
+    $OutputDirectory = "$env:XIANYU_PACKAGE_OUTPUT_DIRECTORY".Trim()
+}
+if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
+    throw 'OutputDirectory is required. Choose a destination outside the source tree, for example D:\xianyu-release.'
+}
+$resolvedSource = (Resolve-Path -LiteralPath $SourceRoot).Path.TrimEnd('\')
+$resolvedOutputCandidate = [IO.Path]::GetFullPath($OutputDirectory).TrimEnd('\')
+if ($resolvedOutputCandidate -eq $resolvedSource -or
+    $resolvedOutputCandidate.StartsWith($resolvedSource + '\', [StringComparison]::OrdinalIgnoreCase) -or
+    $resolvedSource.StartsWith($resolvedOutputCandidate + '\', [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'OutputDirectory must be outside the source tree.'
+}
 
 if ((Test-Path -LiteralPath $OutputDirectory) -and -not $Force) {
     throw "Output directory already exists: $OutputDirectory. Use -Force only when replacing this package."
@@ -17,7 +33,6 @@ if ((Test-Path -LiteralPath $OutputDirectory) -and -not $Force) {
 
 if (Test-Path -LiteralPath $OutputDirectory) {
     $resolvedOutput = (Resolve-Path -LiteralPath $OutputDirectory).Path
-    $resolvedSource = (Resolve-Path -LiteralPath $SourceRoot).Path
     if ($resolvedOutput -eq $resolvedSource) {
         throw 'Output directory must not be the project root.'
     }
@@ -61,10 +76,12 @@ Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows-installer-install.ps1')
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows-installer-start.ps1') -Destination (Join-Path $ScriptsRoot 'start.ps1') -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows-installer-stop.ps1') -Destination (Join-Path $ScriptsRoot 'stop.ps1') -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows-installer-diagnostics.ps1') -Destination (Join-Path $ScriptsRoot 'diagnostics.ps1') -Force
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows-installer-upload-diagnostics.ps1') -Destination (Join-Path $ScriptsRoot 'upload-diagnostics.ps1') -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows-installer-update.ps1') -Destination (Join-Path $ScriptsRoot 'update.ps1') -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows-installer-apply-client-update.ps1') -Destination (Join-Path $ScriptsRoot 'apply-client-update.ps1') -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows-installer-docker.ps1') -Destination (Join-Path $ResourcesRoot 'docker-bootstrap.ps1') -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows-installer-wsl.ps1') -Destination (Join-Path $ResourcesRoot 'prepare-wsl.ps1') -Force
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows-installer-cleanup-rdp.ps1') -Destination (Join-Path $ResourcesRoot 'cleanup-rdp.ps1') -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'import-offline-image-bundle.ps1') -Destination (Join-Path $ResourcesRoot 'import-offline-image-bundle.ps1') -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows-reset-xianyu-docker.ps1') -Destination (Join-Path $ResourcesRoot 'reset-xianyu-docker.ps1') -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows-installer-install.bat') -Destination (Join-Path $OutputDirectory 'install.bat') -Force
@@ -79,9 +96,31 @@ if (Test-Path -LiteralPath $iconSource) {
 
 $version = '0.0.0'
 $versionPath = Join-Path $SourceRoot 'VERSION.txt'
-if (Test-Path -LiteralPath $versionPath) {
+if (-not [string]::IsNullOrWhiteSpace($VersionOverride)) {
+    $version = $VersionOverride.Trim()
+} elseif (Test-Path -LiteralPath $versionPath) {
     $candidate = (Get-Content -LiteralPath $versionPath -Raw).Trim()
     if ($candidate) { $version = $candidate }
+}
+if ($version -notmatch '^\d+(?:\.\d+){1,3}$') {
+    throw "Invalid release version: $version"
+}
+$buildIdPath = Join-Path $SourceRoot 'BUILD_ID.txt'
+$buildId = ''
+if (-not [string]::IsNullOrWhiteSpace($BuildIdOverride)) {
+    $buildId = $BuildIdOverride.Trim()
+} elseif (Test-Path -LiteralPath $buildIdPath) {
+    $buildId = (Get-Content -LiteralPath $buildIdPath -Raw).Trim()
+}
+if ($buildId -and $buildId -notmatch '^[A-Za-z0-9._-]+$') {
+    throw "Invalid release build ID: $buildId"
+}
+# A release override must be reflected in the copied application tree as well
+# as in package-manifest.json. Otherwise a tag such as v1.0.11 could produce a
+# package that reports the older source VERSION.txt after installation.
+Set-Content -LiteralPath (Join-Path $AppRoot 'VERSION.txt') -Value $version -Encoding UTF8
+if ($buildId) {
+    Set-Content -LiteralPath (Join-Path $AppRoot 'BUILD_ID.txt') -Value $buildId -Encoding UTF8
 }
 $launcherBuilder = Join-Path $PSScriptRoot 'build-launcher.ps1'
 if (Test-Path -LiteralPath $launcherBuilder) {
@@ -99,6 +138,7 @@ $manifest = [ordered]@{
     stop_entry = 'stop.bat'
     launcher_entry = ((-join ([char[]](0x95f2, 0x9c7c, 0x7ba1, 0x7406, 0x7cfb, 0x7edf))) + '.exe')
     installer_entry = ((-join ([char[]](0x5b89, 0x88c5, 0x95f2, 0x9c7c, 0x7ba1, 0x7406, 0x7cfb, 0x7edf))) + '.exe')
+    launcher_aliases = @('xianyu-launcher.exe', 'xianyu-installer.exe', 'xianyu-updater.exe', 'xianyu-stopper.exe', 'xianyu-diagnostics.exe')
     maintenance_entries = @(
         ((-join ([char[]](0x66f4, 0x65b0, 0x95f2, 0x9c7c, 0x7ba1, 0x7406, 0x7cfb, 0x7edf))) + '.exe'),
         ((-join ([char[]](0x505c, 0x6b62, 0x95f2, 0x9c7c, 0x7ba1, 0x7406, 0x7cfb, 0x7edf))) + '.exe'),
@@ -147,7 +187,7 @@ Copy this whole folder to another Windows computer. Do not move only one file.
 2. Double-click __INSTALLER__ (install.bat remains available as a compatibility fallback).
 3. Open the desktop shortcut named __LAUNCHER__.
 
-On the first run, install.bat checks and configures WSL 2 prerequisites. Windows may ask for administrator permission and a restart. Run install.bat again after the restart.
+On the first run, the GUI checks and configures WSL 2 prerequisites. Windows may ask for administrator permission and a restart. Run the installer again after the restart. PowerShell runs in the background; progress, errors and logs are shown in the GUI.
 
 The installer uses its own folder as the project root. It does not depend on a fixed drive or user path.
 The installer chooses free ports beginning at 20000 and never uses the old 19000 deployment.
@@ -157,8 +197,7 @@ This package is for standalone deployment. If multiple computers must share user
 
 Docker Desktop is not included in this package. Install Docker Desktop separately, then run install.bat.
 You may also place your installer at resources\DockerDesktopInstaller.exe before copying the package.
-If Docker Desktop is missing, install.bat first tries winget and then offers to download the official installer.
-The target computer needs administrator permission for Docker Desktop installation.
+If Docker Desktop is missing, the GUI reports that it must be installed before continuing. The target computer needs administrator permission for Docker Desktop installation.
 
 An offline package may include all application, MySQL and Redis images. When resources\images\offline-manifest.json is present, install.bat imports those images locally and does not download Docker images.
 Without an offline image bundle, first startup builds the four application images and downloads base images. This can take several minutes.
@@ -183,6 +222,9 @@ installation folder and run start.bat once. The launcher will remove the stale X
 shortcut and recreate it with the correct Chinese name.
 The launcher can stop containers, check updates and open diagnostics without a console window.
 The original stop.bat, diagnostics.bat and update.bat remain available for recovery.
+The installer also performs a restricted cleanup of stale RDP ActiveX client
+processes and orphaned startup entries. It never removes Windows system DLLs,
+disables the Windows remote desktop service, or terminates WSLg clients.
 Launcher failures are also
 recorded in app\logs\updater-launch.log and shown in a visible error dialog.
 diagnostics.bat also creates app\logs\diagnostics-latest.txt, opens it in

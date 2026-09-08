@@ -15,6 +15,7 @@ import os
 import secrets
 import sqlite3
 import threading
+import time
 from cryptography.fernet import Fernet, InvalidToken
 from datetime import datetime, timedelta
 from typing import Any, Mapping
@@ -47,6 +48,11 @@ class AuthStore:
     MAX_PASSWORD_LENGTH = 256
     MAX_EMPLOYEE_NAME_LENGTH = 80
     SESSION_TTL_DAYS = 180
+    AUTH_WINDOW_SECONDS = 60
+    AUTH_MAX_ATTEMPTS = 10
+    AUTH_LOCKOUT_SECONDS = 300
+    MAX_ACCOUNT_SESSION_PAYLOAD_BYTES = 256 * 1024
+    MAX_ACCOUNT_SESSION_METADATA_BYTES = 8 * 1024
 
     def __init__(self, db_path: str):
         self.db_path = os.path.abspath(db_path)
@@ -110,11 +116,17 @@ class AuthStore:
                       code_preview TEXT NOT NULL,
                       status TEXT NOT NULL DEFAULT 'active',
                       created_at TEXT NOT NULL,
+                      expires_at TEXT,
                       used_at TEXT,
                       used_by INTEGER
                     )
                     """
                 )
+                try:
+                    conn.execute("ALTER TABLE app_invites ADD COLUMN expires_at TEXT")
+                except sqlite3.OperationalError as exc:
+                    if "duplicate column" not in str(exc).lower():
+                        raise
                 # 登录保持只保存不可逆的会话令牌摘要，不保存密码。会话表
                 # 与业务数据同库，代码升级时会被保留，启动后可重新建立
                 # 当前用户的数据读取范围。
@@ -128,6 +140,17 @@ class AuthStore:
                       expires_at TEXT NOT NULL,
                       revoked_at TEXT,
                       FOREIGN KEY(user_id) REFERENCES app_users(id)
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS app_auth_rate_limits (
+                      identity TEXT PRIMARY KEY,
+                      window_started_at REAL NOT NULL,
+                      request_count INTEGER NOT NULL DEFAULT 0,
+                      blocked_until REAL NOT NULL DEFAULT 0,
+                      updated_at TEXT NOT NULL
                     )
                     """
                 )
@@ -241,6 +264,103 @@ class AuthStore:
         return password
 
     @staticmethod
+    def _normalize_expiry(value: Any) -> str | None:
+        if value in (None, ""):
+            return None
+        try:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except (TypeError, ValueError) as exc:
+            raise AuthError("invalid_input", "邀请码过期时间无效") from exc
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=datetime.now().astimezone().tzinfo)
+        return parsed.astimezone().isoformat(timespec="seconds")
+
+    @classmethod
+    def _is_expired(cls, value: Any) -> bool:
+        if value in (None, ""):
+            return False
+        try:
+            expiry = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            if expiry.tzinfo is None:
+                expiry = expiry.replace(tzinfo=datetime.now().astimezone().tzinfo)
+            return expiry <= datetime.now().astimezone()
+        except (TypeError, ValueError):
+            # A malformed legacy value must never make an invite usable.
+            return True
+
+    @staticmethod
+    def _rate_part(value: Any, fallback: str) -> str:
+        text = str(value or "").strip().replace("\r", "").replace("\n", "")
+        return text[:128] or fallback
+
+    @classmethod
+    def _auth_identities(cls, kind: str, username: Any = "", source_ip: Any = "") -> list[str]:
+        ip = cls._rate_part(source_ip, "unknown-ip")
+        if kind == "register":
+            return [f"register:ip:{ip}"]
+        account = cls._rate_part(username, "unknown-user").casefold()
+        return [f"login:ip:{ip}", f"login:user:{account}:ip:{ip}"]
+
+    @classmethod
+    def _check_auth_rate_limit(cls, conn: sqlite3.Connection, identities: list[str]) -> None:
+        now = time.time()
+        changed = False
+        for identity in identities:
+            row = conn.execute(
+                "SELECT window_started_at, request_count, blocked_until FROM app_auth_rate_limits WHERE identity = ?",
+                (identity,),
+            ).fetchone()
+            if row is None:
+                continue
+            blocked_until = float(row["blocked_until"] or 0)
+            if blocked_until > now:
+                raise AuthError("rate_limited", "操作过于频繁，请稍后重试")
+            if now - float(row["window_started_at"] or 0) >= cls.AUTH_WINDOW_SECONDS:
+                conn.execute(
+                    "UPDATE app_auth_rate_limits SET window_started_at=?, request_count=0, blocked_until=0, updated_at=? WHERE identity=?",
+                    (now, cls._now(), identity),
+                )
+                changed = True
+            elif int(row["request_count"] or 0) >= cls.AUTH_MAX_ATTEMPTS:
+                conn.execute(
+                    "UPDATE app_auth_rate_limits SET blocked_until=?, updated_at=? WHERE identity=?",
+                    (now + cls.AUTH_LOCKOUT_SECONDS, cls._now(), identity),
+                )
+                conn.commit()
+                raise AuthError("rate_limited", "操作过于频繁，请稍后重试")
+        if changed:
+            conn.commit()
+
+    @classmethod
+    def _record_auth_failure(cls, conn: sqlite3.Connection, identities: list[str]) -> None:
+        now = time.time()
+        now_text = cls._now()
+        for identity in identities:
+            row = conn.execute(
+                "SELECT window_started_at, request_count FROM app_auth_rate_limits WHERE identity = ?",
+                (identity,),
+            ).fetchone()
+            if row is None or now - float(row["window_started_at"] or 0) >= cls.AUTH_WINDOW_SECONDS:
+                conn.execute(
+                    "INSERT INTO app_auth_rate_limits(identity, window_started_at, request_count, blocked_until, updated_at) VALUES (?, ?, 1, ?, ?)",
+                    (identity, now, now + cls.AUTH_LOCKOUT_SECONDS if cls.AUTH_MAX_ATTEMPTS <= 1 else 0, now_text),
+                )
+                continue
+            count = int(row["request_count"] or 0) + 1
+            blocked_until = now + cls.AUTH_LOCKOUT_SECONDS if count >= cls.AUTH_MAX_ATTEMPTS else 0
+            conn.execute(
+                "UPDATE app_auth_rate_limits SET request_count=?, blocked_until=?, updated_at=? WHERE identity=?",
+                (count, blocked_until, now_text, identity),
+            )
+        conn.commit()
+
+    @staticmethod
+    def _clear_auth_failures(conn: sqlite3.Connection, identities: list[str]) -> None:
+        for identity in identities:
+            conn.execute("DELETE FROM app_auth_rate_limits WHERE identity = ?", (identity,))
+        conn.commit()
+
+    @staticmethod
     def _public_user(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
         return {
             "id": int(row["id"]),
@@ -284,7 +404,7 @@ class AuthStore:
         finally:
             conn.close()
 
-    def register(self, username: Any, password: Any, employee_name: Any, invite_code: Any) -> dict[str, Any]:
+    def register(self, username: Any, password: Any, employee_name: Any, invite_code: Any, source_ip: Any = "") -> dict[str, Any]:
         username = self._text(username, "账号", self.MAX_USERNAME_LENGTH)
         password = self._password(password)
         employee_name = self._text(
@@ -294,19 +414,31 @@ class AuthStore:
         if len(invite_code) < 8:
             raise AuthError("invalid_invite", "邀请码无效，请向管理员索取有效邀请码")
         now = self._now()
+        identities = self._auth_identities("register", source_ip=source_ip)
         conn = self._connect()
         try:
+            self._check_auth_rate_limit(conn, identities)
+            # SQLite does not support SELECT ... FOR UPDATE.  An immediate
+            # transaction serializes invite validation and consumption across
+            # concurrent registration requests.
+            conn.execute("BEGIN IMMEDIATE")
             invite = conn.execute(
-                "SELECT id, status FROM app_invites WHERE code_hash = ?",
+                "SELECT id, status, expires_at FROM app_invites WHERE code_hash = ?",
                 (hash_invite_code(invite_code),),
             ).fetchone()
             if invite is None:
+                self._record_auth_failure(conn, identities)
                 raise AuthError("invalid_invite", "邀请码无效，请向管理员索取有效邀请码")
             if str(invite["status"] or "") != "active":
                 message = {"used": "邀请码已使用", "revoked": "邀请码已撤销"}.get(
                     str(invite["status"] or ""), "邀请码不可用"
                 )
+                self._record_auth_failure(conn, identities)
                 raise AuthError("invalid_invite", message)
+            if self._is_expired(invite["expires_at"]):
+                conn.execute("UPDATE app_invites SET status='expired' WHERE id=? AND status='active'", (int(invite["id"]),))
+                self._record_auth_failure(conn, identities)
+                raise AuthError("invalid_invite", "邀请码已过期")
             try:
                 cursor = conn.execute(
                     """
@@ -318,12 +450,18 @@ class AuthStore:
                     (username, self.hash_password(password), employee_name, now, now),
                 )
             except sqlite3.IntegrityError as exc:
+                self._record_auth_failure(conn, identities)
                 raise AuthError("username_exists", "该账号已存在") from exc
-            conn.execute(
+            consumed = conn.execute(
                 "UPDATE app_invites SET status='used', used_at=?, used_by=? WHERE id=? AND status='active'",
                 (now, cursor.lastrowid, int(invite["id"])),
             )
+            if consumed.rowcount != 1:
+                conn.rollback()
+                self._record_auth_failure(conn, identities)
+                raise AuthError("invalid_invite", "邀请码已被其他注册申请使用")
             conn.commit()
+            self._clear_auth_failures(conn, identities)
             row = conn.execute(
                 "SELECT * FROM app_users WHERE id = ?", (cursor.lastrowid,)
             ).fetchone()
@@ -347,32 +485,38 @@ class AuthStore:
                 status = str(item.get("status") or "active").strip().lower()
                 if status not in {"active", "used", "revoked", "expired"}:
                     raise AuthError("invalid_input", "邀请码状态无效")
+                expires_at = self._normalize_expiry(item.get("expires_at")) if "expires_at" in item else None
                 preview = code[:4] + "-" + code[4:8] + ("-..." if len(code) > 8 else "")
-                conn.execute(
-                    """
-                    INSERT INTO app_invites(code_hash, code_preview, status, created_at)
-                    VALUES (?, ?, ?, ?)
-                    ON CONFLICT(code_hash) DO UPDATE SET status=excluded.status
-                    """,
-                    (hash_invite_code(code), preview, status, now),
-                )
+                existing = conn.execute("SELECT id FROM app_invites WHERE code_hash = ?", (hash_invite_code(code),)).fetchone()
+                if existing is None:
+                    conn.execute(
+                        "INSERT INTO app_invites(code_hash, code_preview, status, created_at, expires_at) VALUES (?, ?, ?, ?, ?)",
+                        (hash_invite_code(code), preview, status, now, expires_at),
+                    )
+                elif "expires_at" in item:
+                    conn.execute("UPDATE app_invites SET status=?, expires_at=? WHERE id=?", (status, expires_at, int(existing["id"])))
+                else:
+                    conn.execute("UPDATE app_invites SET status=? WHERE id=?", (status, int(existing["id"])))
             conn.commit()
             rows = conn.execute(
-                "SELECT id, code_preview, status, created_at, used_at, used_by FROM app_invites ORDER BY id DESC"
+                "SELECT id, code_preview, status, created_at, expires_at, used_at, used_by FROM app_invites ORDER BY id DESC"
             ).fetchall()
             return [dict(row) for row in rows]
         finally:
             conn.close()
 
-    def authenticate(self, username: Any, password: Any) -> dict[str, Any]:
+    def authenticate(self, username: Any, password: Any, source_ip: Any = "") -> dict[str, Any]:
         username = self._text(username, "账号", self.MAX_USERNAME_LENGTH)
         password = str(password or "")
+        identities = self._auth_identities("login", username, source_ip)
         conn = self._connect()
         try:
+            self._check_auth_rate_limit(conn, identities)
             row = conn.execute(
                 "SELECT * FROM app_users WHERE username = ?", (username,)
             ).fetchone()
             if row is None or not self.verify_password(password, row["password_hash"]):
+                self._record_auth_failure(conn, identities)
                 raise AuthError("invalid_credentials", "账号或密码错误")
             status = str(row["status"] or "")
             if status == "pending":
@@ -387,6 +531,7 @@ class AuthStore:
                 (now, now, int(row["id"])),
             )
             conn.commit()
+            self._clear_auth_failures(conn, identities)
             row = conn.execute(
                 "SELECT * FROM app_users WHERE id = ?", (int(row["id"]),)
             ).fetchone()
@@ -503,19 +648,32 @@ class AuthStore:
         if not isinstance(session_payload, Mapping):
             raise AuthError("invalid_input", "会话内容无效")
         try:
-            ciphertext = self._session_fernet().encrypt(json.dumps(dict(session_payload), ensure_ascii=False).encode("utf-8")).decode("ascii")
+            serialized_payload = json.dumps(dict(session_payload), ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            if len(serialized_payload) > self.MAX_ACCOUNT_SESSION_PAYLOAD_BYTES:
+                raise AuthError("invalid_input", "会话内容过大")
+            ciphertext = self._session_fernet().encrypt(serialized_payload).decode("ascii")
+        except AuthError:
+            raise
         except (TypeError, ValueError) as exc:
             raise AuthError("invalid_input", "会话内容无法加密") from exc
         device_id = self._text(payload.get("device_id"), "设备标识", 128)
         metadata = payload.get("metadata") if isinstance(payload.get("metadata"), Mapping) else {}
+        try:
+            metadata_json = json.dumps(metadata, ensure_ascii=False, separators=(",", ":"))
+            if len(metadata_json.encode("utf-8")) > self.MAX_ACCOUNT_SESSION_METADATA_BYTES:
+                raise AuthError("invalid_input", "会话元数据过大")
+        except AuthError:
+            raise
+        except (TypeError, ValueError) as exc:
+            raise AuthError("invalid_input", "会话元数据无效") from exc
         now = self._now()
         conn = self._connect()
         try:
             row = conn.execute("SELECT id, revision FROM app_account_sessions WHERE owner_user_id = ? AND account_key = ?", (int(owner_user_id), account_key)).fetchone()
             if row is None:
-                conn.execute("INSERT INTO app_account_sessions(owner_user_id, account_key, account_name, ciphertext, device_id, metadata_json, revision, last_validated_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)", (int(owner_user_id), account_key, account_name, ciphertext, device_id, json.dumps(metadata, ensure_ascii=False), now, now, now))
+                conn.execute("INSERT INTO app_account_sessions(owner_user_id, account_key, account_name, ciphertext, device_id, metadata_json, revision, last_validated_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)", (int(owner_user_id), account_key, account_name, ciphertext, device_id, metadata_json, now, now, now))
             else:
-                conn.execute("UPDATE app_account_sessions SET account_name=?, ciphertext=?, device_id=?, metadata_json=?, revision=?, status='active', last_validated_at=?, updated_at=? WHERE id=? AND owner_user_id=?", (account_name, ciphertext, device_id, json.dumps(metadata, ensure_ascii=False), int(row["revision"] or 1) + 1, now, now, int(row["id"]), int(owner_user_id)))
+                conn.execute("UPDATE app_account_sessions SET account_name=?, ciphertext=?, device_id=?, metadata_json=?, revision=?, status='active', last_validated_at=?, updated_at=? WHERE id=? AND owner_user_id=?", (account_name, ciphertext, device_id, metadata_json, int(row["revision"] or 1) + 1, now, now, int(row["id"]), int(owner_user_id)))
             conn.commit()
             saved = conn.execute("SELECT * FROM app_account_sessions WHERE owner_user_id=? AND account_key=?", (int(owner_user_id), account_key)).fetchone()
             return self._session_public(saved)
