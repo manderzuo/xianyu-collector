@@ -86,3 +86,16 @@ python .\tools\generate-update-signing-key.py `
 `deploy\update-signing-public-key.xml` 后再构建客户安装包。客户端只携带公钥，
 发布工作流使用私钥生成 `latest.json.sig`，客户端用 RSA-SHA256 校验清单后才会更新。
 如果 GitHub secret 未配置，发布工作流会在上传前失败，不会切换线上清单。
+
+## 发版前统一验收
+
+每次发版前可以检查源码和最终离线包：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File .\tools\validate-commercial-delivery.ps1 `
+  -PackageRoot C:\path\to\xianyu-package
+```
+
+该检查不会启动或停止业务容器，会验证 PowerShell/Python/Bash、Compose、工作流 YAML、
+BAT 编码、公钥、镜像归档数量、GUI 文件数量和 README 乱码。

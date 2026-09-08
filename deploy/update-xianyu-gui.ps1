@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$ProjectRoot = (Split-Path -Parent $PSScriptRoot),
     [switch]$Force
 )

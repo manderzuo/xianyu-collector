@@ -4,7 +4,8 @@ param(
     [switch]$IncludeDockerImages,
     [string]$ImageSourceRegistry = 'ghcr.io',
     [string]$ImageSourceNamespace = 'manderzuo/xianyu-collector',
-    [string]$ImageSourceTag = ''
+    [string]$ImageSourceTag = '',
+    [string]$OfflineTempDirectory = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -116,7 +117,17 @@ $manifest | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $Outpu
 if ($IncludeDockerImages) {
     $offlineBuilder = Join-Path $PSScriptRoot 'build-offline-image-bundle.ps1'
     if (-not (Test-Path -LiteralPath $offlineBuilder)) { throw "Offline image builder not found: $offlineBuilder" }
-    & $offlineBuilder -PackageRoot $OutputDirectory -Version $version -SourceRegistry $ImageSourceRegistry -SourceNamespace $ImageSourceNamespace -SourceTag $ImageSourceTag
+    $offlineArguments = @{
+        PackageRoot = $OutputDirectory
+        Version = $version
+        SourceRegistry = $ImageSourceRegistry
+        SourceNamespace = $ImageSourceNamespace
+        SourceTag = $ImageSourceTag
+    }
+    if (-not [string]::IsNullOrWhiteSpace($OfflineTempDirectory)) {
+        $offlineArguments.TempDirectory = $OfflineTempDirectory
+    }
+    & $offlineBuilder @offlineArguments
     if ($LASTEXITCODE -ne 0) { throw "Offline image bundle creation failed with exit code $LASTEXITCODE." }
 }
 

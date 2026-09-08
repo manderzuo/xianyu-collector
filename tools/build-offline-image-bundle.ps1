@@ -5,6 +5,7 @@ param(
     [string]$SourceRegistry = 'ghcr.io',
     [string]$SourceNamespace = 'manderzuo/xianyu-collector',
     [string]$SourceTag = '',
+    [string]$TempDirectory = '',
     [switch]$SkipInfrastructure
 )
 
@@ -91,7 +92,14 @@ if (-not $SkipInfrastructure) {
     )
 }
 
-$staging = Join-Path ([System.IO.Path]::GetTempPath()) ('xianyu-image-bundle-' + [guid]::NewGuid().ToString('N'))
+$tempBase = if ([string]::IsNullOrWhiteSpace($TempDirectory)) {
+    [System.IO.Path]::GetTempPath()
+} else {
+    $resolvedTempBase = [System.IO.Path]::GetFullPath($TempDirectory)
+    New-Item -ItemType Directory -Path $resolvedTempBase -Force | Out-Null
+    $resolvedTempBase
+}
+$staging = Join-Path $tempBase ('xianyu-image-bundle-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $staging -Force | Out-Null
 try {
     foreach ($spec in $imageSpecs) {
