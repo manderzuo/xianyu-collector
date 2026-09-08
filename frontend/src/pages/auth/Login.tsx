@@ -1,8 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import { motion } from 'framer-motion'
-import { MessageSquare, User, Lock, Mail, KeyRound, Eye, EyeOff } from 'lucide-react'
-import { AuthNavbar } from '@/components/common/AuthNavbar'
+import { ArrowUpRight, BarChart3, Bot, Check, Eye, EyeOff, KeyRound, Lock, Mail, MessageSquare, Moon, ShieldCheck, ShoppingBag, Sun, User, UsersRound, Zap } from 'lucide-react'
 import { SafeHtml } from '@/components/common/SafeHtml'
 import { getDefaultAuthFooterAdSettings, getDefaultLoginBrandingSettings } from '@/api/settings'
 import { login, register, verifyToken, getRegistrationStatus, generateCaptcha, verifyCaptcha, sendVerificationCode, getLoginCaptchaStatus, getLoginBrandingSettings, getAuthFooterAdSettings } from '@/api/auth'
@@ -13,6 +12,8 @@ import { ButtonLoading } from '@/components/common/Loading'
 import { GeetestCaptcha, type GeetestResult } from '@/components/common/GeetestCaptcha'
 import { POPUP_ANNOUNCEMENT_SHOWN_KEY } from '@/components/common/PopupAnnouncementModal'
 import { getApiErrorMessage } from '@/utils/apiError'
+import { initializeThemeMode, toggleThemeMode } from '@/utils/theme'
+import '@/styles/login.css'
 
 type LoginType = 'username' | 'email-password' | 'email-code'
 
@@ -29,6 +30,22 @@ export function Login() {
   const [loginBranding, setLoginBranding] = useState(() => getDefaultLoginBrandingSettings())
   const [authFooterAd, setAuthFooterAd] = useState(() => getDefaultAuthFooterAdSettings())
   const [showRegister, setShowRegister] = useState(false)
+  const [isDark, setIsDark] = useState(() => (
+    typeof document !== 'undefined' && document.documentElement.classList.contains('dark')
+  ))
+
+  useEffect(() => {
+    document.body.classList.add('auth-login-body')
+    setIsDark(initializeThemeMode() === 'dark')
+
+    return () => {
+      document.body.classList.remove('auth-login-body')
+    }
+  }, [])
+
+  const handleThemeToggle = () => {
+    setIsDark(toggleThemeMode() === 'dark')
+  }
 
   // Form states
   const [username, setUsername] = useState('')
@@ -312,308 +329,307 @@ export function Login() {
     }
   }
 
+  const displayTitleLines = loginBranding['login.system_title']
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+  const titleLines = displayTitleLines.length > 0 ? displayTitleLines : ['多账号，', '统一管理']
+
   return (
-    <div className="min-h-screen flex flex-col bg-slate-50 dark:bg-slate-900 transition-colors duration-200">
-      <AuthNavbar systemName={loginBranding['login.system_name']} />
+    <div className="auth-login-page">
+      <header className="auth-login-topbar">
+        <Link to="/login" className="auth-login-brand" aria-label={loginBranding['login.system_name']}>
+          <span className="auth-login-brand-logo" aria-hidden="true">
+            <MessageSquare />
+          </span>
+          <span>{loginBranding['login.system_name']}</span>
+        </Link>
 
-      <div className="flex-1 flex pt-14">
-      {/* Left side - Branding */}
-      <motion.div 
-        initial={{ opacity: 0, x: -20 }}
-        animate={{ opacity: 1, x: 0 }}
-        transition={{ duration: 0.5 }}
-        className="hidden lg:flex lg:w-1/2 bg-slate-900 dark:bg-slate-950 relative overflow-hidden"
-      >
-        <div className="absolute inset-0 bg-gradient-to-br from-blue-600/20 to-transparent" />
-        <div className="relative z-10 flex flex-col justify-center px-16">
-          <motion.div 
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.2, duration: 0.5 }}
-            className="flex items-center gap-3 mb-8"
+        <div className="auth-login-top-actions">
+          <span className="auth-login-mode-label">{isDark ? '深色模式' : '浅色模式'}</span>
+          <button
+            type="button"
+            className="auth-login-theme-toggle"
+            onClick={handleThemeToggle}
+            aria-label={isDark ? '切换到浅色模式' : '切换到深色模式'}
+            aria-pressed={isDark}
+            title={isDark ? '切换到浅色模式' : '切换到深色模式'}
           >
-            <div className="w-12 h-12 rounded-xl bg-blue-500 flex items-center justify-center">
-              <MessageSquare className="w-6 h-6 text-white" />
-            </div>
-            <span className="text-2xl font-bold text-white">{loginBranding['login.system_name']}</span>
-          </motion.div>
-          <motion.h1 
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.3, duration: 0.5 }}
-            className="text-4xl font-bold text-white mb-4 leading-tight whitespace-pre-line"
-          >
-            {loginBranding['login.system_title']}
-          </motion.h1>
-          <motion.p 
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.4, duration: 0.5 }}
-            className="text-slate-400 text-lg max-w-md"
-          >
-            {loginBranding['login.system_description']}
-          </motion.p>
+            {isDark ? <Sun aria-hidden="true" /> : <Moon aria-hidden="true" />}
+          </button>
         </div>
-        {/* Decorative circles */}
-        <div className="absolute -bottom-32 -left-32 w-96 h-96 rounded-full bg-blue-600/10" />
-        <div className="absolute -top-32 -right-32 w-96 h-96 rounded-full bg-blue-600/5" />
-      </motion.div>
+      </header>
 
-      {/* Right side - Login form */}
-      <div className="flex-1 flex items-center justify-center p-4 sm:p-6">
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.4 }}
-          className="w-full max-w-md"
+      <main className="auth-login-layout">
+        <motion.section
+          className="auth-login-showcase"
+          initial={{ opacity: 0, x: -24 }}
+          animate={{ opacity: 1, x: 0 }}
+          transition={{ duration: 0.55 }}
+          aria-labelledby="auth-login-hero-title"
         >
-          {/* Mobile header */}
-          <motion.div 
-            initial={{ opacity: 0, y: -10 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.1, duration: 0.4 }}
-            className="lg:hidden text-center mb-8"
-          >
-            <div className="w-12 h-12 rounded-xl bg-blue-500 text-white mx-auto mb-4 flex items-center justify-center">
-              <MessageSquare className="w-6 h-6" />
-            </div>
-            <h1 className="text-xl font-bold text-slate-900 dark:text-white">{loginBranding['login.system_name']}</h1>
-          </motion.div>
-
-          {/* Login Card */}
-          <div className="bg-white dark:bg-slate-800 rounded-lg shadow-sm border border-slate-200 dark:border-slate-700 p-5 sm:p-8">
-            <div className="mb-6">
-              <h2 className="text-xl vben-card-title text-slate-900 dark:text-white">{showRegister ? '邀请码注册' : '登录'}</h2>
-              <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">{showRegister ? '提交申请后由管理员审核，审核通过即可登录' : '欢迎回来，请登录您的账号'}</p>
-            </div>
-
-            {/* Login type tabs */}
-            {!showRegister && <div className="flex border-b border-slate-200 dark:border-slate-700 mb-4 sm:mb-6 overflow-x-auto scrollbar-hide">
-              {[
-                { type: 'username' as const, label: '账号登录' },
-                { type: 'email-password' as const, label: '邮箱密码' },
-                { type: 'email-code' as const, label: '验证码' },
-              ].map((tab) => (
-                <button
-                  key={tab.type}
-                  onClick={() => handleLoginTypeChange(tab.type)}
-                  className={cn(
-                    'px-3 sm:px-4 py-2 sm:py-2.5 text-xs sm:text-sm font-medium border-b-2 -mb-px transition-colors whitespace-nowrap flex-shrink-0',
-                    loginType === tab.type
-                      ? 'text-blue-600 dark:text-blue-400 border-blue-600 dark:border-blue-400'
-                      : 'text-slate-500 dark:text-slate-400 border-transparent hover:text-slate-700 dark:hover:text-slate-300'
-                  )}
-                >
-                  {tab.label}
-                </button>
-              ))}
-            </div>}
-
-            {showRegister ? (
-              <form onSubmit={handleRegisterSubmit} className="space-y-3 sm:space-y-4">
-                <div className="input-group"><label className="input-label">用户名</label><div className="relative"><User className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" /><input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="请输入用户名" className="input-ios pl-9" /></div></div>
-                <div className="input-group"><label className="input-label">邀请码</label><div className="relative"><KeyRound className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" /><input value={registerInviteCode} onChange={(e) => setRegisterInviteCode(e.target.value.toUpperCase())} placeholder="请输入管理员提供的邀请码" className="input-ios pl-9 tracking-wide" autoComplete="one-time-code" /></div></div>
-                <div className="input-group"><label className="input-label">密码</label><div className="relative"><Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" /><input type={showPassword ? 'text' : 'password'} value={password} onChange={(e) => setPassword(e.target.value)} placeholder="至少6位字符" className="input-ios pl-9 pr-9" /><button type="button" onClick={() => setShowPassword(!showPassword)} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400">{showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}</button></div></div>
-                <div className="input-group"><label className="input-label">确认密码</label><input type={showPassword ? 'text' : 'password'} value={registerConfirmPassword} onChange={(e) => setRegisterConfirmPassword(e.target.value)} placeholder="请再次输入密码" className="input-ios" /></div>
-                <button type="submit" disabled={loading} className="w-full btn-ios-primary">{loading ? <ButtonLoading /> : '提 交 注 册 申 请'}</button>
-              </form>
-            ) : <form onSubmit={handleSubmit} className="space-y-3 sm:space-y-4">
-              {/* Username login */}
-              {loginType === 'username' && (
-                <>
-                  <div className="input-group">
-                    <label className="input-label">用户名</label>
-                    <div className="relative">
-                      <User className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-                      <input
-                        type="text"
-                        value={username}
-                        onChange={(e) => setUsername(e.target.value)}
-                        placeholder="请输入用户名"
-                        className="input-ios pl-9"
-                      />
-                    </div>
-                  </div>
-                  <div className="input-group">
-                    <label className="input-label">密码</label>
-                    <div className="relative">
-                      <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-                      <input
-                        type={showPassword ? 'text' : 'password'}
-                        value={password}
-                        onChange={(e) => setPassword(e.target.value)}
-                        placeholder="请输入密码"
-                        className="input-ios pl-9 pr-9"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setShowPassword(!showPassword)}
-                        className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
-                      >
-                        {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                      </button>
-                    </div>
-                  </div>
-                </>
-              )}
-
-              {/* Email password login */}
-              {loginType === 'email-password' && (
-                <>
-                  <div className="input-group">
-                    <label className="input-label">邮箱地址</label>
-                    <div className="relative">
-                      <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-                      <input
-                        type="email"
-                        value={email}
-                        onChange={(e) => setEmail(e.target.value)}
-                        placeholder="name@example.com"
-                        className="input-ios pl-9"
-                      />
-                    </div>
-                  </div>
-                  <div className="input-group">
-                    <label className="input-label">密码</label>
-                    <div className="relative">
-                      <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-                      <input
-                        type={showPassword ? 'text' : 'password'}
-                        value={emailPassword}
-                        onChange={(e) => setEmailPassword(e.target.value)}
-                        placeholder="请输入密码"
-                        className="input-ios pl-9 pr-9"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setShowPassword(!showPassword)}
-                        className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
-                      >
-                        {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                      </button>
-                    </div>
-                  </div>
-                </>
-              )}
-
-              {/* 滑动验证码 - 用户名和邮箱密码登录共用一个组件 */}
-              {loginCaptchaEnabled === true && (loginType === 'username' || loginType === 'email-password') && (
-                <div className="input-group">
-                  <label className="input-label">滑动验证</label>
-                  <GeetestCaptcha
-                    key={geetestKey}
-                    onSuccess={handleGeetestSuccess}
-                    onError={(err) => addToast({ type: 'error', message: err })}
-                    disabled={loading}
-                  />
-                </div>
-              )}
-
-              {/* Email code login */}
-              {loginType === 'email-code' && (
-                <>
-                  <div className="input-group">
-                    <label className="input-label">邮箱地址</label>
-                    <div className="relative">
-                      <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-                      <input
-                        type="email"
-                        value={emailForCode}
-                        onChange={(e) => setEmailForCode(e.target.value)}
-                        placeholder="name@example.com"
-                        className="input-ios pl-9"
-                      />
-                    </div>
-                  </div>
-
-                  {/* Captcha */}
-                  <div className="input-group">
-                    <label className="input-label">图形验证码</label>
-                    <div className="flex gap-2">
-                      <input
-                        type="text"
-                        value={captchaCode}
-                        onChange={(e) => setCaptchaCode(e.target.value)}
-                        placeholder="输入验证码"
-                        maxLength={4}
-                        className="input-ios flex-1"
-                        disabled={captchaVerified}
-                      />
-                      <img
-                        src={captchaImage}
-                        alt="验证码"
-                        onClick={loadCaptcha}
-                        className="h-[38px] rounded border border-gray-300 cursor-pointer hover:opacity-80 transition-opacity"
-                      />
-                    </div>
-                    <p className={cn(
-                      'text-xs',
-                      captchaVerified ? 'text-green-600' : verifying ? 'text-blue-500' : 'text-gray-400'
-                    )}>
-                      {captchaVerified ? '✓ 验证成功' : verifying ? '验证中...' : '点击图片更换验证码'}
-                    </p>
-                  </div>
-
-                  {/* Email code */}
-                  <div className="input-group">
-                    <label className="input-label">邮箱验证码</label>
-                    <div className="flex gap-2">
-                      <div className="relative flex-1">
-                        <KeyRound className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-                        <input
-                          type="text"
-                          value={verificationCode}
-                          onChange={(e) => setVerificationCode(e.target.value)}
-                          placeholder="6位数字验证码"
-                          maxLength={6}
-                          className="input-ios pl-9"
-                        />
-                      </div>
-                      <button
-                        type="button"
-                        onClick={handleSendCode}
-                        disabled={!captchaVerified || !emailForCode || countdown > 0}
-                        className="btn-ios-secondary whitespace-nowrap"
-                      >
-                        {countdown > 0 ? `${countdown}s` : '发送'}
-                      </button>
-                    </div>
-                  </div>
-                </>
-              )}
-
-              {/* Submit button */}
-              <button
-                type="submit"
-                disabled={loading}
-                className="w-full btn-ios-primary"
+          <div className="auth-login-showcase-label">专业 · 稳定 · 高效</div>
+          <h1 id="auth-login-hero-title" className="auth-login-hero-title">
+            {titleLines.map((line, index) => (
+              <span
+                key={`${line}-${index}`}
+                className={cn(
+                  'auth-login-hero-title-line',
+                  index === titleLines.length - 1 && 'auth-login-hero-title-line--accent',
+                )}
               >
-                {loading ? <ButtonLoading /> : '登 录'}
-              </button>
-            </form>}
+                {line}
+              </span>
+            ))}
+          </h1>
+          <p className="auth-login-hero-description">{loginBranding['login.system_description']}</p>
 
-            {/* Forgot password + Register links */}
-            <div className="flex items-center justify-between mt-6 text-sm">
-              <Link to="/forgot-password" className="text-slate-500 dark:text-slate-400 hover:text-blue-600 dark:hover:text-blue-400">
-                忘记密码?
-              </Link>
-              {registrationEnabled && (
-                <button type="button" onClick={() => { setShowRegister((value) => !value); setCaptchaVerified(false); setCaptchaCode('') }} className="text-blue-600 dark:text-blue-400 font-medium hover:text-blue-700 dark:hover:text-blue-300">
-                  {showRegister ? '返回登录' : '立即注册'}
-                </button>
-              )}
+          <div className="auth-login-feature-grid" aria-label="平台能力">
+            <div className="auth-login-feature">
+              <span className="auth-login-feature-icon"><UsersRound aria-hidden="true" /></span>
+              <strong>多账号集中管理</strong>
+              <span>高效切换，省时省力</span>
             </div>
-
+            <div className="auth-login-feature">
+              <span className="auth-login-feature-icon"><Bot aria-hidden="true" /></span>
+              <strong>自动化运营</strong>
+              <span>批量任务，稳定执行</span>
+            </div>
+            <div className="auth-login-feature">
+              <span className="auth-login-feature-icon"><BarChart3 aria-hidden="true" /></span>
+              <strong>数据分析</strong>
+              <span>经营数据，一目了然</span>
+            </div>
           </div>
 
-          {/* Footer */}
-          <SafeHtml
-            html={authFooterAd['auth.footer_ad_html']}
-            className="mt-6 text-center text-xs text-slate-400 dark:text-slate-500"
-          />
-        </motion.div>
-      </div>
-      </div>
+          <div className="auth-login-visual" aria-hidden="true">
+            <div className="auth-login-floating-card auth-login-floating-card--left">
+              <ShoppingBag />
+              <span>商品管理</span>
+            </div>
+            <div className="auth-login-dashboard">
+              <div className="auth-login-dashboard-head">
+                <span className="auth-login-dashboard-title"><i />运营数据</span>
+                <span className="auth-login-dashboard-status"><Zap />实时同步</span>
+              </div>
+              <div className="auth-login-chart">
+                <div className="auth-login-chart-bars">
+                  <span /><span /><span /><span /><span /><span />
+                </div>
+                <svg viewBox="0 0 520 90" preserveAspectRatio="none">
+                  <path d="M4 76 C40 69 54 75 78 61 S119 70 145 51 S182 56 210 44 S250 58 282 36 S322 48 348 28 S392 39 422 18 S474 28 516 5" />
+                </svg>
+              </div>
+              <div className="auth-login-dashboard-stats">
+                <div className="auth-login-dashboard-stat">
+                  <ShoppingBag aria-hidden="true" />
+                  <small>商品管理</small>
+                  <strong>1,268</strong>
+                </div>
+                <div className="auth-login-dashboard-stat">
+                  <MessageSquare aria-hidden="true" />
+                  <small>自动回复</small>
+                  <strong>98%</strong>
+                </div>
+                <div className="auth-login-dashboard-stat">
+                  <BarChart3 aria-hidden="true" />
+                  <small>经营分析</small>
+                  <strong>实时</strong>
+                </div>
+              </div>
+            </div>
+            <div className="auth-login-floating-card auth-login-floating-card--right">
+              <ShieldCheck />
+              <span>安全稳定运行</span>
+            </div>
+          </div>
+        </motion.section>
+
+        <div className="auth-login-panel-wrap">
+          <motion.section
+            className="auth-login-panel"
+            initial={{ opacity: 0, y: 22 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.45, delay: 0.08 }}
+            aria-labelledby="auth-login-panel-title"
+          >
+            <div className="auth-login-panel-heading">
+              <span className="auth-login-panel-eyebrow">{showRegister ? 'INVITATION REGISTRATION' : 'SECURE WORKSPACE'}</span>
+              <h2 id="auth-login-panel-title">{showRegister ? '邀请码注册' : '登录'}</h2>
+              <p>{showRegister ? '提交申请后由管理员审核，审核通过即可登录' : '欢迎回来，请登录您的账号'}</p>
+            </div>
+
+            {!showRegister && (
+              <div className="auth-login-tab-list" role="tablist" aria-label="登录方式">
+                {[
+                  { type: 'username' as const, label: '账号登录' },
+                  { type: 'email-password' as const, label: '邮箱密码' },
+                  { type: 'email-code' as const, label: '验证码' },
+                ].map((tab) => (
+                  <button
+                    key={tab.type}
+                    type="button"
+                    role="tab"
+                    aria-selected={loginType === tab.type}
+                    className={cn('auth-login-tab', loginType === tab.type && 'auth-login-tab--active')}
+                    onClick={() => handleLoginTypeChange(tab.type)}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {showRegister ? (
+              <form onSubmit={handleRegisterSubmit} className="auth-login-form auth-login-register-form">
+                <div className="auth-login-field">
+                  <label htmlFor="register-username">用户名</label>
+                  <div className="auth-login-input-shell">
+                    <User aria-hidden="true" />
+                    <input id="register-username" value={username} onChange={(e) => setUsername(e.target.value)} placeholder="请输入用户名" className="auth-login-input" autoComplete="username" />
+                  </div>
+                </div>
+                <div className="auth-login-field">
+                  <label htmlFor="register-invite-code">邀请码</label>
+                  <div className="auth-login-input-shell">
+                    <KeyRound aria-hidden="true" />
+                    <input id="register-invite-code" value={registerInviteCode} onChange={(e) => setRegisterInviteCode(e.target.value.toUpperCase())} placeholder="请输入管理员提供的邀请码" className="auth-login-input" autoComplete="one-time-code" />
+                  </div>
+                </div>
+                <div className="auth-login-field">
+                  <label htmlFor="register-password">密码</label>
+                  <div className="auth-login-input-shell">
+                    <Lock aria-hidden="true" />
+                    <input id="register-password" type={showPassword ? 'text' : 'password'} value={password} onChange={(e) => setPassword(e.target.value)} placeholder="至少6位字符" className="auth-login-input" autoComplete="new-password" />
+                    <button type="button" onClick={() => setShowPassword(!showPassword)} className="auth-login-password-toggle" aria-label={showPassword ? '隐藏密码' : '显示密码'}>
+                      {showPassword ? <EyeOff aria-hidden="true" /> : <Eye aria-hidden="true" />}
+                    </button>
+                  </div>
+                </div>
+                <div className="auth-login-field">
+                  <label htmlFor="register-confirm-password">确认密码</label>
+                  <div className="auth-login-input-shell">
+                    <Lock aria-hidden="true" />
+                    <input id="register-confirm-password" type={showPassword ? 'text' : 'password'} value={registerConfirmPassword} onChange={(e) => setRegisterConfirmPassword(e.target.value)} placeholder="请再次输入密码" className="auth-login-input" autoComplete="new-password" />
+                  </div>
+                </div>
+                <button type="submit" disabled={loading} className="auth-login-submit">
+                  {loading ? <ButtonLoading /> : <>提交注册申请 <ArrowUpRight aria-hidden="true" /></>}
+                </button>
+              </form>
+            ) : (
+              <form onSubmit={handleSubmit} className="auth-login-form">
+                {loginType === 'username' && (
+                  <>
+                    <div className="auth-login-field">
+                      <label htmlFor="login-username">用户名</label>
+                      <div className="auth-login-input-shell">
+                        <User aria-hidden="true" />
+                        <input id="login-username" type="text" value={username} onChange={(e) => setUsername(e.target.value)} placeholder="请输入用户名" className="auth-login-input" autoComplete="username" />
+                      </div>
+                    </div>
+                    <div className="auth-login-field">
+                      <label htmlFor="login-password">密码</label>
+                      <div className="auth-login-input-shell">
+                        <Lock aria-hidden="true" />
+                        <input id="login-password" type={showPassword ? 'text' : 'password'} value={password} onChange={(e) => setPassword(e.target.value)} placeholder="请输入密码" className="auth-login-input" autoComplete="current-password" />
+                        <button type="button" onClick={() => setShowPassword(!showPassword)} className="auth-login-password-toggle" aria-label={showPassword ? '隐藏密码' : '显示密码'}>
+                          {showPassword ? <EyeOff aria-hidden="true" /> : <Eye aria-hidden="true" />}
+                        </button>
+                      </div>
+                    </div>
+                  </>
+                )}
+
+                {loginType === 'email-password' && (
+                  <>
+                    <div className="auth-login-field">
+                      <label htmlFor="login-email">邮箱地址</label>
+                      <div className="auth-login-input-shell">
+                        <Mail aria-hidden="true" />
+                        <input id="login-email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="name@example.com" className="auth-login-input" autoComplete="email" />
+                      </div>
+                    </div>
+                    <div className="auth-login-field">
+                      <label htmlFor="login-email-password">密码</label>
+                      <div className="auth-login-input-shell">
+                        <Lock aria-hidden="true" />
+                        <input id="login-email-password" type={showPassword ? 'text' : 'password'} value={emailPassword} onChange={(e) => setEmailPassword(e.target.value)} placeholder="请输入密码" className="auth-login-input" autoComplete="current-password" />
+                        <button type="button" onClick={() => setShowPassword(!showPassword)} className="auth-login-password-toggle" aria-label={showPassword ? '隐藏密码' : '显示密码'}>
+                          {showPassword ? <EyeOff aria-hidden="true" /> : <Eye aria-hidden="true" />}
+                        </button>
+                      </div>
+                    </div>
+                  </>
+                )}
+
+                {loginCaptchaEnabled === true && (loginType === 'username' || loginType === 'email-password') && (
+                  <div className="auth-login-field">
+                    <label>滑动验证</label>
+                    <div className="auth-login-geetest">
+                      <GeetestCaptcha
+                        key={geetestKey}
+                        onSuccess={handleGeetestSuccess}
+                        onError={(err) => addToast({ type: 'error', message: err })}
+                        disabled={loading}
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {loginType === 'email-code' && (
+                  <>
+                    <div className="auth-login-field">
+                      <label htmlFor="login-code-email">邮箱地址</label>
+                      <div className="auth-login-input-shell">
+                        <Mail aria-hidden="true" />
+                        <input id="login-code-email" type="email" value={emailForCode} onChange={(e) => setEmailForCode(e.target.value)} placeholder="name@example.com" className="auth-login-input" autoComplete="email" />
+                      </div>
+                    </div>
+                    <div className="auth-login-field">
+                      <label htmlFor="login-captcha-code">图形验证码</label>
+                      <div className="auth-login-captcha-row">
+                        <input id="login-captcha-code" type="text" value={captchaCode} onChange={(e) => setCaptchaCode(e.target.value)} placeholder="输入验证码" maxLength={4} className="auth-login-input" disabled={captchaVerified} autoComplete="one-time-code" />
+                        {captchaImage ? <img src={captchaImage} alt="验证码，点击更换" onClick={loadCaptcha} className="auth-login-captcha-image" /> : <button type="button" className="auth-login-code-button" onClick={loadCaptcha}>获取验证码</button>}
+                      </div>
+                      <p className={cn('auth-login-status-hint', captchaVerified && 'auth-login-status-hint--success', verifying && 'auth-login-status-hint--checking')}>
+                        {captchaVerified ? <><Check aria-hidden="true" /> 验证成功</> : verifying ? '验证中...' : '点击图片更换验证码'}
+                      </p>
+                    </div>
+                    <div className="auth-login-field">
+                      <label htmlFor="login-verification-code">邮箱验证码</label>
+                      <div className="auth-login-code-row">
+                        <div className="auth-login-input-shell">
+                          <KeyRound aria-hidden="true" />
+                          <input id="login-verification-code" type="text" value={verificationCode} onChange={(e) => setVerificationCode(e.target.value)} placeholder="6位数字验证码" maxLength={6} className="auth-login-input" autoComplete="one-time-code" />
+                        </div>
+                        <button type="button" onClick={handleSendCode} disabled={!captchaVerified || !emailForCode || countdown > 0} className="auth-login-code-button">
+                          {countdown > 0 ? `${countdown}s` : '发送'}
+                        </button>
+                      </div>
+                    </div>
+                  </>
+                )}
+
+                <button type="submit" disabled={loading} className="auth-login-submit">
+                  {loading ? <ButtonLoading /> : <>登录 <ArrowUpRight aria-hidden="true" /></>}
+                </button>
+              </form>
+            )}
+
+            <div className="auth-login-meta">
+              <Link to="/forgot-password" className="auth-login-link">忘记密码？</Link>
+              {registrationEnabled && (
+                <button type="button" onClick={() => { setShowRegister((value) => !value); setCaptchaVerified(false); setCaptchaCode('') }} className="auth-login-link auth-login-link--primary">
+                  {showRegister ? '返回登录' : <>立即注册 <ArrowUpRight aria-hidden="true" /></>}
+                </button>
+              )}
+            </div>
+
+            <SafeHtml html={authFooterAd['auth.footer_ad_html']} className="auth-login-footer" />
+          </motion.section>
+        </div>
+      </main>
     </div>
   )
 }
