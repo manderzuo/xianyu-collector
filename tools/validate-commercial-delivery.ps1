@@ -29,7 +29,7 @@ foreach ($path in @(
     'docker-compose.yml', 'VERSION.txt', 'deploy\update-xianyu-gui.ps1',
     'deploy\update-signing-public-key.xml', 'tools\build-windows-installer.ps1',
     'tools\build-offline-image-bundle.ps1', 'tools\import-offline-image-bundle.ps1',
-    'tools\windows-installer-apply-client-update.ps1',
+    'tools\windows-installer-apply-client-update.ps1', 'tools\windows-reset-xianyu-docker.ps1',
     '.github\workflows\build-and-publish.yml'
 )) { Require-Path (Join-Path $ProjectRoot $path) $path }
 
@@ -73,7 +73,8 @@ if ($PackageRoot) {
     Write-Host "[xianyu] Checking package: $package" -ForegroundColor Cyan
     foreach ($path in @(
         'package-manifest.json', 'README.txt', 'resources\images\offline-manifest.json',
-        'app\deploy\update-signing-public-key.xml', 'scripts\apply-client-update.ps1'
+        'app\deploy\update-signing-public-key.xml', 'scripts\apply-client-update.ps1',
+        'resources\reset-xianyu-docker.ps1'
     )) { Require-Path (Join-Path $package $path) "package\$path" }
     $imageCount = @(Get-ChildItem -LiteralPath (Join-Path $package 'resources\images') -Filter '*.tar.gz' -File -ErrorAction SilentlyContinue).Count
     if ($imageCount -ne 6) { $failures.Add("Package must contain 6 image archives; found $imageCount") }

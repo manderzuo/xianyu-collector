@@ -87,6 +87,19 @@ python .\tools\generate-update-signing-key.py `
 发布工作流使用私钥生成 `latest.json.sig`，客户端用 RSA-SHA256 校验清单后才会更新。
 如果 GitHub secret 未配置，发布工作流会在上传前失败，不会切换线上清单。
 
+## Docker 重置
+
+`windows-reset-xianyu-docker.ps1` 默认只清理指定闲鱼项目的容器、网络、卷和服务镜像：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File .\tools\windows-reset-xianyu-docker.ps1 `
+  -AppRoot D:\path\to\xianyu-package\app
+```
+
+如需清理整台电脑上的全部 Docker 数据，必须显式使用 `-AllDockerData -Force`；这会影响其他项目，
+包括容器、镜像、卷、用户网络和构建缓存。使用 `-Preview` 可以先查看动作而不执行删除。
+
 ## 发版前统一验收
 
 每次发版前可以检查源码和最终离线包：

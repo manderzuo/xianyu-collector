@@ -1,6 +1,7 @@
 param(
     [Parameter(Mandatory = $true)]
-    [string]$PackageRoot
+    [string]$PackageRoot,
+    [string]$TempDirectory = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -52,7 +53,13 @@ if (-not (Get-Command docker -ErrorAction SilentlyContinue)) { Fail 'Docker CLI 
 
 $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
 if ($manifest.format_version -ne 1) { Fail "Unsupported offline manifest version: $($manifest.format_version)" }
-$tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('xianyu-image-import-' + [guid]::NewGuid().ToString('N'))
+$tempBase = if ([string]::IsNullOrWhiteSpace($TempDirectory)) {
+    Join-Path $resolvedPackage 'app\updates\work'
+} else {
+    [System.IO.Path]::GetFullPath($TempDirectory)
+}
+New-Item -ItemType Directory -Path $tempBase -Force | Out-Null
+$tempRoot = Join-Path $tempBase ('xianyu-image-import-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
 $imageRootWithSlash = $imageRoot.TrimEnd('\') + '\'
 try {

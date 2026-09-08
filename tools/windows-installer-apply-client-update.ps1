@@ -17,7 +17,9 @@ if (-not (Test-Path -LiteralPath $PendingRoot)) { exit 0 }
 $archive = Get-ChildItem -LiteralPath $PendingRoot -Filter '*.zip' -File | Sort-Object LastWriteTime -Descending | Select-Object -First 1
 if ($null -eq $archive) { exit 0 }
 
-$stage = Join-Path ([IO.Path]::GetTempPath()) ('xianyu-client-update-' + [guid]::NewGuid().ToString('N'))
+$stageRoot = Join-Path $AppRoot 'updates\work'
+New-Item -ItemType Directory -Path $stageRoot -Force | Out-Null
+$stage = Join-Path $stageRoot ('xianyu-client-update-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $stage -Force | Out-Null
 try {
     Write-ClientUpdateLog "apply_start archive=$($archive.Name)"

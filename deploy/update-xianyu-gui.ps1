@@ -68,6 +68,23 @@ $worker = {
         Set-Content -LiteralPath $Path -Value $updated -Encoding UTF8
     }
 
+    function New-UpdateTempDirectory([string]$Name) {
+        $configured = ''
+        try {
+            $envValues = Get-EnvMap $envFile
+            $configured = "$($envValues['XIANYU_UPDATE_TEMP_DIR'])".Trim()
+        } catch { $configured = '' }
+        $base = if ($configured) {
+            if ([IO.Path]::IsPathRooted($configured)) { $configured } else { Join-Path $Root $configured }
+        } else {
+            Join-Path $Root 'updates\work'
+        }
+        New-Item -ItemType Directory -Path $base -Force | Out-Null
+        $path = Join-Path $base ("xianyu-$Name-" + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $path -Force | Out-Null
+        return $path
+    }
+
     function Get-VersionParts([string]$Value) {
         $matches = [regex]::Matches([string]$Value, '\d+')
         if ($matches.Count -eq 0) { throw "版本号无效：$Value" }
@@ -185,7 +202,8 @@ $worker = {
         }
         $signatureUri = [Uri]$signatureUrl
         if ($signatureUri.Scheme -notin @('http', 'https')) { throw "更新签名地址协议不受支持：$signatureUrl" }
-        $signaturePath = Join-Path ([IO.Path]::GetTempPath()) ('xianyu-manifest-' + [guid]::NewGuid().ToString('N') + '.sig')
+        $signatureTempDir = New-UpdateTempDirectory 'manifest-signature'
+        $signaturePath = Join-Path $signatureTempDir 'manifest.sig'
         try {
             Write-Detail "manifest_signature_request url=$signatureUrl"
             Invoke-WebRequest -UseBasicParsing -Uri $signatureUri.AbsoluteUri -TimeoutSec 20 -Headers $Headers -OutFile $signaturePath
@@ -207,7 +225,7 @@ $worker = {
             Write-Detail "manifest_signature_verified algorithm=RSA-SHA256 sha256=$signatureHash"
             return [pscustomobject]@{ Verified = $true; Required = $required; Url = $signatureUrl; Algorithm = 'RSA-SHA256' }
         } finally {
-            Remove-Item -LiteralPath $signaturePath -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $signatureTempDir -Recurse -Force -ErrorAction SilentlyContinue
         }
     }
 
@@ -215,8 +233,7 @@ $worker = {
         if ($null -eq $Manifest.image_artifacts) { return $false }
         $artifacts = @($Manifest.image_artifacts | Where-Object { $null -ne $_ })
         if ($artifacts.Count -eq 0) { return $false }
-        $tempDir = Join-Path ([IO.Path]::GetTempPath()) ('xianyu-update-' + [guid]::NewGuid().ToString('N'))
-        New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+        $tempDir = New-UpdateTempDirectory 'update'
         try {
             $index = 0
             foreach ($artifact in $artifacts) {
@@ -268,7 +285,8 @@ $worker = {
         }
         $uri = [Uri]$url
         if ($uri.Scheme -ne 'https') { throw "客户端维护包必须使用 HTTPS：$url" }
-        $tempArchive = Join-Path ([IO.Path]::GetTempPath()) ('xianyu-client-' + [guid]::NewGuid().ToString('N') + '.zip')
+        $tempDir = New-UpdateTempDirectory 'client'
+        $tempArchive = Join-Path $tempDir 'client.zip'
         $pendingRoot = Join-Path $Root 'updates\pending'
         New-Item -ItemType Directory -Path $pendingRoot -Force | Out-Null
         try {
@@ -283,7 +301,7 @@ $worker = {
             Write-Detail "client_package_staged path=$pendingPath sha256=$actualHash bytes=$((Get-Item -LiteralPath $pendingPath).Length)"
             return $pendingPath
         } finally {
-            Remove-Item -LiteralPath $tempArchive -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $tempDir -Recurse -Force -ErrorAction SilentlyContinue
         }
     }
 
@@ -301,7 +319,8 @@ $worker = {
         $signatureInfo = [pscustomobject]@{ Verified = $false; Required = (Test-TrueValue "$($envMap['UPDATE_REQUIRE_SIGNATURE'])"); Url = ''; Algorithm = '' }
         $pendingClientPath = ''
         if ($Mode -eq 'check') {
-            $manifestPath = Join-Path ([IO.Path]::GetTempPath()) ('xianyu-manifest-' + [guid]::NewGuid().ToString('N') + '.json')
+            $manifestTempDir = New-UpdateTempDirectory 'manifest'
+            $manifestPath = Join-Path $manifestTempDir 'latest.json'
             try {
                 Invoke-WebRequest -UseBasicParsing -Uri $requestUrl -TimeoutSec 20 -Headers $headers -OutFile $manifestPath
                 $manifestBytes = [IO.File]::ReadAllBytes($manifestPath)
@@ -310,7 +329,7 @@ $worker = {
                 $declaredSignatureUrl = "$($manifest.signature.url)".Trim()
                 $signatureInfo = Verify-ManifestSignature $manifestBytes $manifestUrl $headers $envMap $declaredSignatureUrl
             } finally {
-                Remove-Item -LiteralPath $manifestPath -Force -ErrorAction SilentlyContinue
+                Remove-Item -LiteralPath $manifestTempDir -Recurse -Force -ErrorAction SilentlyContinue
             }
         } else {
             $received = $ManifestJson | ConvertFrom-Json
