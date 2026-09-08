@@ -344,6 +344,9 @@ jobs:
           openssl dgst -sha256 -sign "${key_file}" -out "${signature_file}.bin" release/latest.json
           base64 -w0 "${signature_file}.bin" > "${signature_file}"
           printf '\n' >> "${signature_file}"
+          # The signature is public release metadata. Make it readable by the
+          # containerized SCP action that uploads it to the update server.
+          chmod 0644 "${signature_file}"
           rm -f "${signature_file}.bin"
 
       - name: Upload client maintenance package to Tencent server
