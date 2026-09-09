@@ -11,7 +11,14 @@ function Start-XianyuLogSession {
     if (-not (Test-Path -LiteralPath $logDir)) {
         New-Item -ItemType Directory -Path $logDir -Force | Out-Null
     }
-    $path = Join-Path $logDir "$Name.log"
+    # Manual updates can be launched by both the startup checker and the
+    # desktop updater. Give each process its own transcript so one stale
+    # PowerShell process cannot lock the next session's log.
+    $path = if ($Name -eq 'manual-update') {
+        Join-Path $logDir ("{0}-{1}-{2}.log" -f $Name, $PID, (Get-Date -Format 'yyyyMMddHHmmssfff'))
+    } else {
+        Join-Path $logDir "$Name.log"
+    }
     $header = "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fff') session_start name=$Name computer=$env:COMPUTERNAME user=$env:USERNAME powershell=$($PSVersionTable.PSVersion)"
     try {
         Add-Content -LiteralPath $path -Value $header -Encoding UTF8 -ErrorAction Stop
@@ -19,7 +26,12 @@ function Start-XianyuLogSession {
         # A second launcher may still have Start-Transcript holding the shared
         # file. Fall back to a process-specific log instead of failing setup.
         $path = Join-Path $logDir ("{0}-{1}-{2}.log" -f $Name, $PID, (Get-Date -Format 'yyyyMMddHHmmssfff'))
-        try { Add-Content -LiteralPath $path -Value $header -Encoding UTF8 -ErrorAction Stop } catch { return $path }
+        try { Add-Content -LiteralPath $path -Value $header -Encoding UTF8 -ErrorAction Stop } catch {
+            # The caller must still receive a usable path even if an
+            # antivirus/indexer briefly holds the fallback file. Transcript
+            # setup below will make one last attempt and all normal logging is
+            # best-effort by design.
+        }
     }
     try {
         Start-Transcript -LiteralPath $path -Append -Force | Out-Null
@@ -40,7 +52,21 @@ function Write-XianyuLog {
         return
     }
     try {
-        Add-Content -LiteralPath $LogPath -Value $line -Encoding UTF8
+        # FileShare.ReadWrite allows the diagnostic reader and a second
+        # process to append without turning a transient lock into a fatal
+        # updater error.
+        $encoding = New-Object System.Text.UTF8Encoding($false)
+        $stream = New-Object System.IO.FileStream(
+            $LogPath,
+            [System.IO.FileMode]::Append,
+            [System.IO.FileAccess]::Write,
+            [System.IO.FileShare]::ReadWrite
+        )
+        $writer = New-Object System.IO.StreamWriter($stream, $encoding)
+        try { $writer.WriteLine($line) } finally {
+            $writer.Dispose()
+            $stream.Dispose()
+        }
     } catch { }
 }
 
