@@ -113,8 +113,8 @@ def _sync_renew(cookie_value: str, account_id: str) -> dict[str, Any]:
                 "div.nick",
                 ".header-right .nick",
                 ".rc-virtual-list-holder-inner",
-                'img[src*="img.alicdn.com"]',
-                ".nc-container",
+                '[data-testid="message-list"]',
+                '[class*="conversation-list"]',
             ):
                 try:
                     locator = page.locator(selector)
@@ -125,7 +125,11 @@ def _sync_renew(cookie_value: str, account_id: str) -> dict[str, Any]:
                     continue
             if not logged_in:
                 body_text = page.locator("body").text_content() or ""
-                logged_in = "消息" in body_text and ("订单" in body_text or "发闲置" in body_text)
+                logged_in = (
+                    "消息" in body_text
+                    and ("订单" in body_text or "发闲置" in body_text)
+                    and not any(value in body_text for value in ("扫码登录", "密码登录", "安全验证"))
+                )
         if not logged_in:
             return {
                     "success": False,

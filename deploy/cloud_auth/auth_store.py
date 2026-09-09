@@ -386,21 +386,37 @@ class AuthStore:
         finally:
             conn.close()
 
-    def update_entitlements(self, user_id: int, *, plan_code: str | None = None, plan_expires_at: str | None = None, feature_key: str | None = None, feature: Mapping[str, Any] | None = None, delete_feature: bool = False) -> dict[str, Any]:
+    def update_entitlements(self, user_id: int, *, plan_code: str | None = None, plan_expires_at: str | None = None, clear_plan_expires_at: bool = False, feature_key: str | None = None, feature: Mapping[str, Any] | None = None, delete_feature: bool = False) -> dict[str, Any]:
         conn = self._connect()
         try:
             row = conn.execute("SELECT * FROM app_users WHERE id = ?", (int(user_id),)).fetchone()
             if row is None:
                 raise AuthError("not_found", "账号不存在")
+            normalized_plan = None
+            if plan_code is not None:
+                normalized_plan = str(plan_code).strip().upper()
+                if not normalized_plan or len(normalized_plan) > 32:
+                    raise AuthError("invalid_input", "套餐编码无效")
             overrides = json.loads(row["entitlements_json"] or "{}")
             if feature_key:
                 if delete_feature:
                     overrides.pop(feature_key, None)
                 else:
                     overrides[feature_key] = dict(feature or {})
-            conn.execute("UPDATE app_users SET plan_code = ?, plan_expires_at = ?, entitlements_json = ?, updated_at = ? WHERE id = ?", (plan_code or row["plan_code"] or "NORMAL", plan_expires_at if plan_expires_at is not None else row["plan_expires_at"], json.dumps(overrides, ensure_ascii=False), self._now(), int(user_id)))
+            next_expires_at = plan_expires_at if clear_plan_expires_at or plan_expires_at is not None else row["plan_expires_at"]
+            conn.execute("UPDATE app_users SET plan_code = ?, plan_expires_at = ?, entitlements_json = ?, updated_at = ? WHERE id = ?", (normalized_plan or row["plan_code"] or "NORMAL", next_expires_at, json.dumps(overrides, ensure_ascii=False), self._now(), int(user_id)))
             conn.commit()
             return self.get_entitlements(user_id)
+        finally:
+            conn.close()
+
+    def get_user(self, user_id: int) -> dict[str, Any]:
+        conn = self._connect()
+        try:
+            row = conn.execute("SELECT * FROM app_users WHERE id = ?", (int(user_id),)).fetchone()
+            if row is None:
+                raise AuthError("not_found", "账号不存在")
+            return self._public_user(row)
         finally:
             conn.close()
 

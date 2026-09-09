@@ -33,6 +33,8 @@ export interface User {
   phone?: string
   role?: UserRole
   status?: UserStatus
+  /** 云端统一认证服务中的用户；资料和套餐权限不属于本机数据库。 */
+  cloud_mode?: boolean
   account_limit?: number | null
   plan_code?: string
   plan_expires_at?: string | null

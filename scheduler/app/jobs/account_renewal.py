@@ -18,12 +18,43 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+async def _connected_account_ids() -> set[str] | None:
+    """读取真实 IM 在线账号；连接服务不可用时返回 None，避免误判全离线。"""
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(connect=5, read=10, write=5, pool=10)) as client:
+            response = await client.get(
+                f"{settings.websocket_service_url.rstrip('/')}/internal/accounts/connection-stats",
+                headers={"X-Internal-Token": settings.jwt_secret},
+            )
+        payload = response.json()
+        if not response.is_success or not payload.get("success"):
+            return None
+        data = payload.get("data") or {}
+        return {str(value) for value in data.get("connected_account_ids") or []}
+    except (httpx.HTTPError, TypeError, ValueError):
+        return None
+
+
+def _should_force_renewal(
+    account: Account,
+    *,
+    force: bool,
+    connected_ids: set[str] | None,
+) -> bool:
+    return (
+        force
+        or account.status == "expired"
+        or (connected_ids is not None and str(account.id) not in connected_ids)
+    )
+
+
 async def execute_cookie_renewal(
     account_id: int | None = None,
     *,
     force: bool = False,
 ) -> dict[str, Any]:
     """续期启用或已过期账号；手动触发时 ``force=True``。"""
+    connected_ids = None if force else await _connected_account_ids()
     async with async_session_maker() as session:
         statement = select(Account).where(
             Account.cookie.isnot(None),
@@ -41,7 +72,13 @@ async def execute_cookie_renewal(
                         session,
                         account,
                         source="manual" if force else "scheduled_task",
-                        force=force or account.status == "expired",
+                        # 本地的 cookie_expire_at 只是估算值。真实运行时已经
+                        # 离线时必须续期，不能因为“尚有 30 天”而跳过。
+                        force=_should_force_renewal(
+                            account,
+                            force=force,
+                            connected_ids=connected_ids,
+                        ),
                         notify_runtime=True,
                     )
                 )

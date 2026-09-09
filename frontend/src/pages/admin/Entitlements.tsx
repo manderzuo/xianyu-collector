@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { listAdminPlans, updatePlanFeature, type AdminPlan } from '@/api/entitlements'
 
 const FEATURE_LABELS: Record<string, string> = {
@@ -54,7 +55,14 @@ export function Entitlements() {
     <div className="p-6 space-y-6">
       <div>
         <h1 className="text-2xl font-semibold text-slate-900 dark:text-white">套餐与功能权限</h1>
-        <p className="mt-1 text-sm text-slate-500">修改套餐默认授权；单用户覆盖请通过管理员接口或用户管理页配置。</p>
+        <p className="mt-1 text-sm text-slate-500">修改套餐默认授权；给具体用户开通 VIP，请进入用户管理编辑该用户。</p>
+      </div>
+      <div className="flex flex-col gap-3 rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-700 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-200 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <div className="font-medium">VIP 开通入口</div>
+          <div className="mt-1">选择用户后，在编辑窗口的“套餐”中选择“VIP 用户”，再设置到期时间并保存。</div>
+        </div>
+        <Link to="/admin/users" className="btn-ios-primary whitespace-nowrap">进入用户管理</Link>
       </div>
       {message && <div className="rounded-lg bg-blue-50 px-4 py-3 text-sm text-blue-700">{message}</div>}
       {plans.map((plan) => (

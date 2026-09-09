@@ -761,7 +761,17 @@ export const getOrderAmountTrend = async (): Promise<OrderTrendItem[]> => {
 export interface RewriteAccountContentDetail {
   account?: { id: number; account_name?: string; goofish_id?: string | null; status?: string; proxy?: string | null }
   login_state?: { has_cookie?: boolean; cookie_length?: number; cookie_records?: number; last_cookie_at?: string | null; expires_at?: string | null }
-  connection?: { status?: string; cookie_loaded?: boolean; action?: string; updated_at?: string }
+  connection?: {
+    status?: string
+    connection_state?: string
+    is_connected?: boolean
+    running?: boolean
+    cookie_loaded?: boolean
+    token_mode?: string
+    last_error?: string
+    action?: string
+    updated_at?: string
+  }
   content?: Record<string, number>
   sync?: { status?: string; last_started_at?: string | null; last_finished_at?: string | null; last_error?: string | null; products_count?: number; orders_count?: number; messages_count?: number; last_result?: Record<string, unknown> | null }
   recent_products?: Array<{ id?: number; external_id?: string; title?: string; price?: number | null; status?: string; synced_at?: string | null }>

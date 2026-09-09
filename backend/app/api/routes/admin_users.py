@@ -109,6 +109,7 @@ def _serialize(user: User, account_count: int = 0) -> dict[str, Any]:
         "role": ROLE_TO_UI.get(role, "MEMBER"),
         "status": status_label,
         "is_admin": role in {"admin", "administrator"},
+        "cloud_mode": False,
         "account_limit": user.account_limit,
         "plan_code": user.plan_code or "NORMAL",
         "plan_expires_at": user.plan_expires_at.isoformat() if user.plan_expires_at else None,
@@ -123,13 +124,15 @@ def _serialize(user: User, account_count: int = 0) -> dict[str, Any]:
 def _serialize_remote_user(item: dict[str, Any]) -> dict[str, Any]:
     """Map a cloud approval user to the shape used by the local admin page."""
     status = str(item.get("status") or "").lower()
+    plan_code = str(item.get("plan_code") or "NORMAL").strip().upper()
+    plan_expires_at = item.get("plan_expires_at")
     return {
         "id": item.get("id"), "user_id": item.get("id"), "username": item.get("username"),
         "nickname": item.get("employee_name"), "email": None, "phone": None,
         "role": "ADMIN" if item.get("role") == "admin" else "MEMBER",
         "status": {"approved": "ACTIVE", "pending": "PENDING", "rejected": "INACTIVE", "disabled": "INACTIVE"}.get(status, "INACTIVE"),
-        "is_admin": item.get("role") == "admin", "account_limit": None, "plan_code": "NORMAL",
-        "plan_expires_at": None, "balance": "0.00", "expire_at": None, "account_count": 0,
+        "is_admin": item.get("role") == "admin", "cloud_mode": True, "account_limit": None, "plan_code": plan_code,
+        "plan_expires_at": plan_expires_at, "balance": "0.00", "expire_at": plan_expires_at, "account_count": 0,
         "created_at": item.get("created_at"), "updated_at": item.get("approved_at"),
     }
 
@@ -270,7 +273,33 @@ async def update_user(
 ):
     operator_id = _require_admin(user)
     if cloud_auth_url():
-        raise HTTPException(status_code=409, detail="云端模式的账号资料和套餐权限请在统一认证服务中修改")
+        values = payload or {}
+        allowed = {"plan", "plan_code", "plan_expires_at", "expire_at"}
+        if not values or any(key not in allowed for key in values):
+            raise HTTPException(status_code=409, detail="云端模式的账号资料和套餐权限请在统一认证服务中修改")
+        token = str(user.get("cloud_session_token") or "").strip()
+        if not token:
+            raise HTTPException(status_code=401, detail="云端管理员会话已失效，请退出后重新登录")
+        remote_payload: dict[str, Any] = {"user_id": user_id}
+        if "plan_code" in values or "plan" in values:
+            remote_payload["plan_code"] = values.get("plan_code") or values.get("plan")
+        if "plan_expires_at" in values:
+            remote_payload["plan_expires_at"] = values.get("plan_expires_at")
+        elif "expire_at" in values:
+            remote_payload["plan_expires_at"] = values.get("expire_at")
+        try:
+            remote = await cloud_auth_request("set_user_plan", remote_payload, token)
+        except CloudAuthError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+        remote_user = (remote or {}).get("user") or {}
+        if not remote_user:
+            remote_user = {
+                "id": user_id,
+                "username": str(values.get("username") or ""),
+                "plan_code": (remote or {}).get("plan_code") or remote_payload.get("plan_code") or "NORMAL",
+                "plan_expires_at": (remote or {}).get("plan_expires_at") if remote else remote_payload.get("plan_expires_at"),
+            }
+        return ok({"user": _serialize_remote_user(remote_user)}, "用户云端套餐已更新")
     item = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
     if item is None:
         raise HTTPException(status_code=404, detail="用户不存在")

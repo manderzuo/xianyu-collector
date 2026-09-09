@@ -63,6 +63,30 @@ class CloudAuthStoreTests(unittest.TestCase):
                 )
             self.assertEqual(raised.exception.code, "invalid_input")
 
+    def test_cloud_user_plan_can_be_updated_and_expiration_can_be_cleared(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = AuthStore(str(Path(directory) / "server.db"))
+            store.sync_invites([{"code": "PLAN-TEST-1234-5678", "status": "active"}])
+            user = store.register("plan-user", "password123", "Plan User", "PLAN-TEST-1234-5678", "203.0.113.20")
+
+            updated = store.update_entitlements(
+                user["id"],
+                plan_code="vip",
+                plan_expires_at="2030-01-02T03:04:05",
+                clear_plan_expires_at=True,
+            )
+            self.assertEqual(updated["plan_code"], "VIP")
+            self.assertEqual(updated["plan_expires_at"], "2030-01-02T03:04:05")
+            self.assertEqual(store.get_user(user["id"])["plan_code"], "VIP")
+
+            cleared = store.update_entitlements(
+                user["id"],
+                plan_code="VIP",
+                plan_expires_at=None,
+                clear_plan_expires_at=True,
+            )
+            self.assertIsNone(cleared["plan_expires_at"])
+
 
 if __name__ == "__main__":
     unittest.main()

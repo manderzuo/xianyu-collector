@@ -67,14 +67,15 @@ npm run build && npm run preview -- --host 0.0.0.0 --port 9001
 
 ## 腾讯云自动更新
 
-GitHub Actions 只负责构建和校验镜像，发布时会把四个业务镜像分别导出为压缩归档，
-上传到现有腾讯云 HTTPS 站点的 `/release/xianyu/`，并最后更新 `latest.json`。客户端只访问
-`UPDATE_MANIFEST_URL`（默认 `https://www.gemstory.cn/release/xianyu/latest.json`）和同域名的
-镜像归档，不需要访问 GitHub、GHCR 或配置翻墙代理，也不需要购买腾讯云 TCR。
+GitHub Actions 负责构建和校验镜像，并把四个业务镜像的增量层同步到现有腾讯云只读 Registry，
+最后更新 `latest.json`。客户端只访问 `UPDATE_MANIFEST_URL`（默认
+`https://www.gemstory.cn/release/xianyu/latest.json`）和同域名的 Registry，不需要访问 GitHub、
+GHCR 或配置翻墙代理，也不需要购买腾讯云 TCR。
 
-启动器发现新版本后，会按镜像 ID 跳过未变化的服务，只下载变化的归档；每个归档先做 SHA-256
-校验，再执行 `docker load`，Compose 重启成功并通过前端检查后才写入本地版本标记。失败时恢复
-旧 `.env` 和旧服务配置，并保留更新日志。没有归档的旧清单仍兼容原来的 Compose pull 模式。
+启动器发现新版本后，会先按远端 Docker digest 与本机 digest 比对，跳过未变化的服务，只对变化
+的服务执行 `docker pull`；Docker 会复用本机已有层，只下载缺失的变化层。Compose 重启成功、容器
+实际 image ID 校验通过并通过前端检查后才写入本地版本标记。失败时恢复旧 `.env` 和旧服务配置，
+并保留更新日志。旧清单中的镜像归档仍兼容原来的 SHA-256 校验和 `docker load` 流程。
 清单同时可以携带小型客户端维护包；更新器先校验并暂存该包，下一次启动时再替换 GUI 和维护脚本，
 避免在当前更新进程运行期间覆盖自身。
 

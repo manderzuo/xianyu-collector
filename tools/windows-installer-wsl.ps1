@@ -22,6 +22,81 @@ function Quote-Argument([string]$Value) {
     return '"' + ($Value -replace '"', '\\"') + '"'
 }
 
+function Invoke-WslCommand([string[]]$Arguments, [string]$Label) {
+    Write-Host "[xianyu] $Label" -ForegroundColor Cyan
+    $output = @(& wsl.exe @Arguments 2>&1)
+    $exitCode = $LASTEXITCODE
+    foreach ($line in $output) {
+        if (-not [string]::IsNullOrWhiteSpace("$line")) {
+            Write-Host "[xianyu] WSL: $line"
+        }
+    }
+    return $exitCode
+}
+
+function Install-BundledWslMsi {
+    $msiPath = Join-Path $PSScriptRoot 'wsl\wsl-update-x64.msi'
+    if (-not (Test-Path -LiteralPath $msiPath -PathType Leaf)) { return -1 }
+    $architecture = "$env:PROCESSOR_ARCHITECTURE $env:PROCESSOR_ARCHITEW6432"
+    if ($architecture -notmatch '(?i)AMD64|x86_64') {
+        Write-Host '[xianyu] Bundled WSL MSI is x64-only; using the network update channel.' -ForegroundColor Yellow
+        return -1
+    }
+
+    Write-Host "[xianyu] Silently installing bundled WSL package: $([IO.Path]::GetFileName($msiPath))" -ForegroundColor Cyan
+    $arguments = @('/i', (Quote-Argument $msiPath), '/qn', '/norestart')
+    try {
+        $process = Start-Process -FilePath 'msiexec.exe' -ArgumentList $arguments -WindowStyle Hidden -Wait -PassThru
+        $exitCode = $process.ExitCode
+        if ($exitCode -eq 0) {
+            Write-Host '[xianyu] Bundled WSL package installed.' -ForegroundColor Green
+            return 0
+        }
+        if ($exitCode -eq 1638) {
+            Write-Host '[xianyu] Another WSL MSI version is already installed; continuing with it.' -ForegroundColor Cyan
+            return 0
+        }
+        if ($exitCode -eq 3010) {
+            Write-Host '[xianyu] The WSL package installed successfully, but Windows must restart before setup can continue.' -ForegroundColor Yellow
+            return 3010
+        }
+        Write-Host "[xianyu] Bundled WSL package failed with exit code $exitCode; using the network update channel." -ForegroundColor Yellow
+        return $exitCode
+    } catch {
+        Write-Host "[xianyu] Could not start the bundled WSL package: $($_.Exception.Message); using the network update channel." -ForegroundColor Yellow
+        return -1
+    }
+}
+
+function Update-WslKernel {
+    # Docker Desktop can show its own blocking "WSL needs updating" dialog if
+    # the installer continues after a failed or incomplete update. Prefer the
+    # bundled Microsoft MSI in an offline package. If it is absent, try the
+    # web-download path first and then the normal update path for older inbox
+    # versions.
+    $bundledExitCode = Install-BundledWslMsi
+    if ($bundledExitCode -eq 0) { return }
+    if ($bundledExitCode -eq 3010) { exit 3010 }
+
+    $attempts = @()
+    $attempts += ,@('--update', '--web-download')
+    $attempts += ,@('--update')
+
+    foreach ($arguments in $attempts) {
+        $label = if ($arguments -contains '--web-download') { 'Updating WSL components through the official web channel...' } else { 'Updating WSL components...' }
+        $exitCode = Invoke-WslCommand $arguments $label
+        if ($exitCode -eq 0) {
+            Write-Host '[xianyu] WSL component update completed.' -ForegroundColor Green
+            return
+        }
+        if ($arguments -contains '--web-download') {
+            Write-Host "[xianyu] Web update failed with exit code $exitCode; trying the system update channel." -ForegroundColor Yellow
+        }
+    }
+
+    Fail 'WSL component update failed. Setup is paused to prevent Docker Desktop from showing WSL needs updating. Check the network and reopen the installer.' 24
+}
+
 function Set-WslgDisabled([string]$ProfilePath) {
     $profileRoot = [IO.Path]::GetFullPath($ProfilePath).TrimEnd('\')
     if (-not (Test-Path -LiteralPath $profileRoot -PathType Container)) {
@@ -182,10 +257,13 @@ if ($restartNeeded) {
 $wsl = Get-Command 'wsl.exe' -ErrorAction SilentlyContinue
 if (-not $wsl) { Fail 'wsl.exe was not found after enabling WSL. Restart Windows and run install.bat again.' 22 }
 
-Write-Host '[xianyu] Updating WSL.' -ForegroundColor Cyan
-& wsl.exe --update
-if ($LASTEXITCODE -ne 0) {
-    Write-Host '[xianyu] WSL update did not complete. Docker Desktop may still offer the update during startup.' -ForegroundColor Yellow
+Update-WslKernel
+
+# Apply the updated kernel before Docker Desktop starts. This also prevents a
+# stale WSL instance from making Docker report that WSL still needs updating.
+ $shutdownExitCode = Invoke-WslCommand @('--shutdown') 'Restarting the WSL runtime...'
+if ($shutdownExitCode -ne 0) {
+    Write-Host "[xianyu] WSL shutdown returned exit code $shutdownExitCode; Docker Desktop will retry the runtime restart." -ForegroundColor Yellow
 }
 
 & wsl.exe --set-default-version 2 | Out-Null

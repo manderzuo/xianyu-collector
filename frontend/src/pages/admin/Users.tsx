@@ -215,6 +215,12 @@ export function Users() {
         </div>
       </div>
 
+      {users.some((user) => user.cloud_mode) && (
+        <div className="rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-700 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-200">
+          当前为云端统一认证模式。云端用户的套餐和到期时间可直接在本页编辑并同步到所有电脑；账号资料仍由统一认证服务统一维护。
+        </div>
+      )}
+
       <div className="vben-card flex flex-col" style={{ height: 'calc(100vh - 280px)', minHeight: '400px' }}>
         <div className="vben-card-header flex-shrink-0 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
           <h2 className="vben-card-title">
@@ -259,6 +265,7 @@ export function Users() {
                 <th>邮箱</th>
                 <th>手机号</th>
                 <th>角色</th>
+                <th>套餐</th>
                 <th>可添加账号数</th>
                 <th>余额</th>
                 <th>到期日</th>
@@ -269,7 +276,7 @@ export function Users() {
             <tbody>
               {users.length === 0 ? (
                 <tr>
-                  <td colSpan={10} className="text-center py-8 text-slate-500 dark:text-slate-400">
+                  <td colSpan={11} className="text-center py-8 text-slate-500 dark:text-slate-400">
                     <div className="flex flex-col items-center gap-2">
                       <UsersIcon className="w-12 h-12 text-slate-300 dark:text-slate-600" />
                       <p>{appliedUsername ? `未找到用户名包含「${appliedUsername}」的用户` : '暂无用户数据'}</p>
@@ -286,6 +293,11 @@ export function Users() {
                     <td>
                       <span className={user.role === 'ADMIN' ? 'badge-warning' : 'badge-gray'}>
                         {roleLabelMap[user.role || (user.is_admin ? 'ADMIN' : 'MEMBER')] || '普通用户'}
+                      </span>
+                    </td>
+                    <td>
+                      <span className={user.plan_code === 'VIP' ? 'badge-warning' : 'badge-gray'}>
+                        {user.plan_code || 'NORMAL'}
                       </span>
                     </td>
                     <td className="text-slate-500 dark:text-slate-400">{user.account_limit ?? '-'}</td>

@@ -27,6 +27,7 @@ export interface AdminUserApiItem {
   role?: UserRole
   status?: UserStatus
   is_admin: boolean
+  cloud_mode?: boolean
   account_limit?: number | null
   plan_code?: string
   plan_expires_at?: string | null
@@ -72,6 +73,7 @@ const mapAdminUser = (user: AdminUserApiItem): User => ({
   role: user.role,
   status: user.status,
   is_admin: user.is_admin,
+  cloud_mode: user.cloud_mode,
   account_limit: user.account_limit,
   plan_code: user.plan_code,
   plan_expires_at: user.plan_expires_at,

@@ -36,12 +36,26 @@ SESSION_MARKERS = (
     # 对运行时而言同样代表当前登录态需要续期，否则会一直重试取 Token。
     "FAIL_SYS_TOKEN_EXOIRED",
     "FAIL_SYS_TOKEN_EXPIRED",
+    # 闲鱼会在 Cookie 看似仍有效、但设备校验或风控票据已经失效时返回
+    # USER_VALIDATE。此时继续用原 Cookie 获取 IM Token 只会无限重试，
+    # 应进入受冷却保护的自动续期流程。
+    "FAIL_SYS_USER_VALIDATE",
+    "FAIL_SYS_ILLEGAL_ACCESS",
+    "FAIL_BIZ_WUA_IS_MACHINE",
+    "WUA_IS_MACHINE",
     "SESSION过期",
     "Token过期",
     "令牌过期",
     "登录态已失效",
     "Cookie失效",
     "未登录",
+)
+
+BROWSER_RECOVERY_MARKERS = (
+    "FAIL_SYS_USER_VALIDATE",
+    "FAIL_SYS_ILLEGAL_ACCESS",
+    "FAIL_BIZ_WUA_IS_MACHINE",
+    "WUA_IS_MACHINE",
 )
 
 
@@ -60,6 +74,12 @@ class CookieRenewalResult:
 def is_session_expired_message(value: str | None) -> bool:
     text = str(value or "").lower()
     return any(marker.lower() in text for marker in SESSION_MARKERS)
+
+
+def requires_browser_recovery_message(value: str | None) -> bool:
+    """设备校验/风控错误无法只靠 Passport 接口刷新来恢复。"""
+    text = str(value or "").lower()
+    return any(marker.lower() in text for marker in BROWSER_RECOVERY_MARKERS)
 
 
 def _headers(cookie_value: str, *, referer: str = "https://www.goofish.com/") -> dict[str, str]:
@@ -135,6 +155,7 @@ class CookieRenewalService:
         username: str = "",
         password: str = "",
         show_browser: bool = False,
+        force_browser: bool = False,
     ) -> CookieRenewalResult:
         original = str(cookie_value or "").strip()
         prefix = f"账号 {account_id}" if account_id else "账号"
@@ -148,7 +169,7 @@ class CookieRenewalService:
             )
 
         api_result = await self._api_renew_with_retry(original, prefix)
-        if api_result["success"]:
+        if api_result["success"] and not force_browser:
             return CookieRenewalResult(
                 success=True,
                 new_cookie=api_result["new_cookie"],
@@ -158,6 +179,9 @@ class CookieRenewalService:
                 response_text=api_result["response_text"],
                 steps=api_result["steps"],
             )
+
+        if force_browser:
+            api_result["steps"].append("检测到设备校验错误，继续执行浏览器续期")
 
         if not allow_browser:
             return CookieRenewalResult(
@@ -488,4 +512,10 @@ class CookieRenewalService:
 
 cookie_renewal_service = CookieRenewalService()
 
-__all__ = ["CookieRenewalResult", "CookieRenewalService", "cookie_renewal_service", "is_session_expired_message"]
+__all__ = [
+    "CookieRenewalResult",
+    "CookieRenewalService",
+    "cookie_renewal_service",
+    "is_session_expired_message",
+    "requires_browser_recovery_message",
+]

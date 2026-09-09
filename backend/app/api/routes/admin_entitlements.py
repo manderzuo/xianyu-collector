@@ -185,7 +185,13 @@ async def get_user_entitlements(target_user_id: int, user=Depends(get_current_us
 async def set_user_plan(target_user_id: int, payload: dict[str, Any] = Body(default_factory=dict), user=Depends(get_current_user), db: AsyncSession = Depends(get_session)):
     actor_id = _require_admin(user)
     if cloud_auth_url():
-        remote = await _cloud_entitlement("set_user_plan", {"user_id": target_user_id, "plan_code": payload.get("plan_code") or payload.get("plan") or "NORMAL", "plan_expires_at": payload.get("plan_expires_at")}, user)
+        remote_payload: dict[str, Any] = {
+            "user_id": target_user_id,
+            "plan_code": payload.get("plan_code") or payload.get("plan") or "NORMAL",
+        }
+        if "plan_expires_at" in payload:
+            remote_payload["plan_expires_at"] = payload.get("plan_expires_at")
+        remote = await _cloud_entitlement("set_user_plan", remote_payload, user)
         return ok({"user_id": target_user_id, "plan_code": remote.get("plan_code"), "plan_expires_at": remote.get("plan_expires_at")}, "用户套餐已更新")
     target = (await db.execute(select(User).where(User.id == target_user_id))).scalar_one_or_none()
     if target is None:

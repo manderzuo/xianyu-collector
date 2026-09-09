@@ -11,6 +11,7 @@ $ProtocolRegistrar = Join-Path $AppRoot 'deploy\register-xianyu-update-protocol.
 $DockerBootstrap = Join-Path $PackageRoot 'resources\docker-bootstrap.ps1'
 $WslBootstrap = Join-Path $PackageRoot 'resources\prepare-wsl.ps1'
 $ClientUpdateApplier = Join-Path $PackageRoot 'scripts\apply-client-update.ps1'
+$FrontendRefreshMarker = Join-Path $AppRoot 'updates\frontend-restart.pending'
 $ErrorHelper = Join-Path $AppRoot 'deploy\windows-error-reporting.ps1'
 if (Test-Path -LiteralPath $ErrorHelper) { . $ErrorHelper }
 $LogPath = ''
@@ -123,8 +124,31 @@ try {
 foreach ($line in $dockerOutput) { Write-Host $line }
 Write-XianyuLog -LogPath $LogPath -Message "docker_compose_up_end exit_code=$dockerExitCode"
 if ($dockerExitCode -ne 0) { throw "Docker Compose could not start the application (exit code $dockerExitCode)." }
+
+if (Test-Path -LiteralPath $FrontendRefreshMarker) {
+    Write-XianyuLog -LogPath $LogPath -Message 'frontend_refresh_start'
+    $refreshPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $refreshOutput = & docker compose --project-directory $AppRoot --env-file $EnvFile -f $ComposeFile up -d --force-recreate --no-build --pull never --no-deps frontend 2>&1
+        $refreshExitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $refreshPreference
+    }
+    foreach ($line in $refreshOutput) { Write-Host $line }
+    if ($refreshExitCode -eq 0) {
+        Remove-Item -LiteralPath $FrontendRefreshMarker -Force -ErrorAction SilentlyContinue
+        Write-XianyuLog -LogPath $LogPath -Message 'frontend_refresh_completed'
+    } else {
+        Write-XianyuLog -LogPath $LogPath -Message "frontend_refresh_failed exit_code=$refreshExitCode"
+    }
+}
+
 $frontendPort = ((Get-Content -LiteralPath $EnvFile | Where-Object { $_ -match '^FRONTEND_PORT=' }) -replace '^FRONTEND_PORT=', '').Trim()
-if ($frontendPort -match '^\d+$') { Start-Process "http://127.0.0.1:$frontendPort" }
+if ($frontendPort -match '^\d+$') {
+    $cacheKey = [Uri]::EscapeDataString("$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())")
+    Start-Process "http://127.0.0.1:$frontendPort/?_xianyu_start=$cacheKey"
+}
 Write-XianyuLog -LogPath $LogPath -Message "startup_completed frontend_port=$frontendPort"
 
 # Start the update check after the existing stack is available. It is a

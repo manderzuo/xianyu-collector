@@ -509,7 +509,7 @@ internal sealed class LauncherForm : Form
         // Compatibility fallback for packages built before the updater EXE was
         // included. The script itself now enters the GUI directly, so this does
         // not create the legacy second PowerShell window.
-        await RunScriptAsync("update.ps1", null, "正在检查更新...");
+        await RunScriptAsync("update.ps1", "-Headless", "正在检查更新...");
     }
 
     private void ChooseInstallPath()

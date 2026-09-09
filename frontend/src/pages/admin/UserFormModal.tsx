@@ -58,6 +58,7 @@ const toUser = (item: AdminUserApiItem): User => ({
   role: item.role,
   status: item.status,
   is_admin: item.is_admin,
+  cloud_mode: item.cloud_mode,
   account_limit: item.account_limit,
   plan_code: item.plan_code,
   plan_expires_at: item.plan_expires_at,
@@ -70,6 +71,7 @@ export function UserFormModal({ initial, onClose, onSaved }: Props) {
   const [saving, setSaving] = useState(false)
 
   const isEditMode = !!initial
+  const isCloudEdit = isEditMode && Boolean(initial?.cloud_mode)
   const statusOptions = useMemo<Array<{ value: UserStatus; label: string }>>(() => {
     const options: Array<{ value: UserStatus; label: string }> = [
       { value: 'ACTIVE', label: '正常' },
@@ -95,32 +97,32 @@ export function UserFormModal({ initial, onClose, onSaved }: Props) {
     const accountLimitText = form.account_limit.trim()
     const accountLimit = accountLimitText === '' ? null : Number(accountLimitText)
 
-    if (!username) {
+    if (!username && !isCloudEdit) {
       addToast({ type: 'warning', message: '请输入用户名' })
       return
     }
 
-    if (email && !/^\S+@\S+\.\S+$/.test(email)) {
+    if (!isCloudEdit && email && !/^\S+@\S+\.\S+$/.test(email)) {
       addToast({ type: 'warning', message: '请输入正确的邮箱地址' })
       return
     }
 
-    if (!isEditMode && !password) {
+    if (!isCloudEdit && !isEditMode && !password) {
       addToast({ type: 'warning', message: '请输入登录密码' })
       return
     }
 
-    if (password && password.length < 6) {
+    if (!isCloudEdit && password && password.length < 6) {
       addToast({ type: 'warning', message: '密码长度不能少于6位' })
       return
     }
 
-    if (password !== confirmPassword) {
+    if (!isCloudEdit && password !== confirmPassword) {
       addToast({ type: 'warning', message: '两次输入的密码不一致' })
       return
     }
 
-    if (accountLimitText && (accountLimit === null || !Number.isInteger(accountLimit) || accountLimit <= 0)) {
+    if (!isCloudEdit && accountLimitText && (accountLimit === null || !Number.isInteger(accountLimit) || accountLimit <= 0)) {
       addToast({ type: 'warning', message: '可添加账号数量必须为正整数' })
       return
     }
@@ -143,10 +145,9 @@ export function UserFormModal({ initial, onClose, onSaved }: Props) {
 
       let result
       if (isEditMode && initial) {
-        const payload: UpdateAdminUserPayload = {
-          ...basePayload,
-          password: password || undefined,
-        }
+        const payload: UpdateAdminUserPayload = isCloudEdit
+          ? { plan_code: form.plan_code, plan_expires_at: expireAtValue }
+          : { ...basePayload, password: password || undefined }
         result = await updateUser(initial.user_id, payload)
       } else {
         const payload: CreateAdminUserPayload = {
@@ -180,6 +181,11 @@ export function UserFormModal({ initial, onClose, onSaved }: Props) {
           </button>
         </div>
         <div className="modal-body">
+          {isCloudEdit && (
+            <div className="mb-4 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-700 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-200">
+              当前为云端模式。账号资料和套餐权限以统一认证服务为准；本窗口仅修改云端套餐和到期时间，并会同步到该用户登录的所有电脑。
+            </div>
+          )}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div className="input-group">
               <label className="input-label">用户名 <span className="text-red-500">*</span></label>
@@ -189,6 +195,7 @@ export function UserFormModal({ initial, onClose, onSaved }: Props) {
                 onChange={(event) => updateField('username', event.target.value)}
                 placeholder="请输入用户名"
                 maxLength={64}
+                disabled={isCloudEdit}
               />
             </div>
             <div className="input-group">
@@ -199,6 +206,7 @@ export function UserFormModal({ initial, onClose, onSaved }: Props) {
                 value={form.email}
                 onChange={(event) => updateField('email', event.target.value)}
                 placeholder="可选，不填写也可以"
+                disabled={isCloudEdit}
               />
             </div>
             <div className="input-group">
@@ -209,6 +217,7 @@ export function UserFormModal({ initial, onClose, onSaved }: Props) {
                 onChange={(event) => updateField('phone', event.target.value)}
                 placeholder="请输入手机号"
                 maxLength={32}
+                disabled={isCloudEdit}
               />
             </div>
             <div className="input-group">
@@ -217,6 +226,7 @@ export function UserFormModal({ initial, onClose, onSaved }: Props) {
                 className="input-ios"
                 value={form.role}
                 onChange={(event) => updateField('role', event.target.value as UserRole)}
+                disabled={isCloudEdit}
               >
                 {roleOptions.map((option) => (
                   <option key={option.value} value={option.value}>{option.label}</option>
@@ -229,6 +239,7 @@ export function UserFormModal({ initial, onClose, onSaved }: Props) {
                 className="input-ios"
                 value={form.status}
                 onChange={(event) => updateField('status', event.target.value as UserStatus)}
+                disabled={isCloudEdit}
               >
                 {statusOptions.map((option) => (
                   <option key={option.value} value={option.value}>{option.label}</option>
@@ -245,6 +256,7 @@ export function UserFormModal({ initial, onClose, onSaved }: Props) {
                 value={form.account_limit}
                 onChange={(event) => updateField('account_limit', event.target.value)}
                 placeholder="留空表示不限制"
+                disabled={isCloudEdit}
               />
             </div>
             <div className="input-group">
@@ -274,6 +286,7 @@ export function UserFormModal({ initial, onClose, onSaved }: Props) {
                 onChange={(event) => updateField('password', event.target.value)}
                 placeholder={isEditMode ? '不填写则不修改' : '请输入登录密码'}
                 maxLength={128}
+                disabled={isCloudEdit}
               />
             </div>
             <div className="input-group sm:col-span-2">
@@ -285,6 +298,7 @@ export function UserFormModal({ initial, onClose, onSaved }: Props) {
                 onChange={(event) => updateField('confirmPassword', event.target.value)}
                 placeholder={isEditMode ? '如填写了新密码，请再次输入' : '请再次输入登录密码'}
                 maxLength={128}
+                disabled={isCloudEdit}
               />
             </div>
           </div>
@@ -293,7 +307,7 @@ export function UserFormModal({ initial, onClose, onSaved }: Props) {
           <button className="btn-ios-secondary" onClick={onClose} disabled={saving}>取消</button>
           <button className="btn-ios-primary" onClick={handleSave} disabled={saving}>
             {saving && <Loader2 className="w-4 h-4 animate-spin" />}
-            {isEditMode ? '保存修改' : '创建用户'}
+            {isCloudEdit ? '保存云端套餐' : isEditMode ? '保存修改' : '创建用户'}
           </button>
         </div>
       </div>

@@ -41,6 +41,15 @@ IM_APP_KEY = "34839810"
 IM_DEVICE_APP_KEY = "444e9908a51d1cb236a27862abc769c9"
 GOOFISH_WS_URL = "wss://wss-goofish.dingtalk.com/"
 WS_APP_KEY = "444e9908a51d1cb236a27862abc769c9"
+RUNTIME_RENEWAL_COOLDOWN_SECONDS = 300.0
+
+
+def _runtime_renewal_due(runtime: "AccountRuntime", now_monotonic: float) -> bool:
+    return (
+        runtime.last_renewal_attempt_monotonic <= 0
+        or now_monotonic - runtime.last_renewal_attempt_monotonic
+        >= RUNTIME_RENEWAL_COOLDOWN_SECONDS
+    )
 
 
 def _parse_cookie(value: str) -> dict[str, str]:
@@ -227,6 +236,7 @@ class AccountRuntime:
     token_mode: str = ""
     pending: dict[str, asyncio.Future] = field(default_factory=dict)
     updated_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    last_renewal_attempt_monotonic: float = 0.0
 
     @property
     def is_connected(self) -> bool:
@@ -606,6 +616,9 @@ class AccountRuntimeManager:
                             }],
                         }))
                         runtime.update("connected")
+                        # 真正完成 IM 握手后才清除续期冷却；这样续期后若仍被
+                        # USER_VALIDATE 拒绝，不会每 5 秒重复打 Passport。
+                        runtime.last_renewal_attempt_monotonic = 0.0
                         retry_delay = 5.0
                         heartbeat_task = asyncio.create_task(
                             self._heartbeat(websocket),
@@ -626,12 +639,24 @@ class AccountRuntimeManager:
                     runtime.websocket = None
                     session_error = is_session_expired_message(str(exc))
                     if session_error:
-                        renewed = await self._renew_runtime_account(runtime, str(exc))
+                        now_monotonic = time.monotonic()
+                        renewal_due = _runtime_renewal_due(runtime, now_monotonic)
+                        renewed = False
+                        if renewal_due:
+                            runtime.last_renewal_attempt_monotonic = now_monotonic
+                            renewed = await self._renew_runtime_account(runtime, str(exc))
+                        else:
+                            remaining = int(
+                                RUNTIME_RENEWAL_COOLDOWN_SECONDS
+                                - (now_monotonic - runtime.last_renewal_attempt_monotonic)
+                            )
+                            runtime.update("expired", f"{str(exc)[:700]}；自动续期将在约 {max(1, remaining)} 秒后重试")
                         if renewed:
                             retry_delay = 5.0
                             continue
                         retry_delay = max(retry_delay, 60.0)
-                        runtime.update("expired", str(exc))
+                        if not runtime.last_error:
+                            runtime.update("expired", str(exc))
                     else:
                         runtime.update("reconnecting", str(exc))
                     logger.warning("账号 %s 长连接断开，将在 %.1f 秒后重试：%s", runtime.account_id, retry_delay, str(exc)[:300])
@@ -667,10 +692,39 @@ class AccountRuntimeManager:
                     force=True,
                     notify_runtime=False,
                     observed_session_expired=True,
+                    recovery_reason=reason,
                 )
                 if result.get("success") and account.cookie:
-                    runtime.cookie_value = str(account.cookie)
+                    renewed_cookie = str(account.cookie)
+                    # Passport 和浏览器均可能返回“续期成功”，但设备风控票据
+                    # 仍不允许获取 IM Token。必须以真实 Token 请求作为最终
+                    # 验收，不能把这种情况继续显示成自动续期成功。
+                    try:
+                        _, _, token_mode, verified_cookie = await _request_token(
+                            renewed_cookie,
+                            int(account.user_id),
+                        )
+                    except Exception as verify_exc:
+                        account.status = "expired"
+                        account.cookie_expire_at = datetime.now(timezone.utc).replace(tzinfo=None)
+                        await session.commit()
+                        runtime.update(
+                            "expired",
+                            f"自动续期后平台仍要求重新验证：{str(verify_exc)[:700]}；请重新扫码登录",
+                        )
+                        logger.warning(
+                            "账号 %s 自动续期验收失败，需要重新扫码：%s",
+                            runtime.account_id,
+                            str(verify_exc)[:500],
+                        )
+                        return False
+                    if verified_cookie and verified_cookie != renewed_cookie:
+                        account.cookie = verified_cookie
+                        await session.commit()
+                        renewed_cookie = verified_cookie
+                    runtime.cookie_value = renewed_cookie
                     runtime.user_id = int(account.user_id)
+                    runtime.token_mode = token_mode
                     runtime.update("reconnecting", "登录态自动续期成功，正在重新连接")
                     logger.info("账号 %s 已自动续期并准备重连", runtime.account_id)
                     return True

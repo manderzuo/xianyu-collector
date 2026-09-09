@@ -18,6 +18,8 @@ from common.config import settings
 from common.db.session import get_session
 from common.models import Account, AccountCookie, QrLoginSession
 from common.services.account_identity import extract_account_nickname, is_generated_account_name
+from common.services.cookie_renewal import cookie_renewal_service
+from common.services.goofish_mtop import parse_cookie_string
 from backend.app.services.qr_login import qr_login_manager
 
 router = APIRouter(prefix="/api/v1/qr-login", tags=["真实扫码登录"])
@@ -155,6 +157,19 @@ async def get_qr_status(
                 cookie_value = cookies["cookies"]
                 unb = cookies.get("unb") or None
                 nickname = str(cookies.get("nickname") or "").strip() or extract_account_nickname(cookie_value)
+                # 二维码确认只代表 Passport 已登录。继续执行 hasLogin、
+                # silentHasLogin 和 setLoginSettings，补齐长登录 Cookie 后再
+                # 入库和启动 IM，避免新扫码账号马上出现 USER_VALIDATE 离线。
+                finalization = await cookie_renewal_service.renew(
+                    cookie_value,
+                    f"qr:{unb or session_id[:8]}",
+                    allow_browser=False,
+                )
+                if finalization.new_cookie:
+                    cookie_value = finalization.new_cookie
+                refreshed_cookies = parse_cookie_string(cookie_value)
+                unb = unb or refreshed_cookies.get("unb") or refreshed_cookies.get("munb") or None
+                nickname = nickname or extract_account_nickname(cookie_value)
                 login_expire_at = _now() + timedelta(days=30)
                 existing = None
                 if unb:
@@ -202,7 +217,17 @@ async def get_qr_status(
                     finalize_quota(reservation)
                     await db.commit()
                     runtime = await _notify_account_runtime(account, cookie_value, _uid(user), is_new)
-                    return ok({**_serialize_session(item, include_qr=False), "account_info": {"account_id": account.id, "is_new_account": is_new}, "runtime": runtime}, "扫码登录成功")
+                    return ok({
+                        **_serialize_session(item, include_qr=False),
+                        "account_info": {"account_id": account.id, "is_new_account": is_new},
+                        "runtime": runtime,
+                        "cookie_finalization": {
+                            "success": finalization.success,
+                            "method": finalization.method,
+                            "message": finalization.message,
+                            "updated_cookie_names": finalization.updated_cookie_names,
+                        },
+                    }, "扫码登录成功")
 
         await db.commit()
         await db.refresh(item)

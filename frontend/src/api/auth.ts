@@ -6,6 +6,7 @@ const AUTH_PREFIX = '/api/v1/auth'
 const SYSTEM_PREFIX = '/api/v1/system-settings'
 const CAPTCHA_PREFIX = '/api/v1/captcha'
 const GEETEST_PREFIX = '/api/v1/geetest'
+const CLOUD_AUTH_OPERATION_TIMEOUT = 180000
 
 // 缓存公共设置，避免重复请求
 let publicSettingsCache: Record<string, unknown> | null = null
@@ -51,7 +52,7 @@ export const login = async (data: LoginRequest): Promise<LoginResponse> => {
     role?: string
     plan_code?: string
     entitlements?: import('@/types').UserEntitlements
-  }>>(`${AUTH_PREFIX}/login`, data)
+  }>>(`${AUTH_PREFIX}/login`, data, { timeout: CLOUD_AUTH_OPERATION_TIMEOUT })
   const payload = result.data || {}
   const token = payload.token || payload.access_token
   const user = payload.user
@@ -171,7 +172,7 @@ export const register = (data: {
     invite_code: data.invite_code,
     password: data.password,
     ...(data.session_id ? { session_id: data.session_id } : {}),
-  })
+  }, { timeout: CLOUD_AUTH_OPERATION_TIMEOUT })
 }
 
 // ==================== 极验滑动验证码 ====================

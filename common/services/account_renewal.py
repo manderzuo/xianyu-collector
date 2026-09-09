@@ -18,6 +18,7 @@ from common.services.cookie_renewal import (
     CookieRenewalResult,
     cookie_renewal_service,
     is_session_expired_message,
+    requires_browser_recovery_message,
 )
 
 logger = logging.getLogger("xr.account_renewal")
@@ -52,6 +53,7 @@ async def renew_account_session(
     force: bool = False,
     notify_runtime: bool = True,
     observed_session_expired: bool = False,
+    recovery_reason: str = "",
 ) -> dict[str, Any]:
     """续期一个账号并把结果写回数据库。
 
@@ -92,6 +94,7 @@ async def renew_account_session(
         username=str(account_settings.get("username") or ""),
         password=str(account_settings.get("login_password") or ""),
         show_browser=bool(account_settings.get("show_browser")),
+        force_browser=requires_browser_recovery_message(recovery_reason),
     )
     new_cookie = str(result.new_cookie or old_cookie).strip()
     cookie_changed = bool(new_cookie and new_cookie != old_cookie)

@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import asyncio
 import logging
+import time
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -11,6 +12,13 @@ import httpx
 
 logger = logging.getLogger("xr.cloud_auth")
 MAX_DOWNLOAD_BYTES = 16 * 1024 * 1024
+DEFAULT_CLOUD_AUTH_ATTEMPTS = 5
+DEFAULT_CLOUD_AUTH_CONNECT_TIMEOUT = 20.0
+DEFAULT_CLOUD_AUTH_READ_TIMEOUT = 60.0
+DEFAULT_CLOUD_AUTH_WRITE_TIMEOUT = 30.0
+DEFAULT_CLOUD_AUTH_POOL_TIMEOUT = 20.0
+DEFAULT_CLOUD_AUTH_RETRY_BACKOFF = 2.0
+DEFAULT_CLOUD_AUTH_MAX_RETRY_BACKOFF = 10.0
 
 
 class CloudAuthError(RuntimeError):
@@ -54,37 +62,132 @@ def _validated_cloud_auth_url() -> str:
     raise CloudAuthError("insecure_configuration", "云端账号服务必须使用 HTTPS，请检查 XIANYU_CLOUD_AUTH_URL", 503)
 
 
+def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        value = int(os.getenv(name, str(default)).strip())
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(value, maximum))
+
+
+def _env_float(name: str, default: float, minimum: float, maximum: float) -> float:
+    try:
+        value = float(os.getenv(name, str(default)).strip())
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(value, maximum))
+
+
+def _cloud_auth_timeout(*, download: bool = False) -> httpx.Timeout:
+    read_default = 90.0 if download else DEFAULT_CLOUD_AUTH_READ_TIMEOUT
+    return httpx.Timeout(
+        timeout=_env_float("XIANYU_CLOUD_AUTH_READ_TIMEOUT", read_default, 5.0, 300.0),
+        connect=_env_float(
+            "XIANYU_CLOUD_AUTH_CONNECT_TIMEOUT",
+            DEFAULT_CLOUD_AUTH_CONNECT_TIMEOUT,
+            5.0,
+            120.0,
+        ),
+        write=_env_float(
+            "XIANYU_CLOUD_AUTH_WRITE_TIMEOUT",
+            DEFAULT_CLOUD_AUTH_WRITE_TIMEOUT,
+            5.0,
+            120.0,
+        ),
+        pool=_env_float(
+            "XIANYU_CLOUD_AUTH_POOL_TIMEOUT",
+            DEFAULT_CLOUD_AUTH_POOL_TIMEOUT,
+            5.0,
+            120.0,
+        ),
+    )
+
+
+def _retry_delay(attempt: int) -> float:
+    base = _env_float(
+        "XIANYU_CLOUD_AUTH_RETRY_BACKOFF",
+        DEFAULT_CLOUD_AUTH_RETRY_BACKOFF,
+        0.5,
+        30.0,
+    )
+    maximum = _env_float(
+        "XIANYU_CLOUD_AUTH_MAX_RETRY_BACKOFF",
+        DEFAULT_CLOUD_AUTH_MAX_RETRY_BACKOFF,
+        1.0,
+        60.0,
+    )
+    return min(maximum, base * (2 ** max(attempt - 1, 0)))
+
+
+def _connection_error_message(error: httpx.HTTPError | None, *, download: bool = False) -> str:
+    if isinstance(error, httpx.ConnectTimeout):
+        return "连接云端账号服务超时，系统已多次等待，请检查当前网络或代理设置"
+    if isinstance(error, httpx.ReadTimeout):
+        return "云端账号服务响应较慢并超时，系统已多次等待，请稍后重试"
+    if isinstance(error, httpx.ConnectError):
+        return "连接云端账号服务异常，可能是网络或代理握手失败，请检查网络后重试"
+    return "无法连接云端账号服务，系统已多次重试，请检查 Docker 网络或 DNS 设置"
+
+
+async def _post_with_retries(
+    endpoint: str,
+    payload: dict[str, Any],
+    token: str,
+    action: str,
+    *,
+    download: bool = False,
+) -> httpx.Response:
+    attempts = _env_int("XIANYU_CLOUD_AUTH_MAX_ATTEMPTS", DEFAULT_CLOUD_AUTH_ATTEMPTS, 1, 8)
+    timeout = _cloud_auth_timeout(download=download)
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    last_error: httpx.HTTPError | None = None
+    started = time.monotonic()
+
+    for attempt in range(1, attempts + 1):
+        attempt_started = time.monotonic()
+        try:
+            async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+                response = await client.post(endpoint, json=payload, headers=headers)
+            logger.info(
+                "cloud auth response action=%s attempt=%s status=%s elapsed_ms=%s",
+                action,
+                attempt,
+                response.status_code,
+                int((time.monotonic() - attempt_started) * 1000),
+            )
+            return response
+        except httpx.HTTPError as exc:
+            last_error = exc
+            logger.warning(
+                "cloud auth request failed action=%s attempt=%s/%s elapsed_ms=%s error_type=%s error=%s",
+                action,
+                attempt,
+                attempts,
+                int((time.monotonic() - attempt_started) * 1000),
+                type(exc).__name__,
+                str(exc)[:300],
+            )
+            if attempt >= attempts:
+                break
+            delay = _retry_delay(attempt)
+            logger.info(
+                "cloud auth retry scheduled action=%s next_attempt=%s delay_seconds=%s elapsed_ms=%s",
+                action,
+                attempt + 1,
+                delay,
+                int((time.monotonic() - started) * 1000),
+            )
+            await asyncio.sleep(delay)
+
+    raise CloudAuthError("connection_failed", _connection_error_message(last_error, download=download), 503) from last_error
+
+
 async def cloud_auth_request(action: str, payload: dict[str, Any], token: str = "") -> dict[str, Any] | None:
     base = _validated_cloud_auth_url()
     if not base:
         return None
     endpoint = f"{base}/api/xianyu/auth/{action}"
-    response: httpx.Response | None = None
-    last_error: httpx.HTTPError | None = None
-    for attempt in range(1, 4):
-        try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(15, connect=8), follow_redirects=False) as client:
-                headers = {"Authorization": f"Bearer {token}"} if token else {}
-                response = await client.post(endpoint, json=payload, headers=headers)
-            break
-        except httpx.HTTPError as exc:
-            last_error = exc
-            logger.warning(
-                "cloud auth request failed action=%s attempt=%s error_type=%s error=%s",
-                action,
-                attempt,
-                type(exc).__name__,
-                str(exc)[:300],
-            )
-            if attempt < 3:
-                await asyncio.sleep(0.5 * attempt)
-    if response is None:
-        message = "无法连接云端账号服务，请检查 Docker 网络或 DNS 设置"
-        if isinstance(last_error, httpx.ConnectTimeout):
-            message = "连接云端账号服务超时，请检查当前网络或代理设置"
-        elif isinstance(last_error, httpx.ReadTimeout):
-            message = "云端账号服务响应超时，请稍后重试"
-        raise CloudAuthError("connection_failed", message, 503) from last_error
+    response = await _post_with_retries(endpoint, payload, token, action)
     try:
         body = response.json()
     except ValueError as exc:
@@ -108,11 +211,7 @@ async def cloud_auth_download(action: str, payload: dict[str, Any], token: str =
     if not base:
         raise CloudAuthError("not_configured", "云端账号服务未配置", 503)
     endpoint = f"{base}/api/xianyu/auth/{action}"
-    try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(45, connect=8), follow_redirects=False) as client:
-            response = await client.post(endpoint, json=payload, headers={"Authorization": f"Bearer {token}"})
-    except httpx.HTTPError as exc:
-        raise CloudAuthError("connection_failed", "无法连接云端账号服务，请稍后重试", 503) from exc
+    response = await _post_with_retries(endpoint, payload, token, action, download=True)
     content_type = response.headers.get("content-type", "")
     if not response.is_success or "application/zip" not in content_type:
         try:

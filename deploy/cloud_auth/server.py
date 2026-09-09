@@ -177,11 +177,12 @@ class Handler(BaseHTTPRequestHandler):
                     target,
                     plan_code=body.get('plan_code') if action == 'set_user_plan' else None,
                     plan_expires_at=body.get('plan_expires_at') if action == 'set_user_plan' else None,
+                    clear_plan_expires_at=action == 'set_user_plan' and 'plan_expires_at' in body,
                     feature_key=str(feature_key) if feature_key else None,
                     feature=body.get('feature') or {},
                     delete_feature=action == 'delete_user_feature',
                 )
-                return self.reply(200, {'ok': True, **result})
+                return self.reply(200, {'ok': True, 'user': store.get_user(target), **result})
             return self.reply(404, {'ok': False, 'message': '接口不存在'})
         except AuthError as exc:
             logger.info("auth request rejected request_id=%s path=%s code=%s", self.request_id, path, exc.code)

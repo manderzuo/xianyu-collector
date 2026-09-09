@@ -125,10 +125,42 @@ if (Test-Path -LiteralPath $RdpCleanup) {
 }
 try { & $DockerBootstrap -Install -NonInteractive } catch { Fail $_.Exception.Message }
 if (-not (Get-Command docker -ErrorAction SilentlyContinue)) { Fail 'Docker CLI is unavailable. Start Docker Desktop and run install.bat again.' }
-docker compose version *> $null
-if ($LASTEXITCODE -ne 0) { Fail 'Docker Compose is unavailable. Update Docker Desktop and try again.' }
-docker info *> $null
-if ($LASTEXITCODE -ne 0) { Fail 'Docker Desktop is not running. Start it and run install.bat again.' }
+$composeReady = $false
+$composeLastError = ''
+try {
+    $composeOutput = @(& docker compose version 2>&1)
+    $composeExitCode = $LASTEXITCODE
+    $composeLastError = (($composeOutput | ForEach-Object { [string]$_ }) -join ' ').Trim()
+    $composeReady = $composeExitCode -eq 0
+} catch {
+    $composeLastError = $_.Exception.Message
+}
+if (-not $composeReady) {
+    if (-not $composeLastError) { $composeLastError = 'Docker Compose returned no diagnostic text.' }
+    if ($composeLastError.Length -gt 500) { $composeLastError = $composeLastError.Substring(0, 500) + '...' }
+    Fail "Docker Compose is unavailable: $composeLastError"
+}
+$dockerReady = $false
+$dockerLastError = ''
+for ($dockerAttempt = 1; $dockerAttempt -le 30; $dockerAttempt++) {
+    try {
+        $dockerInfoOutput = @(& docker info 2>&1)
+        $dockerExitCode = $LASTEXITCODE
+        $dockerLastError = (($dockerInfoOutput | ForEach-Object { [string]$_ }) -join ' ').Trim()
+        if ($dockerExitCode -eq 0) {
+            $dockerReady = $true
+            break
+        }
+    } catch {
+        $dockerLastError = $_.Exception.Message
+    }
+    if ($dockerAttempt -lt 30) { Start-Sleep -Seconds 2 }
+}
+if (-not $dockerReady) {
+    if (-not $dockerLastError) { $dockerLastError = 'Docker returned no diagnostic text.' }
+    if ($dockerLastError.Length -gt 500) { $dockerLastError = $dockerLastError.Substring(0, 500) + '...' }
+    Fail "Docker Desktop engine is not ready after 60 seconds: $dockerLastError"
+}
 
 $newEnv = -not (Test-Path -LiteralPath $EnvFile)
 if ($newEnv) {
@@ -169,7 +201,12 @@ if ($useOfflineImages) {
     }
     Write-Host '[xianyu] Offline image bundle detected. Docker image downloads will be skipped.' -ForegroundColor Cyan
     & $OfflineImageImporter -PackageRoot $PackageRoot
-    if ($LASTEXITCODE -ne 0) { Fail "Offline image import failed with exit code $LASTEXITCODE." }
+    $offlineImportSucceeded = $?
+    $offlineImportExitCode = $LASTEXITCODE
+    if (-not $offlineImportSucceeded) {
+        if ($null -eq $offlineImportExitCode) { $offlineImportExitCode = 'unknown' }
+        Fail "Offline image import failed with exit code $offlineImportExitCode."
+    }
     $offlineManifest = Get-Content -LiteralPath $OfflineImageManifest -Raw | ConvertFrom-Json
     if ([string]::IsNullOrWhiteSpace("$($offlineManifest.image_tag)")) {
         Fail 'Offline image manifest does not contain image_tag.'

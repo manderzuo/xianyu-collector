@@ -12,6 +12,7 @@ $ProtocolRegistrar = Join-Path $PSScriptRoot 'register-xianyu-update-protocol.ps
 $UpdateChecker = Join-Path $PSScriptRoot 'check-xianyu-update.ps1'
 $UpdaterExecutable = Join-Path $PackageRoot 'xianyu-updater.exe'
 $ChineseUpdaterExecutable = Join-Path $PackageRoot ((-join ([char[]](0x66f4, 0x65b0, 0x95f2, 0x9c7c, 0x7ba1, 0x7406, 0x7cfb, 0x7edf))) + '.exe')
+$FrontendRefreshMarker = Join-Path $ProjectRoot 'updates\frontend-restart.pending'
 
 function Remove-StaleXianyuShortcuts {
     param([string]$KeepPath)
@@ -61,6 +62,11 @@ if (Test-Path -LiteralPath $ProtocolRegistrar) {
 
 docker compose --project-directory $ProjectRoot --env-file $EnvFile -f $ComposeFile up -d
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+if (Test-Path -LiteralPath $FrontendRefreshMarker) {
+    docker compose --project-directory $ProjectRoot --env-file $EnvFile -f $ComposeFile up -d --force-recreate --no-build --pull never --no-deps frontend
+    if ($LASTEXITCODE -eq 0) { Remove-Item -LiteralPath $FrontendRefreshMarker -Force -ErrorAction SilentlyContinue }
+}
 
 $frontendPort = ((Get-Content -LiteralPath $EnvFile | Where-Object { $_ -match '^FRONTEND_PORT=' }) -replace '^FRONTEND_PORT=', '').Trim()
 if ($frontendPort -match '^\d+$') {

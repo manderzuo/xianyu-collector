@@ -104,3 +104,7 @@ try {
 } finally {
     if (Test-Path -LiteralPath $tempRoot) { Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue }
 }
+
+# Make the success status explicit for callers that invoke this script with
+# the PowerShell call operator and inspect LASTEXITCODE afterwards.
+exit 0

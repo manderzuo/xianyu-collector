@@ -6,8 +6,10 @@ param(
     [string]$ImageSourceNamespace = 'manderzuo/xianyu-collector',
     [string]$ImageSourceTag = '',
     [string]$OfflineTempDirectory = '',
+    [string]$BundledWslMsiPath = '',
     [string]$VersionOverride = '',
-    [string]$BuildIdOverride = ''
+    [string]$BuildIdOverride = '',
+    [switch]$DeferRuntimeImageUpdate
 )
 
 $ErrorActionPreference = 'Stop'
@@ -91,12 +93,29 @@ Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows-installer-docker.ps1') 
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows-installer-wsl.ps1') -Destination (Join-Path $ResourcesRoot 'prepare-wsl.ps1') -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows-installer-cleanup-rdp.ps1') -Destination (Join-Path $ResourcesRoot 'cleanup-rdp.ps1') -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'import-offline-image-bundle.ps1') -Destination (Join-Path $ResourcesRoot 'import-offline-image-bundle.ps1') -Force
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows-installer-repair-offline-install.ps1') -Destination (Join-Path $ResourcesRoot 'repair-offline-install.ps1') -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows-reset-xianyu-docker.ps1') -Destination (Join-Path $ResourcesRoot 'reset-xianyu-docker.ps1') -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows-installer-install.bat') -Destination (Join-Path $OutputDirectory 'install.bat') -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows-installer-start.bat') -Destination (Join-Path $OutputDirectory 'start.bat') -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows-installer-stop.bat') -Destination (Join-Path $OutputDirectory 'stop.bat') -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows-installer-diagnostics.bat') -Destination (Join-Path $OutputDirectory 'diagnostics.bat') -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows-installer-update.bat') -Destination (Join-Path $OutputDirectory 'update.bat') -Force
+$bundledWslMsi = ''
+$bundledWslMsiSha256 = ''
+$bundledWslMsiBytes = 0
+if (-not [string]::IsNullOrWhiteSpace($BundledWslMsiPath)) {
+    $resolvedWslMsi = (Resolve-Path -LiteralPath $BundledWslMsiPath -ErrorAction Stop).Path
+    if ([IO.Path]::GetExtension($resolvedWslMsi) -ine '.msi') {
+        throw "BundledWslMsiPath must point to an MSI file: $resolvedWslMsi"
+    }
+    $wslResourceDirectory = Join-Path $ResourcesRoot 'wsl'
+    New-Item -ItemType Directory -Path $wslResourceDirectory -Force | Out-Null
+    Copy-Item -LiteralPath $resolvedWslMsi -Destination (Join-Path $wslResourceDirectory 'wsl-update-x64.msi') -Force
+    $bundledWslMsi = 'resources/wsl/wsl-update-x64.msi'
+    $bundledWslMsiSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $resolvedWslMsi).Hash.ToLowerInvariant()
+    $bundledWslMsiBytes = (Get-Item -LiteralPath $resolvedWslMsi).Length
+    Write-Host "[xianyu] Bundled WSL MSI: $resolvedWslMsi" -ForegroundColor Cyan
+}
 $iconSource = Join-Path $SourceRoot 'assets\xianyu-launcher.ico'
 if (Test-Path -LiteralPath $iconSource) {
     Copy-Item -LiteralPath $iconSource -Destination (Join-Path $OutputDirectory 'xianyu-launcher.ico') -Force
@@ -142,10 +161,30 @@ Set-Content -LiteralPath (Join-Path $AppRoot 'VERSION.txt') -Value $version -Enc
 if ($buildId) {
     Set-Content -LiteralPath (Join-Path $AppRoot 'BUILD_ID.txt') -Value $buildId -Encoding UTF8
 }
+if ($DeferRuntimeImageUpdate) {
+    $runtimeMarker = [ordered]@{
+        protocol = 1
+        version = $version
+        build_id = $buildId
+        reason = 'client-first-runtime-sync'
+        created_at = [DateTime]::UtcNow.ToString('o')
+    }
+    $runtimeMarker | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $AppRoot 'runtime-sync.pending.json') -Encoding UTF8
+}
 $launcherBuilder = Join-Path $PSScriptRoot 'build-launcher.ps1'
 if (Test-Path -LiteralPath $launcherBuilder) {
     & $launcherBuilder -OutputDirectory $OutputDirectory -Force
     if ($LASTEXITCODE -ne 0) { throw "Launcher build failed with exit code $LASTEXITCODE." }
+}
+$launcherSha256 = $null
+$launcherBinary = Join-Path $OutputDirectory 'xianyu-launcher.exe'
+if (Test-Path -LiteralPath $launcherBinary -PathType Leaf) {
+    $launcherSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $launcherBinary).Hash.ToLowerInvariant()
+}
+$frontendIndexSha256 = $null
+$frontendIndex = Join-Path $AppRoot 'frontend\dist\index.html'
+if (Test-Path -LiteralPath $frontendIndex -PathType Leaf) {
+    $frontendIndexSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $frontendIndex).Hash.ToLowerInvariant()
 }
 $manifest = [ordered]@{
     product = 'xianyu-rewrite'
@@ -157,6 +196,8 @@ $manifest = [ordered]@{
     start_entry = 'start.bat'
     stop_entry = 'stop.bat'
     launcher_entry = ((-join ([char[]](0x95f2, 0x9c7c, 0x7ba1, 0x7406, 0x7cfb, 0x7edf))) + '.exe')
+    launcher_sha256 = $launcherSha256
+    frontend_index_sha256 = $frontendIndexSha256
     installer_entry = ((-join ([char[]](0x5b89, 0x88c5, 0x95f2, 0x9c7c, 0x7ba1, 0x7406, 0x7cfb, 0x7edf))) + '.exe')
     launcher_aliases = @('xianyu-launcher.exe', 'xianyu-installer.exe', 'xianyu-updater.exe', 'xianyu-stopper.exe', 'xianyu-diagnostics.exe')
     maintenance_entries = @(
@@ -167,6 +208,10 @@ $manifest = [ordered]@{
     data_location = 'Docker named volumes managed by the generated compose project'
     offline_images = [bool]$IncludeDockerImages
     offline_image_manifest = if ($IncludeDockerImages) { 'resources/images/offline-manifest.json' } else { $null }
+    runtime_images_deferred = [bool]$DeferRuntimeImageUpdate
+    bundled_wsl_msi = if ($bundledWslMsi) { $bundledWslMsi } else { $null }
+    bundled_wsl_msi_sha256 = if ($bundledWslMsiSha256) { $bundledWslMsiSha256 } else { $null }
+    bundled_wsl_msi_bytes = if ($bundledWslMsi) { $bundledWslMsiBytes } else { $null }
     requires = if ($IncludeDockerImages) {
         @('Windows 10 or later', 'Docker Desktop with Linux containers', 'At least 5 GB of free disk space for image import and Docker volumes')
     } else {
@@ -220,6 +265,7 @@ You may also place your installer at resources\DockerDesktopInstaller.exe before
 If Docker Desktop is missing, the GUI reports that it must be installed before continuing. The target computer needs administrator permission for Docker Desktop installation.
 
 An offline package may include all application, MySQL and Redis images. When resources\images\offline-manifest.json is present, install.bat imports those images locally and does not download Docker images.
+When resources\wsl\wsl-update-x64.msi is present, the installer silently installs the bundled Microsoft WSL package before Docker Desktop starts; this avoids Docker's own WSL update dialog on a new computer.
 Without an offline image bundle, first startup builds the four application images and downloads base images. This can take several minutes.
 After installation, __LAUNCHER__ starts the existing containers without deleting data.
 __UPDATER__, __STOPPER__ and __DIAGNOSTICS__ are GUI
@@ -227,10 +273,11 @@ maintenance shortcuts; the original update.bat, stop.bat and diagnostics.bat rem
 as compatibility fallbacks.
 Each launcher start checks the Tencent-hosted release
 manifest. If a newer image release is available, the window shows the release notes and
-asks for confirmation, then downloads only changed Tencent-hosted image archives, verifies
-their SHA-256 values, imports them and restarts the services while preserving Docker
-volumes. The detailed update log is saved at app\logs\update.log, including the manifest
-response, download and Docker command output, exit codes and post-failure container status.
+asks for confirmation, then compares each service's remote Docker digest with the local
+image and pulls only changed services. Docker reuses existing layers, and the updater
+restarts services only after verifying the pulled image IDs and the running containers.
+The detailed update log is saved at app\logs\update.log, including the manifest response,
+digest comparison, pull output, exit codes and post-failure container status.
 If the release also contains a signed client maintenance package, the updater verifies its
 SHA-256 value and stages it for safe replacement at the next launcher start. This updates
 the GUI and maintenance scripts without replacing files in the middle of a running update.

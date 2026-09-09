@@ -62,7 +62,7 @@ async def get_current_user(
                 # business database so quota checks use the same authority.
                 if remote_user.get("plan_code"):
                     record.plan_code = str(remote_user.get("plan_code") or "NORMAL").upper()
-                if remote_user.get("plan_expires_at") is not None:
+                if "plan_expires_at" in remote_user:
                     from datetime import datetime
                     try:
                         record.plan_expires_at = datetime.fromisoformat(str(remote_user.get("plan_expires_at")).replace("Z", "+00:00")).replace(tzinfo=None) if remote_user.get("plan_expires_at") else None

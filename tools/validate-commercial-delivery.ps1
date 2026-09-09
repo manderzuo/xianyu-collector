@@ -29,7 +29,7 @@ foreach ($path in @(
     'docker-compose.yml', 'VERSION.txt', 'deploy\update-xianyu-gui.ps1',
     'deploy\update-signing-public-key.xml', 'tools\build-windows-installer.ps1',
     'tools\build-offline-image-bundle.ps1', 'tools\import-offline-image-bundle.ps1',
-    'tools\windows-installer-apply-client-update.ps1', 'tools\windows-installer-cleanup-rdp.ps1', 'tools\windows-reset-xianyu-docker.ps1',
+    'tools\windows-installer-apply-client-update.ps1', 'tools\windows-installer-cleanup-rdp.ps1', 'tools\windows-installer-repair-offline-install.ps1', 'tools\windows-reset-xianyu-docker.ps1',
     '.github\workflows\build-and-publish.yml', '.github\workflows\deploy-cloud-auth.yml'
 )) { Require-Path (Join-Path $ProjectRoot $path) $path }
 

@@ -11,6 +11,7 @@
     section{background:#fff;border:1px solid #dbe4ef;border-radius:16px;padding:24px;margin:18px 0;box-shadow:0 8px 24px #1e3a8a0b}
     input,select,button{font:inherit;padding:10px 12px;border:1px solid #cbd5e1;border-radius:9px;margin:4px 6px 4px 0}
     input,select{background:#fff;color:#172033}button{cursor:pointer;background:#2563eb;color:#fff;border-color:#2563eb}button.secondary{background:#fff;color:#2563eb}button.danger{background:#fff;color:#dc2626;border-color:#fecaca}
+    .plan-code{min-width:120px;margin:0 6px 0 0}.plan-expires{min-width:205px;margin:0 6px 0 0}.plan-save{margin:0}.notice{padding:12px 14px;border-radius:10px;background:#eff6ff;color:#1d4ed8;font-size:14px}
     .toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:4px}.muted{color:#64748b}.message{min-height:24px;color:#b45309}
     table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:12px 10px;border-bottom:1px solid #edf1f6;vertical-align:top}th{color:#64748b;font-weight:600;background:#f8fafc}
     .status{display:inline-block;padding:3px 8px;border-radius:999px;background:#e2e8f0;color:#475569;font-size:13px}.status.pending{background:#fef3c7;color:#92400e}.status.resolved{background:#dcfce7;color:#166534}.status.processing{background:#dbeafe;color:#1d4ed8}.status.ignored{background:#e2e8f0;color:#475569}
@@ -35,6 +36,11 @@
       <div class="table-wrap"><table><thead><tr><th>用户名</th><th>姓名</th><th>状态</th><th>注册时间</th><th>操作</th></tr></thead><tbody id="rows"></tbody></table></div>
     </section>
     <section>
+      <div class="toolbar"><h2 style="margin-right:auto">用户套餐与权限</h2><button id="reloadPlans" class="secondary">刷新用户</button></div>
+      <div class="notice">云端模式以统一认证服务为唯一权限来源。这里修改的是云端用户的套餐和到期时间，会同步到该用户登录的所有电脑；不会写入某一台电脑的本地用户表。</div>
+      <div class="table-wrap"><table><thead><tr><th>用户名</th><th>状态</th><th>当前套餐</th><th>套餐到期时间</th><th>操作</th></tr></thead><tbody id="planRows"></tbody></table></div>
+    </section>
+    <section>
       <div class="toolbar"><h2 style="margin-right:auto">客户端错误日志</h2><button id="reloadDiagnostics" class="secondary">刷新日志</button></div>
       <div id="stats" class="stats"></div>
       <div class="toolbar">
@@ -50,7 +56,7 @@
 <script>
   let token='';
   const el=id=>document.getElementById(id);
-  const labels={pending:'待处理',processing:'处理中',resolved:'已解决',ignored:'已忽略'};
+  const labels={pending:'待审核',approved:'已通过',rejected:'已拒绝',disabled:'已停用',processing:'处理中',resolved:'已解决',ignored:'已忽略'};
   const severityLabels={critical:'严重',error:'错误',warning:'警告',info:'信息'};
   const diagnosticPageSize=50;let diagnosticPage=0;
   async function api(action,body={}){
@@ -62,8 +68,24 @@
   function formatBytes(value){if(value<1024)return value+' B';if(value<1048576)return (value/1024).toFixed(1)+' KB';return (value/1048576).toFixed(1)+' MB'}
   function statusBadge(value){const span=document.createElement('span');const safe=Object.prototype.hasOwnProperty.call(labels,value)?value:'';span.className='status '+safe;span.textContent=labels[value]||'未知状态';return span}
   function renderDiagnosticPager(total){const pager=el('diagnosticPager');pager.replaceChildren();if(total<=diagnosticPageSize)return;const text=document.createElement('span');text.className='muted';text.textContent='第 '+(diagnosticPage+1)+' / '+Math.ceil(total/diagnosticPageSize)+' 页，共 '+total+' 份报告';const group=document.createElement('span');const previous=document.createElement('button');previous.textContent='上一页';previous.className='secondary';previous.disabled=diagnosticPage===0;previous.onclick=()=>{diagnosticPage--;refreshDiagnostics()};const next=document.createElement('button');next.textContent='下一页';next.className='secondary';next.disabled=diagnosticPage+1>=Math.ceil(total/diagnosticPageSize);next.onclick=()=>{diagnosticPage++;refreshDiagnostics()};group.append(previous,next);pager.append(text,group)}
+  function formatPlanExpiry(value){return value?String(value).slice(0,16):''}
+  async function saveUserPlan(user,planInput,expiryInput){
+    if(!confirm('确认将 '+user.username+' 的套餐修改为 '+planInput.value+'？'))return;
+    try{await api('set_user_plan',{user_id:user.id,plan_code:planInput.value,plan_expires_at:expiryInput.value?expiryInput.value+':00':null});await refreshUsers();setMessage('用户 '+user.username+' 的云端套餐已更新',true)}catch(e){setMessage(e.message,false)}
+  }
+  function renderPlanRows(items){
+    el('planRows').replaceChildren();
+    for(const u of items){
+      const tr=document.createElement('tr');
+      const username=document.createElement('td');username.textContent=u.username||'-';tr.append(username);
+      const status=document.createElement('td');status.append(statusBadge(u.status));tr.append(status);
+      const plan=document.createElement('td');const planInput=document.createElement('select');planInput.className='plan-code';for(const item of [['NORMAL','普通用户'],['VIP','VIP 用户']]){const option=document.createElement('option');option.value=item[0];option.textContent=item[1]+' ('+item[0]+')';planInput.append(option)}const currentPlan=String(u.plan_code||'NORMAL').toUpperCase();if(!Array.from(planInput.options).some(option=>option.value===currentPlan)){const option=document.createElement('option');option.value=currentPlan;option.textContent=currentPlan;planInput.append(option)}planInput.value=currentPlan;plan.append(planInput);tr.append(plan);
+      const expiry=document.createElement('td');const expiryInput=document.createElement('input');expiryInput.type='datetime-local';expiryInput.step='60';expiryInput.className='plan-expires';expiryInput.value=formatPlanExpiry(u.plan_expires_at);expiry.append(expiryInput);const hint=document.createElement('div');hint.className='meta';hint.textContent='留空表示永不过期';expiry.append(hint);tr.append(expiry);
+      const actions=document.createElement('td');const save=document.createElement('button');save.className='plan-save';save.textContent='保存套餐';save.onclick=()=>saveUserPlan(u,planInput,expiryInput);actions.append(save);tr.append(actions);el('planRows').append(tr)
+    }
+  }
   async function refreshUsers(){
-    try{const d=await api('list_users');el('rows').replaceChildren();for(const u of d.items||[]){const tr=document.createElement('tr');for(const text of [u.username,u.employee_name,labels[u.status]||u.status,new Date(u.created_at).toLocaleString()]){const td=document.createElement('td');td.textContent=text||'-';if(text===labels[u.status]){td.replaceChildren(statusBadge(u.status))}tr.append(td)}const td=document.createElement('td');if(u.role!=='admin'){for(const pair of [['approve_user','通过'],['reject_user','拒绝'],['disable_user','停用']]){const b=document.createElement('button');b.textContent=pair[1];b.className=pair[0]==='reject_user'||pair[0]==='disable_user'?'danger':'';b.onclick=async()=>{if(!confirm(pair[1]+' '+u.username+'？'))return;try{await api(pair[0],{user_id:u.id});await refreshUsers();setMessage('用户状态已更新',true)}catch(e){setMessage(e.message,false)}};td.append(b)}}tr.append(td);el('rows').append(tr)}setMessage('当前待审核申请：'+(d.items||[]).filter(u=>u.status==='pending').length+' 条',true)}catch(e){setMessage(e.message,false)}
+    try{const d=await api('list_users');const items=d.items||[];renderPlanRows(items);el('rows').replaceChildren();for(const u of items){const tr=document.createElement('tr');for(const text of [u.username,u.employee_name,labels[u.status]||u.status,new Date(u.created_at).toLocaleString()]){const td=document.createElement('td');td.textContent=text||'-';if(text===labels[u.status]){td.replaceChildren(statusBadge(u.status))}tr.append(td)}const td=document.createElement('td');if(u.role!=='admin'){for(const pair of [['approve_user','通过'],['reject_user','拒绝'],['disable_user','停用']]){const b=document.createElement('button');b.textContent=pair[1];b.className=pair[0]==='reject_user'||pair[0]==='disable_user'?'danger':'';b.onclick=async()=>{if(!confirm(pair[1]+' '+u.username+'？'))return;try{await api(pair[0],{user_id:u.id});await refreshUsers();setMessage('用户状态已更新',true)}catch(e){setMessage(e.message,false)}};td.append(b)}}tr.append(td);el('rows').append(tr)}setMessage('当前待审核申请：'+items.filter(u=>u.status==='pending').length+' 条',true)}catch(e){setMessage(e.message,false)}
   }
   function renderStats(s){el('stats').replaceChildren();for(const item of [['全部报告',s.total],['待处理',s.pending],['处理中',s.processing],['已解决',s.resolved],['已忽略',s.ignored],['近24小时',s.last_24_hours]]){const div=document.createElement('div');div.className='stat';const small=document.createElement('small');small.textContent=item[0];const strong=document.createElement('strong');strong.textContent=item[1]||0;div.append(small,strong);el('stats').append(div)}}
   async function refreshDiagnostics(){
@@ -74,8 +96,8 @@
   async function downloadReport(report){try{const r=await fetch('/api/xianyu/auth/diagnostics_download',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+token},body:JSON.stringify({report_id:report.id})});if(!r.ok)throw Error('日志下载失败');const blob=await r.blob();const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=report.report_code+'.zip';a.click();URL.revokeObjectURL(a.href)}catch(e){setMessage(e.message,false)}}
   async function refreshAll(){await Promise.all([refreshUsers(),refreshDiagnostics()])}
   el('signin').onclick=async()=>{try{const d=await api('login',{username:el('username').value,password:el('password').value});if(!d.user||d.user.role!=='admin')throw Error('仅管理员可进入管理页面');token=d.session_token;el('password').value='';el('login').classList.add('hidden');el('panel').classList.remove('hidden');await refreshAll()}catch(e){setMessage(e.message,false)}};
-  el('reloadUsers').onclick=refreshUsers;el('reloadDiagnostics').onclick=refreshDiagnostics;el('diagnosticStatus').onchange=()=>{diagnosticPage=0;refreshDiagnostics()};el('diagnosticSeverity').onchange=()=>{diagnosticPage=0;refreshDiagnostics()};let searchTimer;el('diagnosticSearch').oninput=()=>{clearTimeout(searchTimer);searchTimer=setTimeout(()=>{diagnosticPage=0;refreshDiagnostics()},300)};
-  el('logout').onclick=async()=>{try{await api('logout')}finally{token='';el('panel').classList.add('hidden');el('login').classList.remove('hidden');el('rows').replaceChildren();el('diagnosticRows').replaceChildren()}};
+  el('reloadUsers').onclick=refreshUsers;el('reloadPlans').onclick=refreshUsers;el('reloadDiagnostics').onclick=refreshDiagnostics;el('diagnosticStatus').onchange=()=>{diagnosticPage=0;refreshDiagnostics()};el('diagnosticSeverity').onchange=()=>{diagnosticPage=0;refreshDiagnostics()};let searchTimer;el('diagnosticSearch').oninput=()=>{clearTimeout(searchTimer);searchTimer=setTimeout(()=>{diagnosticPage=0;refreshDiagnostics()},300)};
+  el('logout').onclick=async()=>{try{await api('logout')}finally{token='';el('panel').classList.add('hidden');el('login').classList.remove('hidden');el('rows').replaceChildren();el('planRows').replaceChildren();el('diagnosticRows').replaceChildren()}};
   setInterval(()=>{if(token)refreshAll()},15000);
 </script>
 </body>

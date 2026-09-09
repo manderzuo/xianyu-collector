@@ -34,8 +34,12 @@ $worker = {
     $envFile = Join-Path $Root '.env'
     $versionFile = Join-Path $Root 'VERSION.txt'
     $buildFile = Join-Path $Root 'BUILD_ID.txt'
+    $packageRoot = Split-Path -Parent $Root
+    $launcherFile = Join-Path $packageRoot 'xianyu-launcher.exe'
+    $frontendIndexFile = Join-Path $Root 'frontend\dist\index.html'
     $logDir = Join-Path $Root 'logs'
     $logFile = Join-Path $logDir 'update.log'
+    $runtimeSyncMarker = Join-Path $Root 'runtime-sync.pending.json'
     if (-not (Test-Path -LiteralPath $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
 
     function Send-Message([string]$Kind, [string]$Message = '', [int]$Percent = -1, [string]$Data = '') {
@@ -112,6 +116,35 @@ $worker = {
         return 0
     }
 
+    function Test-ClientIntegrity($Manifest) {
+        $expectedLauncher = "$($Manifest.client.launcher_sha256)".Trim().ToLowerInvariant()
+        $expectedFrontend = "$($Manifest.client.frontend_index_sha256)".Trim().ToLowerInvariant()
+        $launcherMismatch = $false
+        $frontendMismatch = $false
+
+        if ($expectedLauncher -match '^[0-9a-f]{64}$') {
+            if (-not (Test-Path -LiteralPath $launcherFile -PathType Leaf)) {
+                $launcherMismatch = $true
+            } else {
+                $actualLauncher = (Get-FileHash -Algorithm SHA256 -LiteralPath $launcherFile).Hash.ToLowerInvariant()
+                $launcherMismatch = $actualLauncher -ne $expectedLauncher
+            }
+        }
+        if ($expectedFrontend -match '^[0-9a-f]{64}$') {
+            if (-not (Test-Path -LiteralPath $frontendIndexFile -PathType Leaf)) {
+                $frontendMismatch = $true
+            } else {
+                $actualFrontend = (Get-FileHash -Algorithm SHA256 -LiteralPath $frontendIndexFile).Hash.ToLowerInvariant()
+                $frontendMismatch = $actualFrontend -ne $expectedFrontend
+            }
+        }
+        return [pscustomobject]@{
+            LauncherMismatch = $launcherMismatch
+            FrontendMismatch = $frontendMismatch
+            RepairNeeded = $launcherMismatch -or $frontendMismatch
+        }
+    }
+
     function Invoke-Docker([string[]]$Arguments, [string]$Label) {
         Write-Detail "docker_start label=$Label args=$($Arguments -join ' ')"
         # Docker Compose writes normal progress/status lines (for example
@@ -130,6 +163,56 @@ $worker = {
         foreach ($line in $output) { Write-Detail "docker_output label=$Label text=$line" }
         Write-Detail "docker_end label=$Label exit_code=$exitCode"
         if ($exitCode -ne 0) { throw "Docker 操作失败：$Label（退出码 $exitCode）" }
+    }
+
+    function Test-RuntimeManifestImages($Manifest, [string]$Registry, [string]$Namespace, [string]$Tag) {
+        if ($null -eq $Manifest.images) { throw '更新清单缺少运行时镜像列表' }
+        foreach ($service in @('backend', 'websocket', 'scheduler', 'frontend')) {
+            $property = $Manifest.images.PSObject.Properties[$service]
+            $declared = if ($null -ne $property) { "$($property.Value)".Trim() } else { '' }
+            $expected = '{0}/{1}/xianyu-{2}:{3}' -f $Registry, $Namespace, $service, $Tag
+            if ($declared -ne $expected) {
+                throw "更新清单中的 $service 镜像地址不一致：声明=$declared，期望=$expected"
+            }
+        }
+        Write-Detail "runtime_manifest_verified registry=$Registry namespace=$Namespace tag=$Tag"
+    }
+
+    function Test-RuntimeContainers([string]$Registry, [string]$Namespace, [string]$Tag) {
+        foreach ($service in @('backend', 'websocket', 'scheduler', 'frontend')) {
+            $previousPreference = $ErrorActionPreference
+            $ErrorActionPreference = 'Continue'
+            try {
+                $ids = @(& docker compose --project-directory $Root --env-file $envFile -f $compose ps -q $service 2>$null)
+                $composeExitCode = $LASTEXITCODE
+                $firstId = $ids | Select-Object -First 1
+                $containerId = if ($null -ne $firstId) { "$firstId".Trim() } else { '' }
+                if ($composeExitCode -ne 0 -or -not $containerId) {
+                    throw "未找到服务 $service 的运行容器"
+                }
+                $images = @(& docker inspect $containerId --format '{{.Config.Image}}' 2>$null)
+                $inspectExitCode = $LASTEXITCODE
+                $firstImage = $images | Select-Object -First 1
+                $actualImage = if ($null -ne $firstImage) { "$firstImage".Trim() } else { '' }
+                $expectedImage = '{0}/{1}/xianyu-{2}:{3}' -f $Registry, $Namespace, $service, $Tag
+                if ($inspectExitCode -ne 0 -or -not $actualImage) {
+                    throw "无法读取服务 $service 的实际镜像"
+                }
+                if ($actualImage -ne $expectedImage) {
+                    throw "服务 $service 仍在运行旧镜像：实际=$actualImage，期望=$expectedImage"
+                }
+                $containerImageId = @(& docker inspect $containerId --format '{{.Image}}' 2>$null) | Select-Object -First 1
+                $containerImageId = if ($null -ne $containerImageId) { "$containerImageId".Trim() } else { '' }
+                $expectedImageId = Get-LocalImageId $expectedImage
+                if (-not $containerImageId -or -not $expectedImageId -or $containerImageId -ne $expectedImageId) {
+                    throw "服务 $service 未加载刚拉取的镜像：容器=$containerImageId，本机标签=$expectedImageId"
+                }
+                Write-Detail "runtime_image_verified service=$service image=$actualImage"
+                Write-Detail "runtime_container_image_id_verified service=$service image_id=$containerImageId"
+            } finally {
+                $ErrorActionPreference = $previousPreference
+            }
+        }
     }
 
     function Invoke-DockerCli([string[]]$Arguments, [string]$Label) {
@@ -160,6 +243,80 @@ $worker = {
             $ErrorActionPreference = $previousPreference
         }
         return ''
+    }
+
+    function Get-LocalImageDigest([string]$ImageRef) {
+        $previousPreference = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            $result = & docker image inspect $ImageRef --format '{{json .RepoDigests}}' 2>$null
+            if ($LASTEXITCODE -eq 0) {
+                $first = $result | Select-Object -First 1
+                if ($null -ne $first) {
+                    $digests = @($first.ToString() | ConvertFrom-Json)
+                    foreach ($digest in $digests) {
+                        $text = "$digest".Trim()
+                        if ($text -match '@(sha256:[0-9a-fA-F]{64})$') { return $Matches[1].ToLowerInvariant() }
+                    }
+                }
+            }
+        } catch { }
+        finally { $ErrorActionPreference = $previousPreference }
+        return ''
+    }
+
+    function Get-RemoteImageDigest([string]$Registry, [string]$Namespace, [string]$Service, [string]$Tag) {
+        $url = "https://$Registry/v2/$Namespace/xianyu-$Service/manifests/$Tag"
+        $headers = @{
+            Accept = 'application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.oci.image.index.v1+json'
+        }
+        try {
+            $response = Invoke-WebRequest -UseBasicParsing -Method Head -Uri $url -TimeoutSec 60 -Headers $headers
+            $headerValue = $response.Headers['Docker-Content-Digest']
+            $digest = @($headerValue | ForEach-Object { "$($_)".Trim() } | Where-Object { $_ -match '^sha256:[0-9a-fA-F]{64}$' } | Select-Object -First 1)
+            if ($digest.Count -gt 0) { return $digest[0].ToLowerInvariant() }
+            Write-Detail "runtime_image_digest_unavailable service=$Service reason=header_missing url=$url"
+        } catch {
+            # Some reverse proxies expose GET but not the Docker HEAD header.
+            # Keep the update moving, but still pull only this service and
+            # require the post-pull tag/image/container checks below.
+            Write-Detail "runtime_image_digest_unavailable service=$Service reason=$($_.Exception.Message) url=$url"
+        }
+        return ''
+    }
+
+    function Sync-RuntimeImages($Manifest, [string]$Registry, [string]$Namespace, [string]$Tag, [string]$PreviousRegistry, [string]$PreviousNamespace, [string]$PreviousTag) {
+        foreach ($service in @('backend', 'websocket', 'scheduler', 'frontend')) {
+            $imageRef = '{0}/{1}/xianyu-{2}:{3}' -f $Registry, $Namespace, $service, $Tag
+            $remoteDigest = Get-RemoteImageDigest $Registry $Namespace $service $Tag
+            $localDigest = Get-LocalImageDigest $imageRef
+            if ($remoteDigest -and $localDigest -eq $remoteDigest) {
+                Write-Detail "runtime_image_compare service=$service remote_digest=$remoteDigest local_digest=$localDigest action=skip"
+                continue
+            }
+            if ($remoteDigest -and $PreviousRegistry -and $PreviousNamespace -and $PreviousTag) {
+                $previousImageRef = '{0}/{1}/xianyu-{2}:{3}' -f $PreviousRegistry, $PreviousNamespace, $service, $PreviousTag
+                $previousDigest = Get-LocalImageDigest $previousImageRef
+                if ($previousDigest -and $previousDigest -eq $remoteDigest) {
+                    Invoke-DockerCli @('tag', $previousImageRef, $imageRef) "复用 $service 未变化镜像"
+                    $reusedId = Get-LocalImageId $imageRef
+                    if (-not $reusedId) { throw "复用镜像后未找到目标标签：$imageRef" }
+                    Write-Detail "runtime_image_compare service=$service remote_digest=$remoteDigest previous_digest=$previousDigest action=reuse source=$previousImageRef image_id=$reusedId"
+                    continue
+                }
+                Write-Detail "runtime_image_compare service=$service remote_digest=$remoteDigest previous_digest=$previousDigest action=compare"
+            }
+            $reason = if ($remoteDigest) { "digest_mismatch remote=$remoteDigest local=$localDigest" } else { 'remote_digest_unavailable' }
+            Write-Detail "runtime_image_compare service=$service action=pull reason=$reason image=$imageRef"
+            Invoke-DockerCli @('pull', $imageRef) "拉取 $service 变更镜像"
+            $pulledId = Get-LocalImageId $imageRef
+            if (-not $pulledId) { throw "镜像拉取后未找到目标标签：$imageRef" }
+            $pulledDigest = Get-LocalImageDigest $imageRef
+            if ($remoteDigest -and $pulledDigest -ne $remoteDigest) {
+                throw "镜像拉取后 digest 不一致：$service（本机=$pulledDigest，远端=$remoteDigest）"
+            }
+            Write-Detail "runtime_image_pulled service=$service image=$imageRef image_id=$pulledId digest=$pulledDigest"
+        }
     }
 
     function Find-LocalImageRefById([string]$ExpectedId) {
@@ -375,8 +532,16 @@ $worker = {
         if ($null -ne $manifest.runtime_images_required) {
             $runtimeImagesRequired = Test-TrueValue "$($manifest.runtime_images_required)"
         }
+        $runtimeImagesDeferred = $false
+        if ($null -ne $manifest.runtime_images_deferred) {
+            $runtimeImagesDeferred = Test-TrueValue "$($manifest.runtime_images_deferred)"
+        }
+        $runtimeSyncNeeded = Test-Path -LiteralPath $runtimeSyncMarker -PathType Leaf
         Write-Detail "manifest_response version=$latestVersion build=$latestBuild registry=$registry namespace=$namespace tag=$tag"
         if (-not $latestVersion -or -not $registry -or -not $namespace -or -not $tag) { throw '更新清单字段不完整' }
+        if ($runtimeImagesRequired -or $runtimeSyncNeeded) {
+            Test-RuntimeManifestImages $manifest $registry $namespace $tag
+        }
         $declaredSignatureUrl = "$($manifest.signature.url)".Trim()
         if ($signatureInfo.Verified -and $declaredSignatureUrl -and $declaredSignatureUrl -ne $signatureInfo.Url) {
             throw '更新清单声明的签名地址与实际校验地址不一致'
@@ -385,12 +550,15 @@ $worker = {
         $currentVersion = (Get-Content -LiteralPath $versionFile -Raw).Trim()
         $currentBuild = if (Test-Path -LiteralPath $buildFile) { (Get-Content -LiteralPath $buildFile -Raw).Trim() } else { '' }
         $versionResult = Compare-Version $latestVersion $currentVersion
-        $available = $versionResult -gt 0 -or ($versionResult -eq 0 -and $latestBuild -and $latestBuild -ne $currentBuild)
-        Write-Detail "version_compare current=$currentVersion/$currentBuild latest=$latestVersion/$latestBuild available=$available"
+        $clientIntegrity = Test-ClientIntegrity $manifest
+        $versionAvailable = $versionResult -gt 0 -or ($versionResult -eq 0 -and $latestBuild -and $latestBuild -ne $currentBuild)
+        $available = $versionAvailable -or $clientIntegrity.RepairNeeded -or $runtimeSyncNeeded
+        Write-Detail "version_compare current=$currentVersion/$currentBuild latest=$latestVersion/$latestBuild version_available=$versionAvailable client_repair_needed=$($clientIntegrity.RepairNeeded) launcher_mismatch=$($clientIntegrity.LauncherMismatch) frontend_mismatch=$($clientIntegrity.FrontendMismatch) available=$available"
         if ($Mode -eq 'check') {
             if ($available) {
                 $payload = [ordered]@{ manifest = $manifest; signature_verified = [bool]$signatureInfo.Verified; signature_url = $signatureInfo.Url; signature_algorithm = $signatureInfo.Algorithm }
-                Send-Message 'available' "发现新版本 $latestVersion" 8 ($payload | ConvertTo-Json -Compress -Depth 20)
+                $message = if ($versionAvailable) { "发现新版本 $latestVersion" } elseif ($runtimeSyncNeeded) { '检测到运行时镜像尚未同步，准备校准' } else { '检测到本机客户端文件不完整，准备修复' }
+                Send-Message 'available' $message 8 ($payload | ConvertTo-Json -Compress -Depth 20)
             } else { Send-Message 'latest' "当前已是最新版本 $currentVersion" 100 }
             return
         }
@@ -400,13 +568,14 @@ $worker = {
         $previousNamespace = "$($envMap['XR_IMAGE_NAMESPACE'])"
         $previousTag = "$($envMap['XR_IMAGE_TAG'])"
         Send-Message 'phase' '正在准备更新环境...' 15
-        if ($runtimeImagesRequired) {
+        $runtimeSyncRequired = $runtimeImagesRequired -or $runtimeSyncNeeded
+        if ($runtimeSyncRequired) {
             Set-EnvValue $envFile 'XR_DEPLOY_MODE' 'remote'
             Set-EnvValue $envFile 'XR_IMAGE_REGISTRY' $registry
             Set-EnvValue $envFile 'XR_IMAGE_NAMESPACE' $namespace
             Set-EnvValue $envFile 'XR_IMAGE_TAG' $tag
             if (-not (Install-ImageArtifacts $manifest)) {
-                Invoke-Docker @('pull') '拉取应用镜像'
+                Sync-RuntimeImages $manifest $registry $namespace $tag $previousRegistry $previousNamespace $previousTag
             }
             Send-Message 'phase' '镜像拉取完成，正在重启服务...' 78
         } else {
@@ -415,15 +584,19 @@ $worker = {
         }
         # Images have already been imported or pulled above. Never let the
         # service restart phase initiate an implicit network pull.
-        Invoke-Docker @('up', '-d', '--no-build', '--pull', 'never') '重启应用服务'
+        Invoke-Docker @('up', '-d', '--force-recreate', '--no-build', '--pull', 'never') '重启应用服务'
         Send-Message 'phase' '正在检查容器状态...' 90
         Invoke-Docker @('ps') '检查容器状态'
+        if ($runtimeSyncRequired) { Test-RuntimeContainers $registry $namespace $tag }
         $port = "$($envMap['FRONTEND_PORT'])"
         if ($port -notmatch '^\d+$') { throw '前端端口配置无效' }
         $response = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:$port" -TimeoutSec 15
         Write-Detail "frontend_check status=$($response.StatusCode) port=$port"
         if ($response.StatusCode -lt 200 -or $response.StatusCode -ge 500) { throw "前端健康检查失败，HTTP $($response.StatusCode)" }
-        $pendingClientPath = Install-ClientMaintenance $manifest $latestVersion $latestBuild
+        $needsClientPackage = $versionAvailable -or $clientIntegrity.RepairNeeded
+        if ($needsClientPackage) {
+            $pendingClientPath = Install-ClientMaintenance $manifest $latestVersion $latestBuild
+        }
         if ($pendingClientPath) {
             # The client package contains the launcher EXE and the frontend
             # maintenance files. Do not advance the local version marker until
@@ -433,6 +606,10 @@ $worker = {
             Write-Detail "update_completed runtime_version=$latestVersion client_version_pending=true"
             Send-Message 'completed' "更新包已下载，请关闭并重新启动启动器以应用新版界面" 100
         } else {
+            if ($runtimeSyncNeeded -and $runtimeSyncRequired) {
+                Remove-Item -LiteralPath $runtimeSyncMarker -Force -ErrorAction SilentlyContinue
+                Write-Detail 'runtime_sync_marker_removed'
+            }
             Set-Content -LiteralPath $versionFile -Value $latestVersion -Encoding UTF8
             Set-Content -LiteralPath $buildFile -Value $latestBuild -Encoding UTF8
             Write-Detail "update_completed version=$latestVersion build=$latestBuild"
@@ -455,7 +632,7 @@ $worker = {
                 # Rollback must be local-only. If the old image is unavailable,
                 # report that fact instead of downloading a large image while
                 # handling the original failure.
-                Invoke-Docker @('up', '-d', '--no-build', '--pull', 'never') '失败后恢复旧版本'
+                Invoke-Docker @('up', '-d', '--force-recreate', '--no-build', '--pull', 'never') '失败后恢复旧版本'
             } catch { Write-Detail "rollback_failed error=$($_.Exception.ToString())" }
         }
         try { Invoke-Docker @('ps') '失败后检查容器状态' } catch { Write-Detail "docker_status_failed error=$($_.Exception.ToString())" }
@@ -464,27 +641,39 @@ $worker = {
 }
 
 if ($Headless) {
-    # The C# updater owns the visible window. Run the same worker directly and
-    # forward its log/progress messages to stdout so no legacy PowerShell
-    # WinForms window or console is created.
-    $records = @(& $worker $ProjectRoot 'update' '' 6>&1)
-    $failed = $false
-    foreach ($record in $records) {
-        if ($record -is [System.Management.Automation.InformationRecord]) {
-            $info = $record.MessageData
-            if ($null -ne $info -and $info.Kind -eq 'log') { [Console]::WriteLine([string]$info.Message) }
-            continue
+    # The C# updater owns the visible window. Headless mode must still perform
+    # the signed check first. Calling the update worker directly with an empty
+    # manifest leaves signature_verified=false and makes every signed release
+    # fail before it can be applied.
+    function Invoke-HeadlessWorker([string]$Mode, [string]$Data = '') {
+        $failed = $false
+        $availableData = ''
+        $records = @(& $worker $ProjectRoot $Mode $Data 6>&1)
+        foreach ($record in $records) {
+            if ($record -is [System.Management.Automation.InformationRecord]) {
+                $info = $record.MessageData
+                if ($null -ne $info -and $info.Kind -eq 'log') { [Console]::WriteLine([string]$info.Message) }
+                continue
+            }
+            if ($null -eq $record -or $null -eq $record.Kind) { continue }
+            if ($record.Kind -eq 'available') { $availableData = [string]$record.Data }
+            if ($record.Kind -eq 'failed') {
+                $failed = $true
+                [Console]::WriteLine([string]$record.Message)
+                [Console]::WriteLine([string]$record.Data)
+            } else {
+                [Console]::WriteLine([string]$record.Message)
+            }
         }
-        if ($null -eq $record -or $null -eq $record.Kind) { continue }
-        if ($record.Kind -eq 'failed') {
-            $failed = $true
-            [Console]::WriteLine([string]$record.Message)
-            [Console]::WriteLine([string]$record.Data)
-        } else {
-            [Console]::WriteLine([string]$record.Message)
-        }
+        return [pscustomobject]@{ Failed = $failed; AvailableData = $availableData }
     }
-    if ($failed) { exit 1 }
+
+    $checkResult = Invoke-HeadlessWorker 'check'
+    if ($checkResult.Failed) { exit 1 }
+    if ($checkResult.AvailableData) {
+        $updateResult = Invoke-HeadlessWorker 'update' $checkResult.AvailableData
+        if ($updateResult.Failed) { exit 1 }
+    }
     exit 0
 }
 
@@ -614,12 +803,12 @@ function Start-Worker([string]$Mode, [string]$Data = '') {
     $later.Enabled = $false
 }
 
-function Finish-Check([string]$Kind) {
+function Finish-Check([string]$Kind, [string]$AvailableMessage = '') {
     if ($Kind -eq 'available') {
         $script:phase = 'available'
         $later.Visible = $true
         $now.Visible = $true
-        $status.Text = '发现新版本'
+        $status.Text = if ($AvailableMessage) { $AvailableMessage } else { '发现新版本' }
         $status.ForeColor = $blue
         $now.Text = '立即更新'
         $now.Enabled = $true
@@ -688,7 +877,7 @@ $timer.Add_Tick({
                 $version.Text = "当前版本：$((Get-Content -LiteralPath $VersionFile -Raw).Trim())    最新版本：$($manifest.version)"
                 $notes.Text = if ($manifest.notes) { $manifest.notes } else { '本次更新包含功能优化和稳定性修复。' }
             } catch { }
-            Finish-Check 'available'
+            Finish-Check 'available' $message.Message
         } elseif ($message.Kind -eq 'latest') {
             $version.Text = "当前版本：$((Get-Content -LiteralPath $VersionFile -Raw).Trim())"
             $notes.Text = '当前已经是最新版本，无需更新。'

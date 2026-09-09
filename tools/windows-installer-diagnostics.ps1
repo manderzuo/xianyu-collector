@@ -47,7 +47,7 @@ Add-Report "EnvironmentFileExists: $(Test-Path -LiteralPath $EnvFile)"
 
 if (Test-Path -LiteralPath $EnvFile) {
     Add-Section 'Non-secret configuration'
-    $safeNames = @('FRONTEND_PORT', 'BACKEND_WEB_PORT', 'WEBSOCKET_PORT', 'SCHEDULER_PORT', 'XIANYU_CLOUD_AUTH_URL', 'XR_DEPLOY_MODE', 'XR_IMAGE_REGISTRY', 'XR_IMAGE_NAMESPACE', 'XR_IMAGE_TAG', 'UPDATE_MANIFEST_URL')
+    $safeNames = @('FRONTEND_PORT', 'BACKEND_WEB_PORT', 'WEBSOCKET_PORT', 'SCHEDULER_PORT', 'XIANYU_CLOUD_AUTH_URL', 'XIANYU_CLOUD_AUTH_MAX_ATTEMPTS', 'XIANYU_CLOUD_AUTH_CONNECT_TIMEOUT', 'XIANYU_CLOUD_AUTH_READ_TIMEOUT', 'XIANYU_CLOUD_AUTH_WRITE_TIMEOUT', 'XIANYU_CLOUD_AUTH_POOL_TIMEOUT', 'XIANYU_CLOUD_AUTH_RETRY_BACKOFF', 'XIANYU_CLOUD_AUTH_MAX_RETRY_BACKOFF', 'XR_DEPLOY_MODE', 'XR_IMAGE_REGISTRY', 'XR_IMAGE_NAMESPACE', 'XR_IMAGE_TAG', 'UPDATE_MANIFEST_URL')
     foreach ($line in Get-Content -LiteralPath $EnvFile) {
         if ($line -match '^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$' -and $safeNames -contains $Matches[1]) {
             Add-Report "$($Matches[1])=$($Matches[2])"
@@ -71,18 +71,54 @@ if ((Test-Path -LiteralPath $EnvFile) -and (Test-Path -LiteralPath $ComposeFile)
         }
     }
     Capture-Command 'Cloud auth health from backend container' {
-        docker compose --project-directory $AppRoot --env-file $EnvFile -f $ComposeFile exec -T backend python -c "import httpx; r=httpx.get('https://www.gemstory.cn/api/xianyu/auth/health', timeout=20); print(r.status_code); print(r.text)"
+        $pythonCode = @'
+import httpx
+import time
+
+url = "https://www.gemstory.cn/api/xianyu/auth/health"
+last_error = None
+for attempt in range(1, 4):
+    try:
+        response = httpx.get(url, timeout=httpx.Timeout(60, connect=20))
+        print(f"attempt {attempt} status {response.status_code}")
+        print(response.text)
+        break
+    except httpx.HTTPError as error:
+        last_error = error
+        print(f"attempt {attempt} failed {type(error).__name__}: {str(error)[:300]}")
+        if attempt < 3:
+            time.sleep(min(attempt * 3, 10))
+else:
+    raise last_error
+'@
+        docker compose --project-directory $AppRoot --env-file $EnvFile -f $ComposeFile exec -T backend python -c $pythonCode
     }
 }
 
 Add-Section 'Host network checks'
+try {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    Add-Report 'TLS protocol for host checks: TLS 1.2'
+} catch {
+    Add-Report "TLS protocol setup warning: $($_.Exception.Message)"
+}
+
 foreach ($url in @('https://www.gemstory.cn/api/xianyu/auth/health', 'https://www.gemstory.cn/release/xianyu/latest.json')) {
-    try {
-        $response = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 20
-        Add-Report "$url -> HTTP $($response.StatusCode)"
-        Add-Report $response.Content
-    } catch {
-        Add-Report "$url -> FAILED: $($_.Exception.Message)"
+    $succeeded = $false
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        try {
+            $response = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 60
+            Add-Report "$url -> HTTP $($response.StatusCode) (attempt $attempt)"
+            Add-Report $response.Content
+            $succeeded = $true
+            break
+        } catch {
+            Add-Report "$url -> attempt $attempt failed: $($_.Exception.Message)"
+            if ($attempt -lt 3) { Start-Sleep -Seconds ([Math]::Min($attempt * 3, 10)) }
+        }
+    }
+    if (-not $succeeded) {
+        Add-Report "$url -> FAILED after 3 attempts"
     }
 }
 

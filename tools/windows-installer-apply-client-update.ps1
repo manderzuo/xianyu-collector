@@ -7,6 +7,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $AppRoot = Join-Path $PackageRoot 'app'
 $PendingRoot = Join-Path $AppRoot 'updates\pending'
+$FrontendRefreshMarker = Join-Path $AppRoot 'updates\frontend-restart.pending'
 $LogRoot = Join-Path $AppRoot 'logs'
 $LogFile = Join-Path $LogRoot 'client-update.log'
 $ResolvedPackageRoot = [IO.Path]::GetFullPath($PackageRoot).TrimEnd('\')
@@ -170,14 +171,44 @@ try {
         'app\browser_data', 'app\updates', 'resources\images'
     )
     $stageRoot = (Resolve-Path -LiteralPath $stage).Path.TrimEnd('\')
-    Get-ChildItem -LiteralPath $stage -Recurse -File -Force | ForEach-Object {
-        $relative = $_.FullName.Substring($stageRoot.Length).TrimStart('\')
+    $copyEntries = @()
+    $frontendChanged = $false
+    foreach ($sourceFile in @(Get-ChildItem -LiteralPath $stage -Recurse -File -Force)) {
+        $relative = $sourceFile.FullName.Substring($stageRoot.Length).TrimStart('\')
         $normalized = $relative -replace '/', '\\'
-        if ($skipExact | Where-Object { $normalized -eq $_ -or $normalized.StartsWith("$_\\", [StringComparison]::OrdinalIgnoreCase) }) { return }
-        $target = Join-Path $PackageRoot $relative
+        if ($skipExact | Where-Object { $normalized -eq $_ -or $normalized.StartsWith("$_\\", [StringComparison]::OrdinalIgnoreCase) }) { continue }
+
+        # Replace executable entry points first, then application files, and
+        # advance VERSION/BUILD_ID last. This prevents a failed copy from
+        # making an old launcher claim that the new client is already active.
+        $priority = 1
+        if ($normalized -match '^[^\\]+\.exe$') { $priority = 0 }
+        elseif ($normalized -in @('app\VERSION.txt', 'app\BUILD_ID.txt')) { $priority = 2 }
+        if ($normalized.StartsWith('app\frontend\dist\', [StringComparison]::OrdinalIgnoreCase) -or
+            $normalized -in @('app\deploy\nginx.conf', 'app\deploy\nginx.preview.conf')) {
+            $frontendChanged = $true
+        }
+        $copyEntries += [pscustomobject]@{
+            Source = $sourceFile.FullName
+            Relative = $relative
+            Normalized = $normalized
+            Priority = $priority
+        }
+    }
+
+    foreach ($entry in @($copyEntries | Sort-Object Priority, Relative)) {
+        $target = Join-Path $PackageRoot $entry.Relative
         $parent = Split-Path -Parent $target
         if (-not (Test-Path -LiteralPath $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
-        Copy-ClientFileWithRetry -Source $_.FullName -Destination $target
+        Copy-ClientFileWithRetry -Source $entry.Source -Destination $target
+    }
+
+    # The frontend is bind-mounted into nginx. The next startup must recreate
+    # only that container after the files have been copied so nginx reloads the
+    # new configuration and the browser cannot keep serving the old document.
+    if ($frontendChanged) {
+        Set-Content -LiteralPath $FrontendRefreshMarker -Value "archive=$($archive.Name)" -Encoding UTF8
+        Write-ClientUpdateLog 'frontend_refresh_pending'
     }
     Remove-Item -LiteralPath $archive.FullName -Force
     Get-ChildItem -LiteralPath $PendingRoot -Filter '*.zip' -File -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
