@@ -44,7 +44,14 @@ $worker = {
     function Write-Detail([string]$Message) {
         $line = "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fff') [$env:COMPUTERNAME] $Message"
         Add-Content -LiteralPath $logFile -Value $line -Encoding UTF8
-        Send-Message 'log' $line
+        # GUI log records must not use the success-output stream. Several
+        # worker helpers return scalar values; success-stream log objects made
+        # those return values arrays and caused valid signature URLs to be
+        # rejected as mismatches. The information stream keeps the live GUI
+        # log without contaminating function return values.
+        Write-Information -MessageData ([pscustomobject]@{
+            Kind = 'log'; Message = $line; Percent = -1; Data = ''
+        }) -Tags 'XianyuGuiLog' -InformationAction Continue
     }
 
     function Get-EnvMap([string]$Path) {
@@ -606,7 +613,13 @@ $timer = New-Object System.Windows.Forms.Timer
 $timer.Interval = 200
 $timer.Add_Tick({
     if (-not $job) { return }
-    $messages = @(Receive-Job -Job $job -ErrorAction SilentlyContinue)
+    $informationMessages = @()
+    $messages = @(Receive-Job -Job $job -ErrorAction SilentlyContinue -InformationVariable informationMessages)
+    foreach ($informationRecord in @($informationMessages)) {
+        if ($null -ne $informationRecord.MessageData) {
+            $messages += $informationRecord.MessageData
+        }
+    }
     foreach ($message in $messages) {
         if ($message.Kind -eq 'log') { Add-Log $message.Message; continue }
         if ($message.Percent -ge 0 -and $message.Percent -le 100) {
