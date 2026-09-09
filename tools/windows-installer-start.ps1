@@ -7,10 +7,11 @@ $UpdateChecker = Join-Path $AppRoot 'deploy\check-xianyu-update.ps1'
 $DbCredentialSync = Join-Path $AppRoot 'deploy\sync-xianyu-db-credentials.ps1'
 $ProtocolRegistrar = Join-Path $AppRoot 'deploy\register-xianyu-update-protocol.ps1'
 $DockerBootstrap = Join-Path $PackageRoot 'resources\docker-bootstrap.ps1'
+$WslBootstrap = Join-Path $PackageRoot 'resources\prepare-wsl.ps1'
 $ClientUpdateApplier = Join-Path $PackageRoot 'scripts\apply-client-update.ps1'
 $ErrorHelper = Join-Path $AppRoot 'deploy\windows-error-reporting.ps1'
 if (Test-Path -LiteralPath $ErrorHelper) { . $ErrorHelper }
-$LogPath = if (Get-Command Start-XianyuLogSession -ErrorAction SilentlyContinue) { Start-XianyuLogSession -ProjectRoot $AppRoot -Name 'startup' } else { '' }
+$LogPath = ''
 $Desktop = [Environment]::GetFolderPath('Desktop')
 $ShortcutTitle = -join ([char[]](0x95f2, 0x9c7c, 0x7ba1, 0x7406, 0x7cfb, 0x7edf))
 $ShortcutPath = Join-Path $Desktop "$ShortcutTitle.lnk"
@@ -30,6 +31,28 @@ trap {
 # never prevents the existing application from starting.
 if (Test-Path -LiteralPath $ClientUpdateApplier) {
     try { & $ClientUpdateApplier -PackageRoot $PackageRoot } catch { Write-Host "[xianyu] Client maintenance update skipped: $($_.Exception.Message)" -ForegroundColor Yellow }
+}
+
+# Start the startup log after client replacement. The updater now writes to a
+# separate client-update.log, and this ordering also protects compatibility
+# with packages that still use a single startup log during the handoff.
+$LogPath = if (Get-Command Start-XianyuLogSession -ErrorAction SilentlyContinue) { Start-XianyuLogSession -ProjectRoot $AppRoot -Name 'startup' } else { '' }
+
+# Existing installations receive the WSLg repair through the client package.
+# Run the lightweight mode only when guiApplications=false is not already set;
+# it then exits without elevation or a WSL restart on subsequent launches.
+if (Test-Path -LiteralPath $WslBootstrap) {
+    try {
+        & powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File $WslBootstrap -ConfigureWslgOnly -NonInteractive -TargetUserProfile $env:USERPROFILE *> $null
+        $wslFixExitCode = $LASTEXITCODE
+        if ($wslFixExitCode -ne 0) {
+            Write-XianyuLog -LogPath $LogPath -Message "wslg_fix_skipped exit_code=$wslFixExitCode"
+        } else {
+            Write-XianyuLog -LogPath $LogPath -Message 'wslg_fix_checked'
+        }
+    } catch {
+        Write-XianyuLog -LogPath $LogPath -Message "wslg_fix_skipped error=$($_.Exception.Message)"
+    }
 }
 
 function Remove-StaleXianyuShortcuts {

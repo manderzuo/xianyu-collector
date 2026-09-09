@@ -112,7 +112,7 @@ if (-not (Test-Path -LiteralPath $ComposeFile)) { Fail 'The package is incomplet
 if (-not (Test-Path -LiteralPath $EnvExample)) { Fail 'The package is incomplete: .env.example is missing.' }
 
 if (Test-Path -LiteralPath $WslBootstrap) {
-    powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File $WslBootstrap -NonInteractive
+    powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File $WslBootstrap -NonInteractive -TargetUserProfile $env:USERPROFILE
     $wslExitCode = $LASTEXITCODE
     if ($wslExitCode -eq 3010) {
         Write-Host '[xianyu] WSL setup needs a Windows restart before installation can continue.' -ForegroundColor Yellow

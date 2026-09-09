@@ -113,6 +113,18 @@ if (-not [string]::IsNullOrWhiteSpace($VersionOverride)) {
 if ($version -notmatch '^\d+(?:\.\d+){1,3}$') {
     throw "Invalid release version: $version"
 }
+
+# A code-only release still needs the compiled frontend because the compose
+# project bind-mounts frontend/dist over the stable nginx image. Fail the build
+# instead of silently shipping a package that keeps the old UI.
+$compiledFrontendIndex = Join-Path $frontendDist 'index.html'
+if (-not (Test-Path -LiteralPath $compiledFrontendIndex -PathType Leaf)) {
+    throw "Compiled frontend is missing: $compiledFrontendIndex. Run npm ci and npm run build in frontend before packaging."
+}
+$compiledFrontendScripts = @(Get-ChildItem -LiteralPath (Join-Path $frontendDist 'assets') -Filter '*.js' -File -Force -ErrorAction SilentlyContinue)
+if ($compiledFrontendScripts.Count -eq 0 -or -not (Select-String -Path $compiledFrontendScripts.FullName -SimpleMatch $version -Quiet)) {
+    throw "Compiled frontend does not contain release version $version. Rebuild frontend with APP_VERSION=$version before packaging."
+}
 $buildIdPath = Join-Path $SourceRoot 'BUILD_ID.txt'
 $buildId = ''
 if (-not [string]::IsNullOrWhiteSpace($BuildIdOverride)) {
@@ -195,7 +207,7 @@ Copy this whole folder to another Windows computer. Do not move only one file.
 2. Double-click __INSTALLER__ (install.bat remains available as a compatibility fallback).
 3. Open the desktop shortcut named __LAUNCHER__.
 
-On the first run, the GUI checks and configures WSL 2 prerequisites. Windows may ask for administrator permission and a restart. Run the installer again after the restart. PowerShell runs in the background; progress, errors and logs are shown in the GUI.
+On the first run, the GUI checks and configures WSL 2 prerequisites. It also disables WSLg GUI applications for the current Windows user, because Docker Desktop does not require Linux GUI applications and WSLg can trigger a broken RDP ActiveX popup on affected systems. The original .wslconfig is backed up before changes. Windows may ask for administrator permission and a restart. Run the installer again after the restart. PowerShell runs in the background; progress, errors and logs are shown in the GUI.
 
 The installer uses its own folder as the project root. It does not depend on a fixed drive or user path.
 The installer chooses free ports beginning at 20000 and never uses the old 19000 deployment.
@@ -231,8 +243,10 @@ shortcut and recreate it with the correct Chinese name.
 The launcher can stop containers, check updates and open diagnostics without a console window.
 The original stop.bat, diagnostics.bat and update.bat remain available for recovery.
 The installer also performs a restricted cleanup of stale RDP ActiveX client
-processes and orphaned startup entries. It never removes Windows system DLLs,
-disables the Windows remote desktop service, or terminates WSLg clients.
+processes and orphaned startup entries. It never removes Windows system DLLs or
+disables the Windows remote desktop service. WSLg is disabled through the
+documented per-user .wslconfig setting; the previous file is retained as a
+timestamped .xianyu-backup-*.bak file if it existed.
 Launcher failures are also
 recorded in app\logs\updater-launch.log and shown in a visible error dialog.
 diagnostics.bat also creates app\logs\diagnostics-latest.txt, opens it in
@@ -240,7 +254,7 @@ Notepad, and includes Docker status, recent logs from every service, and cloud
 connectivity checks. It does not dump app\.env or intentionally collect secrets;
 review service logs before sharing because they may contain application data.
 Startup, installation, shutdown and update-check logs are saved as startup.log,
-install.log, shutdown.log and update-check.log in app\logs. If a PowerShell
+client-update.log, install.log, shutdown.log and update-check.log in app\logs. If a PowerShell
 operation fails, a persistent window displays the full error and provides
 buttons to copy it or open the log folder. The window closes only when you
 click Close.

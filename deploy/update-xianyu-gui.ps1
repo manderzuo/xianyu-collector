@@ -581,6 +581,8 @@ function Start-Worker([string]$Mode, [string]$Data = '') {
 function Finish-Check([string]$Kind) {
     if ($Kind -eq 'available') {
         $script:phase = 'available'
+        $later.Visible = $true
+        $now.Visible = $true
         $status.Text = '发现新版本'
         $status.ForeColor = $blue
         $now.Text = '立即更新'
@@ -595,12 +597,14 @@ function Finish-Check([string]$Kind) {
         }
     } elseif ($Kind -eq 'latest') {
         $script:phase = 'latest'
+        $later.Visible = $false
+        $now.Visible = $true
         $status.Text = '当前已是最新版本'
         $status.ForeColor = $green
         $now.Text = '关闭'
         $now.Enabled = $true
         $later.Text = '关闭'
-        $later.Enabled = $true
+        $later.Enabled = $false
     }
 }
 
@@ -655,12 +659,13 @@ $timer.Add_Tick({
             Finish-Check 'latest'
         } elseif ($message.Kind -eq 'completed') {
             $script:phase = 'completed'
+            $later.Visible = $false
             $status.Text = $message.Message
             $status.ForeColor = $green
             $now.Text = '关闭'
             $now.Enabled = $true
             $later.Text = '关闭'
-            $later.Enabled = $true
+            $later.Enabled = $false
         } elseif ($message.Kind -eq 'failed') {
             $script:phase = 'failed'
             $status.Text = '更新失败，请查看详细日志'

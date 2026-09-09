@@ -1,1 +1,1 @@
-20260908-1.1.1-incremental-registry-update
+20260909-1.1.2-wslg-and-client-update-fix
