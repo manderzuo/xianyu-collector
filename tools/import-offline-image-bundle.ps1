@@ -52,7 +52,7 @@ if (-not (Test-Path -LiteralPath $manifestPath)) { Fail "Offline manifest not fo
 if (-not (Get-Command docker -ErrorAction SilentlyContinue)) { Fail 'Docker CLI was not found.' }
 
 $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
-if ($manifest.format_version -ne 1) { Fail "Unsupported offline manifest version: $($manifest.format_version)" }
+if ($manifest.format_version -notin @(1, 2)) { Fail "Unsupported offline manifest version: $($manifest.format_version)" }
 $tempBase = if ([string]::IsNullOrWhiteSpace($TempDirectory)) {
     Join-Path $resolvedPackage 'app\updates\work'
 } else {
@@ -91,6 +91,13 @@ try {
         }
         & docker image inspect ([string]$entry.image) *> $null
         if ($LASTEXITCODE -ne 0) { Fail "Expected image is missing after import: $($entry.image)" }
+        $expectedImageId = "$($entry.source_image_id)".Trim()
+        if ($expectedImageId) {
+            $actualImageId = (& docker image inspect ([string]$entry.image) --format '{{.Id}}' | Select-Object -First 1).ToString().Trim()
+            if ($actualImageId -ne $expectedImageId) {
+                Fail "Image identity changed during import for $($entry.name); incremental updates would not be reusable"
+            }
+        }
         Remove-Item -LiteralPath $tarPath -Force
     }
     Write-Host '[xianyu] All offline images imported successfully.' -ForegroundColor Green

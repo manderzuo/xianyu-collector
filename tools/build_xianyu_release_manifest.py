@@ -26,6 +26,7 @@ def main() -> None:
     parser.add_argument("--image-artifacts-json", default="")
     parser.add_argument("--signature-url", default="")
     parser.add_argument("--signature-algorithm", default="RSA-SHA256")
+    parser.add_argument("--runtime-images-required", choices=("true", "false"), default="true")
     args = parser.parse_args()
 
     registry = args.registry.rstrip("/")
@@ -48,7 +49,8 @@ def main() -> None:
         "image_tag": args.tag,
         "images": services,
         "image_artifacts": image_artifacts,
-        "update_protocol": 2,
+        "runtime_images_required": args.runtime_images_required == "true",
+        "update_protocol": 3,
         "signature": {
             "url": args.signature_url or None,
             "algorithm": args.signature_algorithm if args.signature_url else None,

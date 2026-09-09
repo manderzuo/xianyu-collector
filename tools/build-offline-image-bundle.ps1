@@ -58,32 +58,12 @@ $sourceTagValue = if ([string]::IsNullOrWhiteSpace($SourceTag)) { $Version } els
 $imageRoot = Join-Path $resolvedPackage 'resources\images'
 New-Item -ItemType Directory -Path $imageRoot -Force | Out-Null
 
-function Get-RuntimeChanges([string]$Name) {
-    switch ($Name) {
-        'backend' { return @('WORKDIR /app') }
-        'websocket' { return @('WORKDIR /app') }
-        'scheduler' { return @('WORKDIR /app') }
-        'frontend' { return @('ENTRYPOINT /docker-entrypoint.sh') }
-        default { return @() }
-    }
-}
-
-function Get-CreateCommand([string]$Name) {
-    switch ($Name) {
-        'backend' { return @('uvicorn', 'backend.main:app', '--host', '0.0.0.0', '--port', '8089') }
-        'websocket' { return @('uvicorn', 'websocket.main:app', '--host', '0.0.0.0', '--port', '8090') }
-        'scheduler' { return @('uvicorn', 'scheduler.main:app', '--host', '0.0.0.0', '--port', '8091') }
-        'frontend' { return @('nginx', '-g', 'daemon off;') }
-        default { return @() }
-    }
-}
-
 $entries = @()
 $imageSpecs = @(
-    @{ Name = 'backend'; Source = "$($SourceRegistry.TrimEnd('/'))/$($SourceNamespace.Trim('/'))/xianyu-backend:$sourceTagValue"; Target = "local/xianyu/xianyu-backend:$Version"; Format = 'rootfs'; Changes = (Get-RuntimeChanges 'backend'); CreateCommand = (Get-CreateCommand 'backend') },
-    @{ Name = 'websocket'; Source = "$($SourceRegistry.TrimEnd('/'))/$($SourceNamespace.Trim('/'))/xianyu-websocket:$sourceTagValue"; Target = "local/xianyu/xianyu-websocket:$Version"; Format = 'rootfs'; Changes = (Get-RuntimeChanges 'websocket'); CreateCommand = (Get-CreateCommand 'websocket') },
-    @{ Name = 'scheduler'; Source = "$($SourceRegistry.TrimEnd('/'))/$($SourceNamespace.Trim('/'))/xianyu-scheduler:$sourceTagValue"; Target = "local/xianyu/xianyu-scheduler:$Version"; Format = 'rootfs'; Changes = (Get-RuntimeChanges 'scheduler'); CreateCommand = (Get-CreateCommand 'scheduler') },
-    @{ Name = 'frontend'; Source = "$($SourceRegistry.TrimEnd('/'))/$($SourceNamespace.Trim('/'))/xianyu-frontend:$sourceTagValue"; Target = "local/xianyu/xianyu-frontend:$Version"; Format = 'rootfs'; Changes = (Get-RuntimeChanges 'frontend'); CreateCommand = (Get-CreateCommand 'frontend') }
+    @{ Name = 'backend'; Source = "$($SourceRegistry.TrimEnd('/'))/$($SourceNamespace.Trim('/'))/xianyu-backend:$sourceTagValue"; Target = "local/xianyu/xianyu-backend:$Version"; Format = 'docker'; Changes = @() },
+    @{ Name = 'websocket'; Source = "$($SourceRegistry.TrimEnd('/'))/$($SourceNamespace.Trim('/'))/xianyu-websocket:$sourceTagValue"; Target = "local/xianyu/xianyu-websocket:$Version"; Format = 'docker'; Changes = @() },
+    @{ Name = 'scheduler'; Source = "$($SourceRegistry.TrimEnd('/'))/$($SourceNamespace.Trim('/'))/xianyu-scheduler:$sourceTagValue"; Target = "local/xianyu/xianyu-scheduler:$Version"; Format = 'docker'; Changes = @() },
+    @{ Name = 'frontend'; Source = "$($SourceRegistry.TrimEnd('/'))/$($SourceNamespace.Trim('/'))/xianyu-frontend:$sourceTagValue"; Target = "local/xianyu/xianyu-frontend:$Version"; Format = 'docker'; Changes = @() }
 )
 if (-not $SkipInfrastructure) {
     $imageSpecs += @(
@@ -109,34 +89,19 @@ try {
     foreach ($spec in $imageSpecs) {
         & docker image inspect $spec.Source *> $null
         if ($LASTEXITCODE -ne 0) { Fail "Source image is not available locally: $($spec.Source)" }
+        $sourceImageId = (& docker image inspect $spec.Source --format '{{.Id}}' | Select-Object -First 1).ToString().Trim()
+        if ($sourceImageId -notmatch '^sha256:[0-9a-f]{64}$') { Fail "Could not resolve source image ID for $($spec.Name)" }
 
         $tarPath = Join-Path $staging "$($spec.Name).tar"
         $archiveName = "$($spec.Name).tar.gz"
         $archivePath = Join-Path $imageRoot $archiveName
-        if ($spec.Format -eq 'rootfs') {
-            $containerName = "xianyu-offline-export-$([guid]::NewGuid().ToString('N'))"
-            $containerId = ''
-            try {
-                $createArguments = @('create', '--name', $containerName, $spec.Source) + @($spec.CreateCommand)
-                $createOutput = & docker @createArguments 2>&1
-                if ($LASTEXITCODE -ne 0) {
-                    Fail "Could not create an export container for $($spec.Name): $($createOutput -join ' ')"
-                }
-                $containerId = ($createOutput | Out-String).Trim()
-                if ([string]::IsNullOrWhiteSpace($containerId)) { Fail "Could not create an export container for $($spec.Name)." }
-                Invoke-Docker @('export', '--output', $tarPath, $containerId) "Exporting $($spec.Name) root filesystem"
-            } finally {
-                if ($containerId) { & docker rm $containerId *> $null }
-            }
-        } else {
-            if ($spec.Source -ne $spec.Target) {
-                Invoke-Docker @('tag', $spec.Source, $spec.Target) "Tagging $($spec.Name) for offline use"
-            }
-            Invoke-Docker @('save', '--output', $tarPath, $spec.Target) "Exporting $($spec.Name) image"
-            $tarListing = @(tar -tf $tarPath 2>$null)
-            if ($tarListing.Count -lt 10 -or -not ($tarListing -match 'blobs/sha256/')) {
-                Fail "Docker archive validation failed for $($spec.Name); it does not contain image layers."
-            }
+        if ($spec.Source -ne $spec.Target) {
+            Invoke-Docker @('tag', $spec.Source, $spec.Target) "Tagging $($spec.Name) for offline use"
+        }
+        Invoke-Docker @('save', '--output', $tarPath, $spec.Target) "Exporting $($spec.Name) image with original layers"
+        $tarListing = @(tar -tf $tarPath 2>$null)
+        if ($tarListing.Count -lt 10 -or -not ($tarListing -match 'blobs/sha256/')) {
+            Fail "Docker archive validation failed for $($spec.Name); it does not contain image layers."
         }
         Compress-GzipFile -InputPath $tarPath -OutputPath $archivePath
         $hash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -147,7 +112,9 @@ try {
             name = $spec.Name
             image = $spec.Target
             source_image = $spec.Source
+            source_image_id = $sourceImageId
             format = $spec.Format
+            preserves_registry_layers = $true
             runtime_changes = @($spec.Changes)
             archive = $archiveName
             sha256 = $hash
@@ -159,13 +126,14 @@ try {
     }
 
     $manifest = [ordered]@{
-        format_version = 1
+        format_version = 2
         product = 'xianyu-rewrite'
         version = $Version
         created_at = [DateTime]::UtcNow.ToString('o')
         image_registry = 'local'
         image_namespace = 'xianyu'
         image_tag = $Version
+        preserves_registry_layers = $true
         infrastructure_included = -not $SkipInfrastructure
         images = @($entries)
     }

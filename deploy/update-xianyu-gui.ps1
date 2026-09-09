@@ -370,6 +370,10 @@ $worker = {
         $registry = "$($manifest.image_registry)".Trim()
         $namespace = "$($manifest.image_namespace)".Trim()
         $tag = "$($manifest.image_tag)".Trim()
+        $runtimeImagesRequired = $true
+        if ($null -ne $manifest.runtime_images_required) {
+            $runtimeImagesRequired = Test-TrueValue "$($manifest.runtime_images_required)"
+        }
         Write-Detail "manifest_response version=$latestVersion build=$latestBuild registry=$registry namespace=$namespace tag=$tag"
         if (-not $latestVersion -or -not $registry -or -not $namespace -or -not $tag) { throw '更新清单字段不完整' }
         $declaredSignatureUrl = "$($manifest.signature.url)".Trim()
@@ -394,15 +398,20 @@ $worker = {
         $previousRegistry = "$($envMap['XR_IMAGE_REGISTRY'])"
         $previousNamespace = "$($envMap['XR_IMAGE_NAMESPACE'])"
         $previousTag = "$($envMap['XR_IMAGE_TAG'])"
-        Set-EnvValue $envFile 'XR_DEPLOY_MODE' 'remote'
-        Set-EnvValue $envFile 'XR_IMAGE_REGISTRY' $registry
-        Set-EnvValue $envFile 'XR_IMAGE_NAMESPACE' $namespace
-        Set-EnvValue $envFile 'XR_IMAGE_TAG' $tag
         Send-Message 'phase' '正在准备更新环境...' 15
-        if (-not (Install-ImageArtifacts $manifest)) {
-            Invoke-Docker @('pull') '拉取应用镜像'
+        if ($runtimeImagesRequired) {
+            Set-EnvValue $envFile 'XR_DEPLOY_MODE' 'remote'
+            Set-EnvValue $envFile 'XR_IMAGE_REGISTRY' $registry
+            Set-EnvValue $envFile 'XR_IMAGE_NAMESPACE' $namespace
+            Set-EnvValue $envFile 'XR_IMAGE_TAG' $tag
+            if (-not (Install-ImageArtifacts $manifest)) {
+                Invoke-Docker @('pull') '拉取应用镜像'
+            }
+            Send-Message 'phase' '镜像拉取完成，正在重启服务...' 78
+        } else {
+            Write-Detail 'runtime_image_update_skipped reason=host_overlay_release'
+            Send-Message 'phase' '业务补丁已下载，正在重启服务...' 78
         }
-        Send-Message 'phase' '镜像拉取完成，正在重启服务...' 78
         Invoke-Docker @('up', '-d', '--no-build') '重启应用服务'
         Send-Message 'phase' '正在检查容器状态...' 90
         Invoke-Docker @('ps') '检查容器状态'

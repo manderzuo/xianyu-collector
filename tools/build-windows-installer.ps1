@@ -71,6 +71,14 @@ function Copy-ProjectTree {
 
 Copy-ProjectTree -Source $SourceRoot -Destination $AppRoot
 
+# frontend/dist is intentionally included when present. The commercial
+# updater bind-mounts these compiled assets over the stable nginx runtime so
+# ordinary UI releases remain a small client package instead of a full image.
+$frontendDist = Join-Path $SourceRoot 'frontend\dist'
+if (Test-Path -LiteralPath $frontendDist) {
+    Copy-Item -LiteralPath $frontendDist -Destination (Join-Path $AppRoot 'frontend\dist') -Recurse -Force
+}
+
 # The package entry points live at the package root. The source tree is kept under app.
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows-installer-install.ps1') -Destination (Join-Path $ScriptsRoot 'install.ps1') -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows-installer-start.ps1') -Destination (Join-Path $ScriptsRoot 'start.ps1') -Force

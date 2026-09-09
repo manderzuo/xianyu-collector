@@ -56,7 +56,13 @@ services:
       XIANYU_ALLOW_INSECURE_CLOUD_AUTH: ${XIANYU_ALLOW_INSECURE_CLOUD_AUTH:-false}
       JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
       TZ: Asia/Shanghai
-    volumes: [static-files:/app/static, backup-files:/app/backups]
+    volumes:
+      - ./common:/app/common:ro
+      - ./backend:/app/backend:ro
+      - ./VERSION.txt:/app/VERSION.txt:ro
+      - ./BUILD_ID.txt:/app/BUILD_ID.txt:ro
+      - static-files:/app/static
+      - backup-files:/app/backups
     ports: ["127.0.0.1:${BACKEND_WEB_PORT:-8089}:8089"]
     networks: [xr-net]
     depends_on: {mysql: {condition: service_healthy}, redis: {condition: service_healthy}}
@@ -88,7 +94,13 @@ services:
       BROWSER_DATA_DIR: /app/browser_data
       BROWSER_HEADLESS: "true"
       TZ: Asia/Shanghai
-    volumes: [static-files:/app/static, browser_data:/app/browser_data]
+    volumes:
+      - ./common:/app/common:ro
+      - ./websocket:/app/websocket:ro
+      - ./VERSION.txt:/app/VERSION.txt:ro
+      - ./BUILD_ID.txt:/app/BUILD_ID.txt:ro
+      - static-files:/app/static
+      - browser_data:/app/browser_data
     ports: ["127.0.0.1:${WEBSOCKET_PORT:-8090}:8090"]
     networks: [xr-net]
     depends_on: {mysql: {condition: service_healthy}, redis: {condition: service_healthy}, backend: {condition: service_healthy}}
@@ -120,7 +132,13 @@ services:
       STATIC_DIR: /app/static
       BACKUP_DIR: /app/backups
       TZ: Asia/Shanghai
-    volumes: [static-files:/app/static, backup-files:/app/backups]
+    volumes:
+      - ./common:/app/common:ro
+      - ./scheduler:/app/scheduler:ro
+      - ./VERSION.txt:/app/VERSION.txt:ro
+      - ./BUILD_ID.txt:/app/BUILD_ID.txt:ro
+      - static-files:/app/static
+      - backup-files:/app/backups
     ports: ["127.0.0.1:${SCHEDULER_PORT:-8091}:8091"]
     networks: [xr-net]
     depends_on: {mysql: {condition: service_healthy}, redis: {condition: service_healthy}, backend: {condition: service_healthy}, websocket: {condition: service_healthy}}
@@ -133,6 +151,9 @@ services:
     restart: unless-stopped
     entrypoint: ["/docker-entrypoint.sh"]
     command: ["nginx", "-g", "daemon off;"]
+    volumes:
+      - ./frontend/dist:/usr/share/nginx/html:ro
+      - ./deploy/nginx.conf:/etc/nginx/conf.d/default.conf:ro
     ports: ["${FRONTEND_PORT:-9000}:80"]
     networks: [xr-net]
     depends_on: {backend: {condition: service_healthy}}
