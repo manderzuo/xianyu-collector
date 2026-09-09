@@ -412,7 +412,9 @@ $worker = {
             Write-Detail 'runtime_image_update_skipped reason=host_overlay_release'
             Send-Message 'phase' '业务补丁已下载，正在重启服务...' 78
         }
-        Invoke-Docker @('up', '-d', '--no-build') '重启应用服务'
+        # Images have already been imported or pulled above. Never let the
+        # service restart phase initiate an implicit network pull.
+        Invoke-Docker @('up', '-d', '--no-build', '--pull', 'never') '重启应用服务'
         Send-Message 'phase' '正在检查容器状态...' 90
         Invoke-Docker @('ps') '检查容器状态'
         $port = "$($envMap['FRONTEND_PORT'])"
@@ -439,7 +441,10 @@ $worker = {
                 Set-EnvValue $envFile 'XR_IMAGE_NAMESPACE' $previousNamespace
                 Set-EnvValue $envFile 'XR_IMAGE_TAG' $previousTag
                 Write-Detail "rollback_config_restored deploy_mode=$previousDeployMode registry=$previousRegistry namespace=$previousNamespace tag=$previousTag"
-                Invoke-Docker @('up', '-d', '--no-build') '失败后恢复旧版本'
+                # Rollback must be local-only. If the old image is unavailable,
+                # report that fact instead of downloading a large image while
+                # handling the original failure.
+                Invoke-Docker @('up', '-d', '--no-build', '--pull', 'never') '失败后恢复旧版本'
             } catch { Write-Detail "rollback_failed error=$($_.Exception.ToString())" }
         }
         try { Invoke-Docker @('ps') '失败后检查容器状态' } catch { Write-Detail "docker_status_failed error=$($_.Exception.ToString())" }
