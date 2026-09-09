@@ -50,14 +50,19 @@ jobs:
             deploy_dir="/tmp/xianyu-auth-${{ github.run_id }}"
             status=0
             sudo python3 "${deploy_dir}/install.py" || status=$?
-            if [ "${status}" -eq 0 ]; then
-              for attempt in $(seq 1 10); do
-                if curl --fail --silent --show-error --max-time 5 http://127.0.0.1:8766/api/xianyu/auth/health >/dev/null; then
-                  break
-                fi
-                status=1
-                sleep 2
-              done
-            fi
+            health_status=1
+            for attempt in $(seq 1 15); do
+              if curl --fail --silent --show-error --max-time 5 http://127.0.0.1:8766/api/xianyu/auth/health >/dev/null; then
+                health_status=0
+                break
+              fi
+              sleep 2
+            done
             sudo rm -rf "${deploy_dir}"
+            if [ "${health_status}" -eq 0 ] && [ "${status}" -eq 0 ]; then
+              exit 0
+            fi
+            if [ "${health_status}" -ne 0 ]; then
+              exit 1
+            fi
             exit "${status}"

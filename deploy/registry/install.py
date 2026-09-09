@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import time
 import urllib.request
 from datetime import datetime
 from pathlib import Path
@@ -131,8 +132,18 @@ if updated_nginx != old_nginx:
         raise RuntimeError("Invalid Nginx configuration; restored backup")
     run(["systemctl", "reload", "nginx"])
 
-with urllib.request.urlopen("http://127.0.0.1:5000/v2/", timeout=10) as response:
-    if response.status != 200:
-        raise RuntimeError(f"Registry health check returned HTTP {response.status}")
+last_error = "registry health check did not run"
+for attempt in range(1, 11):
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:5000/v2/", timeout=10) as response:
+            if response.status == 200:
+                break
+            last_error = f"HTTP {response.status}"
+    except Exception as exc:  # service restart may take a moment to bind port 5000
+        last_error = str(exc)
+    if attempt < 10:
+        time.sleep(2)
+else:
+    raise RuntimeError(f"Registry health check failed after retries: {last_error}")
 
 print(f"Xianyu incremental registry installed at {storage}")
