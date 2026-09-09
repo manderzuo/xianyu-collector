@@ -337,15 +337,13 @@ jobs:
           tar -C release/marker-root -cf release/marker-rootfs.tar .
           docker import release/marker-rootfs.tar "${marker_ref}" >/dev/null
           docker save "${marker_ref}" | gzip -1 > "release/${marker_file}"
-          marker_id="$(docker image inspect --format '{{.Id}}' "${marker_ref}")"
           marker_sha="$(sha256sum "release/${marker_file}" | awk '{print $1}')"
           jq -n \
             --arg service 'client-bootstrap' \
             --arg url "https://www.gemstory.cn/release/xianyu/${marker_file}" \
             --arg image_ref "${marker_ref}" \
-            --arg image_id "${marker_id}" \
             --arg sha256 "${marker_sha}" \
-            '{artifacts: [{service: $service, url: $url, image_ref: $image_ref, image_id: $image_id, sha256: $sha256}]}' \
+            '{artifacts: [{service: $service, url: $url, image_ref: $image_ref, sha256: $sha256}]}' \
             > release/image-artifacts.json
 
       - name: Upload legacy client bootstrap marker
