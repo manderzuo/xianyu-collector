@@ -164,6 +164,22 @@ jobs:
             echo 'Stable manifest does not provide a usable runtime image tag.' >&2
             exit 1
           fi
+          # A failed or interrupted publish may leave the client package
+          # available while none (or only some) of the target runtime image
+          # tags exist. Do not let a retry publish a client-only manifest that
+          # points old 1.1.2/1.1.3 clients at stale runtime images.
+          target_images_complete=true
+          for service in backend websocket scheduler frontend; do
+            target_ref="${IMAGE_REGISTRY}/${IMAGE_NAMESPACE}/xianyu-${service}:${target_version}"
+            if ! docker manifest inspect "${target_ref}" >/dev/null 2>&1; then
+              target_images_complete=false
+              break
+            fi
+          done
+          if [ "${target_images_complete}" = "false" ]; then
+            images_changed=true
+            echo "Target image set is incomplete; forcing runtime image build for ${target_version}."
+          fi
           echo "version=${base_version}" >> "$GITHUB_OUTPUT"
           echo "image_prefix=${image_prefix}" >> "$GITHUB_OUTPUT"
           echo "build_version=${build_version}" >> "$GITHUB_OUTPUT"
