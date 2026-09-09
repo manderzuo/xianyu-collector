@@ -9,8 +9,28 @@ using System.Windows.Forms;
 using System.Runtime.InteropServices;
 using System.Drawing.Text;
 using Microsoft.Win32;
+using System.Text.RegularExpressions;
 
 internal enum LauncherRole { Installer, Dashboard, Updater, Stopper, Diagnostics }
+internal enum LauncherIconKind
+{
+    None,
+    App,
+    Open,
+    Update,
+    Diagnostics,
+    Stop,
+    Home,
+    Settings,
+    Info,
+    Frontend,
+    Backend,
+    Message,
+    Scheduler,
+    Version,
+    Check,
+    Shield,
+}
 
 internal static class LauncherText
 {
@@ -50,6 +70,7 @@ internal sealed class LauncherForm : Form
     private int progressValue;
     private string taskText = "\u7b49\u5f85\u5f00\u59cb";
     private string statusText = "\u5c31\u7eea";
+    private string latestVersion;
     private Bitmap productIcon;
 
     internal LauncherForm(LauncherRole role, bool resumeAfterRestart = false, string resumeInstallPath = "")
@@ -61,6 +82,7 @@ internal sealed class LauncherForm : Form
         appRoot = Path.Combine(packageRoot, "app");
         version = ReadFirstLine(Path.Combine(appRoot, "VERSION.txt"));
         build = ReadFirstLine(Path.Combine(appRoot, "BUILD_ID.txt"));
+        latestVersion = version;
 
         Text = role == LauncherRole.Installer ? LauncherText.Installer : LauncherText.Product;
         StartPosition = FormStartPosition.CenterScreen;
@@ -84,7 +106,8 @@ internal sealed class LauncherForm : Form
 
         Shown += (s, e) => surface.Invalidate();
         if (role == LauncherRole.Installer && resumeAfterRestart) Shown += async (s, e) => await RunScriptAsync("install.ps1", string.IsNullOrWhiteSpace(this.resumeInstallPath) ? null : "-InstallPath " + Quote(this.resumeInstallPath), "\u6b63\u5728\u6062\u590d\u5b89\u88c5\uff0c\u7b49\u5f85 Docker Desktop \u542f\u52a8...");
-        if (role == LauncherRole.Updater) Shown += async (s, e) => await RunScriptAsync("update.ps1", null, "\u6b63\u5728\u68c0\u67e5\u66f4\u65b0...");
+        if (role == LauncherRole.Dashboard) Shown += async (s, e) => await RunScriptAsync("start.ps1", null, "\u6b63\u5728\u542f\u52a8\u670d\u52a1\u5e76\u68c0\u67e5\u66f4\u65b0...");
+        if (role == LauncherRole.Updater) Shown += async (s, e) => await RunScriptAsync("update.ps1", "-Headless", "\u6b63\u5728\u68c0\u67e5\u66f4\u65b0...");
         if (role == LauncherRole.Stopper) Shown += async (s, e) => await RunScriptAsync("stop.ps1", null, "\u6b63\u5728\u505c\u6b62\u670d\u52a1...");
         if (role == LauncherRole.Diagnostics) Shown += async (s, e) => await RunScriptAsync("diagnostics.ps1", "-NoOpen", "\u6b63\u5728\u6536\u96c6\u8bca\u65ad\u4fe1\u606f...");
     }
@@ -134,15 +157,15 @@ internal sealed class LauncherForm : Form
         }
         else if (role == LauncherRole.Dashboard)
         {
-            primaryButton = MakeButton("◎   \u6253\u5f00\u7ba1\u7406\u540e\u53f0                         ›", Blue, White, 12);
-            var update = MakeButton("⇧\r\n\u68c0\u67e5\u66f4\u65b0", Card, White, 12);
-            var diag = MakeButton("▣\r\n\u8bca\u65ad\u4e0e\u65e5\u5fd7", Card, White, 12);
-            var stop = MakeButton("■\r\n\u505c\u6b62\u670d\u52a1", Color.FromArgb(30, 32, 48), Red, 12);
+            primaryButton = MakeButton("\u6253\u5f00\u7ba1\u7406\u540e\u53f0", Blue, White, 12, LauncherIconKind.Open, true);
+            var update = MakeButton("\u68c0\u67e5\u66f4\u65b0", Card, White, 12, LauncherIconKind.Update);
+            var diag = MakeButton("\u8bca\u65ad\u4e0e\u65e5\u5fd7", Card, White, 12, LauncherIconKind.Diagnostics);
+            var stop = MakeButton("\u505c\u6b62\u670d\u52a1", Color.FromArgb(30, 32, 48), Red, 12, LauncherIconKind.Stop);
             Place(primaryButton, 375, 535, 630, 112);
             Place(update, 375, 675, 190, 140);
             Place(diag, 585, 675, 190, 140);
             Place(stop, 795, 675, 190, 140);
-            update.Click += async (s, e) => await RunScriptAsync("update.ps1", null, "\u6b63\u5728\u68c0\u67e5\u66f4\u65b0...");
+            update.Click += async (s, e) => await LaunchUpdaterAsync();
             diag.Click += async (s, e) => await RunScriptAsync("diagnostics.ps1", "-NoOpen", "\u6b63\u5728\u6536\u96c6\u8bca\u65ad\u4fe1\u606f...");
             stop.Click += async (s, e) => await RunScriptAsync("stop.ps1", null, "\u6b63\u5728\u505c\u6b62\u670d\u52a1...");
             primaryButton.Click += (s, e) => OpenApplication();
@@ -262,49 +285,49 @@ internal sealed class LauncherForm : Form
         using (var brush = new SolidBrush(Color.FromArgb(7, 25, 56))) g.FillRectangle(brush, 0, 78, 275, 882);
         using (var pen = new Pen(Color.FromArgb(35, 63, 105), 1F)) g.DrawLine(pen, 275, 78, 275, 960);
         DrawLogoMark(g, new Rectangle(38, 125, 48, 48));
-        DrawText(g, LauncherText.Product, 102, 137, 24, White, true);
-        DrawNav(g, 60, 235, "⌂", "\u603b\u89c8", true);
-        DrawNav(g, 60, 335, "⚙", "\u7cfb\u7edf\u8bbe\u7f6e", false);
-        DrawNav(g, 60, 435, "ⓘ", "\u5173\u4e8e\u7cfb\u7edf", false);
+        DrawText(g, LauncherText.Product, new RectangleF(101, 132, 157, 35), 20, White, true, StringAlignment.Near, true);
+        DrawNav(g, 60, 235, LauncherIconKind.Home, "\u603b\u89c8", true);
+        DrawNav(g, 60, 335, LauncherIconKind.Settings, "\u7cfb\u7edf\u8bbe\u7f6e", false);
+        DrawNav(g, 60, 435, LauncherIconKind.Info, "\u5173\u4e8e\u7cfb\u7edf", false);
         using (var brush = new SolidBrush(Color.FromArgb(10, 32, 67))) g.FillRoundedRectangle(brush, new Rectangle(40, 855, 235, 70), 10);
-        DrawText(g, "◈", 63, 879, 24, Cyan, true);
-        DrawText(g, "\u5f53\u524d\u7248\u672c  v" + version, 101, 878, 16, White, false);
+        LauncherIconRenderer.Draw(g, LauncherIconKind.Version, new RectangleF(60, 875, 26, 26), Cyan);
+        DrawText(g, "\u5f53\u524d\u7248\u672c  v" + version, new RectangleF(101, 876, 160, 26), 14, White, false, StringAlignment.Near, true);
         DrawText(g, LauncherText.Product, 340, 130, 44, White, true);
         DrawText(g, "\u670d\u52a1\u72b6\u6001", 340, 222, 25, White, false);
         using (var brush = new SolidBrush(Color.FromArgb(17, 73, 74))) g.FillEllipse(brush, 340, 278, 68, 68);
         using (var pen = new Pen(Green, 3F)) g.DrawEllipse(pen, 340, 278, 68, 68);
         DrawText(g, "✓", 374, 288, 39, Green, true, StringAlignment.Center);
         DrawText(g, busy ? statusText : "\u7cfb\u7edf\u5df2\u5c31\u7eea", 440, 292, 31, Green, true);
-        DrawServiceCard(g, 350, 375, "▣", "\u524d\u7aef\u670d\u52a1");
-        DrawServiceCard(g, 648, 375, "▤", "\u540e\u7aef\u670d\u52a1");
-        DrawServiceCard(g, 946, 375, "☁", "\u6d88\u606f\u670d\u52a1");
-        DrawServiceCard(g, 1244, 375, "◷", "\u5b9a\u65f6\u4efb\u52a1");
+        DrawServiceCard(g, 350, 375, LauncherIconKind.Frontend, "\u524d\u7aef\u670d\u52a1");
+        DrawServiceCard(g, 648, 375, LauncherIconKind.Backend, "\u540e\u7aef\u670d\u52a1");
+        DrawServiceCard(g, 946, 375, LauncherIconKind.Message, "\u6d88\u606f\u670d\u52a1");
+        DrawServiceCard(g, 1244, 375, LauncherIconKind.Scheduler, "\u5b9a\u65f6\u4efb\u52a1");
         DrawDashboardDecoration(g);
         using (var brush = new SolidBrush(Color.FromArgb(8, 29, 62))) g.FillRoundedRectangle(brush, new Rectangle(350, 535, 635, 310), 14);
         using (var brush = new SolidBrush(Color.FromArgb(8, 29, 62))) g.FillRoundedRectangle(brush, new Rectangle(1010, 535, 505, 310), 14);
         DrawActivity(g);
     }
 
-    private void DrawNav(Graphics g, int x, int y, string icon, string text, bool active)
+    private void DrawNav(Graphics g, int x, int y, LauncherIconKind icon, string text, bool active)
     {
         if (active)
         {
             using (var brush = new SolidBrush(Color.FromArgb(26, 74, 145))) g.FillRoundedRectangle(brush, new Rectangle(40, y - 28, 235, 66), 12);
             using (var pen = new Pen(Cyan, 1F)) g.DrawRoundedRectangle(pen, new Rectangle(40, y - 28, 235, 66), 12);
         }
-        DrawText(g, icon, x, y - 9, 29, active ? Cyan : Muted, false);
-        DrawText(g, text, x + 58, y - 4, 21, active ? White : Muted, false);
+        LauncherIconRenderer.Draw(g, icon, new RectangleF(x - 3, y - 14, 30, 30), active ? Cyan : Muted);
+        DrawText(g, text, new RectangleF(x + 58, y - 8, 150, 32), 20, active ? White : Muted, false, StringAlignment.Near, true);
     }
 
-    private void DrawServiceCard(Graphics g, int x, int y, string icon, string name)
+    private void DrawServiceCard(Graphics g, int x, int y, LauncherIconKind icon, string name)
     {
         using (var brush = new SolidBrush(Card)) g.FillRoundedRectangle(brush, new Rectangle(x, y, 265, 145), 12);
         using (var pen = new Pen(Color.FromArgb(35, 76, 122), 1F)) g.DrawRoundedRectangle(pen, new Rectangle(x, y, 265, 145), 12);
         using (var brush = new SolidBrush(Color.FromArgb(14, 54, 108))) g.FillEllipse(brush, x + 20, y + 25, 64, 64);
-        DrawText(g, icon, x + 52, y + 39, 28, Cyan, true, StringAlignment.Center);
-        DrawText(g, name, x + 108, y + 45, 23, White, true);
+        LauncherIconRenderer.Draw(g, icon, new RectangleF(x + 35, y + 40, 34, 34), Cyan);
+        DrawText(g, name, new RectangleF(x + 104, y + 42, 145, 32), 21, White, true, StringAlignment.Near, true);
         using (var brush = new SolidBrush(Green)) g.FillEllipse(brush, x + 108, y + 96, 16, 16);
-        DrawText(g, "\u8fd0\u884c\u6b63\u5e38", x + 133, y + 91, 17, Green, false);
+        DrawText(g, "\u8fd0\u884c\u6b63\u5e38", new RectangleF(x + 133, y + 91, 115, 24), 16, Green, false, StringAlignment.Near, true);
     }
 
     private void DrawDashboardDecoration(Graphics g)
@@ -322,7 +345,7 @@ internal sealed class LauncherForm : Form
     private void DrawActivity(Graphics g)
     {
         DrawText(g, "\u6700\u8fd1\u6d3b\u52a8", 1040, 575, 24, White, true);
-        DrawText(g, "\u67e5\u770b\u66f4\u591a  ›", 1370, 580, 16, Muted, false);
+        DrawText(g, "\u67e5\u770b\u66f4\u591a  ›", new RectangleF(1360, 580, 135, 25), 15, Muted, false, StringAlignment.Near, true);
         var rows = new[] { "\u7cfb\u7edf\u542f\u52a8\u5b8c\u6210\uff0c\u6240\u6709\u670d\u52a1\u8fd0\u884c\u6b63\u5e38", "\u5b9a\u65f6\u4efb\u52a1\u6267\u884c\u5b8c\u6210", "\u6d88\u606f\u670d\u52a1\u5df2\u8fde\u63a5", "\u540e\u7aef\u670d\u52a1\u542f\u52a8\u6210\u529f", "\u524d\u7aef\u670d\u52a1\u542f\u52a8\u6210\u529f" };
         for (var i = 0; i < rows.Length; i++)
         {
@@ -331,7 +354,7 @@ internal sealed class LauncherForm : Form
             using (var brush = new SolidBrush(i == 1 || i == 2 ? Cyan : Green)) g.FillEllipse(brush, 1040, y - 1, 24, 24);
             DrawText(g, i == 1 || i == 2 ? "i" : "✓", 1052, y + 1, 15, White, true, StringAlignment.Center);
             DrawText(g, rows[i], new RectangleF(1090, y, 250, 28), 14, White, false, StringAlignment.Near, true);
-            DrawText(g, "2026-09-08 14:25:10", 1365, y, 12, Muted, false);
+            DrawText(g, "2026-09-08 14:25:10", new RectangleF(1360, y, 135, 28), 11, Muted, false, StringAlignment.Far, true);
         }
     }
 
@@ -341,23 +364,27 @@ internal sealed class LauncherForm : Form
         DrawTitleBar(g, false, LauncherText.Product + "\u66f4\u65b0");
         DrawLogoMark(g, new Rectangle(55, 92, 92, 92));
         DrawText(g, LauncherText.Product + "\u66f4\u65b0", 175, 113, 44, White, true);
-        DrawText(g, "⌁  \u5f53\u524d\u7248\u672c  v" + version, 230, 220, 22, White, false);
+        LauncherIconRenderer.Draw(g, LauncherIconKind.Version, new RectangleF(230, 218, 24, 24), Cyan);
+        DrawText(g, "\u5f53\u524d\u7248\u672c  v" + version, new RectangleF(266, 218, 370, 30), 20, White, false, StringAlignment.Near, true);
         DrawText(g, "➜", 748, 214, 34, Muted, false);
-        DrawText(g, "\u6700\u65b0\u7248\u672c  v" + version, 855, 220, 22, White, false);
+        DrawText(g, "\u6700\u65b0\u7248\u672c  v" + latestVersion, new RectangleF(895, 218, 300, 30), 20, White, false, StringAlignment.Near, true);
         using (var brush = new SolidBrush(Color.FromArgb(9, 39, 67))) g.FillRoundedRectangle(brush, new Rectangle(1240, 110, 275, 105), 17);
         using (var pen = new Pen(Color.FromArgb(62, 110, 112), 1F)) g.DrawRoundedRectangle(pen, new Rectangle(1240, 110, 275, 105), 17);
-        DrawText(g, "♢  \u56de\u6eda\u4fdd\u62a4\u5df2\u5f00\u542f", 1270, 140, 20, Green, true);
-        DrawText(g, "\u66f4\u65b0\u5931\u8d25\u53ef\u81ea\u52a8\u56de\u6eda", 1270, 177, 14, Muted, false);
+        LauncherIconRenderer.Draw(g, LauncherIconKind.Shield, new RectangleF(1270, 137, 23, 27), Green);
+        DrawText(g, "\u56de\u6eda\u4fdd\u62a4\u5df2\u5f00\u542f", new RectangleF(1305, 137, 190, 28), 18, Green, true, StringAlignment.Near, true);
+        DrawText(g, "\u66f4\u65b0\u5931\u8d25\u53ef\u81ea\u52a8\u56de\u6eda", new RectangleF(1270, 177, 225, 22), 13, Muted, false, StringAlignment.Near, true);
         DrawGear(g);
         using (var brush = new SolidBrush(Color.FromArgb(8, 29, 62))) g.FillRoundedRectangle(brush, new Rectangle(200, 270, 1365, 610), 14);
         using (var pen = new Pen(Color.FromArgb(35, 76, 122), 1F)) g.DrawRoundedRectangle(pen, new Rectangle(200, 270, 1365, 610), 14);
         DrawText(g, running ? "\u6b63\u5728\u5b89\u88c5\u66f4\u65b0" : "\u51c6\u5907\u66f4\u65b0", 235, 307, 24, White, true);
         DrawProgress(g);
         DrawUpdateSteps(g);
-        DrawText(g, "▤  \u67e5\u770b\u8be6\u7ec6\u65e5\u5fd7", 235, 555, 18, White, false);
+        LauncherIconRenderer.Draw(g, LauncherIconKind.Diagnostics, new RectangleF(235, 552, 22, 22), Cyan);
+        DrawText(g, "\u67e5\u770b\u8be6\u7ec6\u65e5\u5fd7", new RectangleF(268, 552, 240, 25), 17, White, false, StringAlignment.Near, true);
         DrawText(g, "⌃", 1500, 555, 18, Muted, false);
         using (var pen = new Pen(Color.FromArgb(35, 76, 122), 1F)) g.DrawRoundedRectangle(pen, new Rectangle(220, 580, 1325, 280), 10);
-        DrawText(g, "♢  \u66f4\u65b0\u8fc7\u7a0b\u4e2d\u8bf7\u52ff\u5173\u95ed\u7a0b\u5e8f", 220, 915, 18, White, false);
+        LauncherIconRenderer.Draw(g, LauncherIconKind.Shield, new RectangleF(220, 912, 20, 24), Cyan);
+        DrawText(g, "\u66f4\u65b0\u8fc7\u7a0b\u4e2d\u8bf7\u52ff\u5173\u95ed\u7a0b\u5e8f", new RectangleF(252, 912, 450, 26), 17, White, false, StringAlignment.Near, true);
     }
 
     private void DrawGear(Graphics g)
@@ -443,9 +470,46 @@ internal sealed class LauncherForm : Form
         control.SetBounds((int)(x * scale), (int)(y * scale), (int)(w * scale), (int)(h * scale));
     }
 
-    private LauncherButton MakeButton(string text, Color back, Color fore, int radius)
+    private LauncherButton MakeButton(string text, Color back, Color fore, int radius, LauncherIconKind icon = LauncherIconKind.None, bool primary = false)
     {
-        return new LauncherButton { Text = text, BackColor = back, ForeColor = fore, Radius = radius, Font = new Font("Microsoft YaHei UI", 13F), BorderColor = Color.Transparent, FlatAppearance = { BorderSize = 0 } };
+        return new LauncherButton { Text = text, BackColor = back, ForeColor = fore, Radius = radius, Font = new Font("Microsoft YaHei UI", 13F), BorderColor = Color.Transparent, IconKind = icon, PrimaryLayout = primary, FlatAppearance = { BorderSize = 0 } };
+    }
+
+    private async Task LaunchUpdaterAsync()
+    {
+        if (busy) return;
+        var candidates = new[]
+        {
+            Path.Combine(packageRoot, "xianyu-updater.exe"),
+            Path.Combine(packageRoot, LauncherText.Updater + ".exe")
+        };
+        foreach (var candidate in candidates)
+        {
+            if (!File.Exists(candidate)) continue;
+            try
+            {
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = candidate,
+                    Arguments = "--updater",
+                    WorkingDirectory = packageRoot,
+                    UseShellExecute = true,
+                    WindowStyle = ProcessWindowStyle.Normal
+                });
+                return;
+            }
+            catch (Exception ex)
+            {
+                SaveFailureLog("launch-updater", -1, ex.ToString());
+                ShowFailure("无法打开更新中心", ex.ToString());
+                return;
+            }
+        }
+
+        // Compatibility fallback for packages built before the updater EXE was
+        // included. The script itself now enters the GUI directly, so this does
+        // not create the legacy second PowerShell window.
+        await RunScriptAsync("update.ps1", null, "正在检查更新...");
     }
 
     private void ChooseInstallPath()
@@ -510,7 +574,11 @@ internal sealed class LauncherForm : Form
                     SaveFailureLog(scriptName, code, captured);
                     ShowFailure("\u64cd\u4f5c\u5931\u8d25", detail);
                 }
-                else { progressValue = 100; statusText = "\u64cd\u4f5c\u5b8c\u6210"; taskText = "\u64cd\u4f5c\u5b8c\u6210"; }
+                else
+                {
+                    progressValue = 100; statusText = "\u64cd\u4f5c\u5b8c\u6210"; taskText = "\u64cd\u4f5c\u5b8c\u6210";
+                    if (string.Equals(scriptName, "diagnostics.ps1", StringComparison.OrdinalIgnoreCase)) OpenDiagnosticsReport();
+                }
                 surface.Invalidate(); return code;
             }
         }
@@ -533,6 +601,8 @@ internal sealed class LauncherForm : Form
 
     private void UpdateProgress(string line)
     {
+        var versionMatch = Regex.Match(line ?? "", "manifest_response\\s+version=([0-9]+(?:\\.[0-9]+){1,3})", RegexOptions.IgnoreCase);
+        if (versionMatch.Success) latestVersion = versionMatch.Groups[1].Value;
         var text = (line ?? "").ToLowerInvariant();
         if (text.Contains("waiting for docker desktop") || text.Contains("try again")) { progressValue = Math.Max(progressValue, 32); taskText = "\u7b49\u5f85 Docker Desktop \u4e0a\u7ebf\uff0c\u8bf7\u5728 Docker \u4e2d\u70b9\u51fb Try again"; }
         else if (text.Contains("wsl") || text.Contains("docker desktop") || text.Contains("\u73af\u5883")) { progressValue = Math.Max(progressValue, 24); taskText = "\u6b63\u5728\u68c0\u67e5\u7cfb\u7edf\u73af\u5883"; }
@@ -553,8 +623,34 @@ internal sealed class LauncherForm : Form
     {
         var port = "20000";
         var env = Path.Combine(appRoot, ".env");
-        try { if (File.Exists(env)) foreach (var line in File.ReadAllLines(env, Encoding.UTF8)) if (line.StartsWith("FRONTEND_PORT=", StringComparison.OrdinalIgnoreCase)) port = line.Substring(14).Trim(); Process.Start(new ProcessStartInfo("http://127.0.0.1:" + port) { UseShellExecute = true }); }
+        try
+        {
+            if (File.Exists(env))
+                foreach (var line in File.ReadAllLines(env, Encoding.UTF8))
+                    if (line.StartsWith("FRONTEND_PORT=", StringComparison.OrdinalIgnoreCase)) port = line.Substring(14).Trim();
+            var cacheKey = Uri.EscapeDataString(version + "-" + build + "-" + DateTime.UtcNow.Ticks);
+            Process.Start(new ProcessStartInfo("http://127.0.0.1:" + port + "/?_xianyu_client=" + cacheKey) { UseShellExecute = true });
+        }
         catch (Exception ex) { SaveFailureLog("open-application", -1, ex.ToString()); ShowFailure("\u65e0\u6cd5\u6253\u5f00\u7f51\u9875", ex.ToString()); }
+    }
+
+    private void OpenDiagnosticsReport()
+    {
+        var report = Path.Combine(appRoot, "logs", "diagnostics-latest.txt");
+        try
+        {
+            if (File.Exists(report))
+            {
+                Process.Start(new ProcessStartInfo { FileName = "notepad.exe", Arguments = Quote(report), UseShellExecute = true });
+                return;
+            }
+            ShowInfo("诊断已完成，但没有生成 diagnostics-latest.txt。请打开 app\\logs 查看详细日志。");
+        }
+        catch (Exception ex)
+        {
+            SaveFailureLog("open-diagnostics-report", -1, ex.ToString());
+            ShowFailure("无法打开诊断日志", ex.ToString());
+        }
     }
 
     private void ShowFailure(string title, string detail)
@@ -665,6 +761,208 @@ internal sealed class LauncherForm : Form
     private static string ReadFirstLine(string path) { try { if (!File.Exists(path)) return "unknown"; using (var r = new StreamReader(path, Encoding.UTF8, true)) return (r.ReadLine() ?? "unknown").Trim(); } catch { return "unknown"; } }
 }
 
+internal static class LauncherIconRenderer
+{
+    internal static void Draw(Graphics g, LauncherIconKind kind, RectangleF bounds, Color color)
+    {
+        if (kind == LauncherIconKind.None) return;
+        var state = g.Save();
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        var width = Math.Max(1F, bounds.Width);
+        var stroke = Math.Max(1.5F, width / 13F);
+        using (var pen = new Pen(color, stroke))
+        {
+            pen.StartCap = LineCap.Round;
+            pen.EndCap = LineCap.Round;
+            pen.LineJoin = LineJoin.Round;
+            var cx = bounds.Left + bounds.Width / 2F;
+            var cy = bounds.Top + bounds.Height / 2F;
+            switch (kind)
+            {
+                case LauncherIconKind.App: DrawApp(g, pen, bounds); break;
+                case LauncherIconKind.Open: DrawOpen(g, pen, bounds); break;
+                case LauncherIconKind.Update: DrawUpdate(g, pen, bounds); break;
+                case LauncherIconKind.Diagnostics: DrawDiagnostics(g, pen, bounds); break;
+                case LauncherIconKind.Stop: DrawStop(g, pen, bounds); break;
+                case LauncherIconKind.Home: DrawHome(g, pen, bounds); break;
+                case LauncherIconKind.Settings: DrawSettings(g, pen, bounds); break;
+                case LauncherIconKind.Info: DrawInfo(g, pen, bounds); break;
+                case LauncherIconKind.Frontend: DrawFrontend(g, pen, bounds); break;
+                case LauncherIconKind.Backend: DrawBackend(g, pen, bounds); break;
+                case LauncherIconKind.Message: DrawMessage(g, pen, bounds); break;
+                case LauncherIconKind.Scheduler: DrawScheduler(g, pen, bounds); break;
+                case LauncherIconKind.Version: DrawVersion(g, pen, bounds); break;
+                case LauncherIconKind.Check: DrawCheck(g, pen, bounds); break;
+                case LauncherIconKind.Shield: DrawShield(g, pen, bounds); break;
+            }
+        }
+        g.Restore(state);
+    }
+
+    private static void DrawApp(Graphics g, Pen pen, RectangleF b)
+    {
+        using (var path = RoundedPath(new RectangleF(b.Left + b.Width * .10F, b.Top + b.Height * .18F, b.Width * .62F, b.Height * .52F), b.Width * .12F)) g.DrawPath(pen, path);
+        g.DrawLine(pen, b.Left + b.Width * .29F, b.Bottom - b.Height * .23F, b.Left + b.Width * .18F, b.Bottom - b.Height * .06F);
+        g.DrawLine(pen, b.Left + b.Width * .65F, b.Top + b.Height * .36F, b.Right - b.Width * .07F, b.Top + b.Height * .20F);
+        g.DrawLine(pen, b.Left + b.Width * .65F, b.Top + b.Height * .36F, b.Right - b.Width * .07F, b.Top + b.Height * .57F);
+        using (var brush = new SolidBrush(pen.Color)) g.FillEllipse(brush, b.Left + b.Width * .27F, b.Top + b.Height * .34F, b.Width * .07F, b.Height * .07F);
+    }
+
+    private static void DrawOpen(Graphics g, Pen pen, RectangleF b)
+    {
+        g.DrawRoundedRectangle(pen, ToRectangle(b.Left + b.Width * .10F, b.Top + b.Height * .26F, b.Width * .55F, b.Height * .56F), 3);
+        g.DrawLine(pen, b.Left + b.Width * .42F, b.Top + b.Height * .50F, b.Right - b.Width * .10F, b.Top + b.Height * .50F);
+        g.DrawLine(pen, b.Right - b.Width * .25F, b.Top + b.Height * .34F, b.Right - b.Width * .10F, b.Top + b.Height * .50F);
+        g.DrawLine(pen, b.Right - b.Width * .25F, b.Top + b.Height * .66F, b.Right - b.Width * .10F, b.Top + b.Height * .50F);
+    }
+
+    private static void DrawUpdate(Graphics g, Pen pen, RectangleF b)
+    {
+        var r = new RectangleF(b.Left + b.Width * .14F, b.Top + b.Height * .14F, b.Width * .72F, b.Height * .72F);
+        g.DrawArc(pen, r, 205, 190);
+        g.DrawArc(pen, r, 25, 190);
+        g.DrawLine(pen, b.Left + b.Width * .18F, b.Top + b.Height * .33F, b.Left + b.Width * .14F, b.Top + b.Height * .14F);
+        g.DrawLine(pen, b.Left + b.Width * .18F, b.Top + b.Height * .33F, b.Left + b.Width * .36F, b.Top + b.Height * .29F);
+        g.DrawLine(pen, b.Right - b.Width * .18F, b.Bottom - b.Height * .33F, b.Right - b.Width * .14F, b.Bottom - b.Height * .14F);
+        g.DrawLine(pen, b.Right - b.Width * .18F, b.Bottom - b.Height * .33F, b.Right - b.Width * .36F, b.Bottom - b.Height * .29F);
+    }
+
+    private static void DrawDiagnostics(Graphics g, Pen pen, RectangleF b)
+    {
+        g.DrawRoundedRectangle(pen, ToRectangle(b.Left + b.Width * .14F, b.Top + b.Height * .10F, b.Width * .50F, b.Height * .68F), 3);
+        g.DrawLine(pen, b.Left + b.Width * .27F, b.Top + b.Height * .30F, b.Left + b.Width * .52F, b.Top + b.Height * .30F);
+        g.DrawLine(pen, b.Left + b.Width * .27F, b.Top + b.Height * .46F, b.Left + b.Width * .52F, b.Top + b.Height * .46F);
+        g.DrawEllipse(pen, b.Left + b.Width * .49F, b.Top + b.Height * .49F, b.Width * .30F, b.Height * .30F);
+        g.DrawLine(pen, b.Left + b.Width * .72F, b.Top + b.Height * .72F, b.Right - b.Width * .08F, b.Bottom - b.Height * .08F);
+    }
+
+    private static void DrawStop(Graphics g, Pen pen, RectangleF b)
+    {
+        using (var brush = new SolidBrush(pen.Color)) g.FillRoundedRectangle(brush, ToRectangle(b.Left + b.Width * .22F, b.Top + b.Height * .22F, b.Width * .56F, b.Height * .56F), 4);
+    }
+
+    private static void DrawHome(Graphics g, Pen pen, RectangleF b)
+    {
+        var points = new[]
+        {
+            new PointF(b.Left + b.Width * .16F, b.Top + b.Height * .45F),
+            new PointF(b.Left + b.Width * .50F, b.Top + b.Height * .15F),
+            new PointF(b.Right - b.Width * .16F, b.Top + b.Height * .45F),
+        };
+        g.DrawLines(pen, points);
+        g.DrawLine(pen, points[0], new PointF(points[0].X, b.Bottom - b.Height * .12F));
+        g.DrawLine(pen, points[2], new PointF(points[2].X, b.Bottom - b.Height * .12F));
+        g.DrawLine(pen, points[0].X, b.Bottom - b.Height * .12F, b.Right - b.Width * .16F, b.Bottom - b.Height * .12F);
+        g.DrawLine(pen, b.Left + b.Width * .43F, b.Bottom - b.Height * .12F, b.Left + b.Width * .43F, b.Top + b.Height * .58F);
+        g.DrawLine(pen, b.Left + b.Width * .57F, b.Bottom - b.Height * .12F, b.Left + b.Width * .57F, b.Top + b.Height * .58F);
+    }
+
+    private static void DrawSettings(Graphics g, Pen pen, RectangleF b)
+    {
+        var cx = b.Left + b.Width / 2F; var cy = b.Top + b.Height / 2F; var outer = b.Width * .35F; var inner = b.Width * .15F;
+        g.DrawEllipse(pen, cx - outer, cy - outer, outer * 2F, outer * 2F);
+        g.DrawEllipse(pen, cx - inner, cy - inner, inner * 2F, inner * 2F);
+        for (var i = 0; i < 8; i++)
+        {
+            var angle = i * Math.PI / 4D;
+            var x1 = cx + (float)Math.Cos(angle) * outer;
+            var y1 = cy + (float)Math.Sin(angle) * outer;
+            var x2 = cx + (float)Math.Cos(angle) * b.Width * .49F;
+            var y2 = cy + (float)Math.Sin(angle) * b.Width * .49F;
+            g.DrawLine(pen, x1, y1, x2, y2);
+        }
+    }
+
+    private static void DrawInfo(Graphics g, Pen pen, RectangleF b)
+    {
+        g.DrawEllipse(pen, b.Left + b.Width * .13F, b.Top + b.Height * .13F, b.Width * .74F, b.Height * .74F);
+        var cx = b.Left + b.Width / 2F;
+        g.DrawLine(pen, cx, b.Top + b.Height * .42F, cx, b.Bottom - b.Height * .25F);
+        using (var brush = new SolidBrush(pen.Color)) g.FillEllipse(brush, cx - pen.Width, b.Top + b.Height * .27F, pen.Width * 2F, pen.Width * 2F);
+    }
+
+    private static void DrawFrontend(Graphics g, Pen pen, RectangleF b)
+    {
+        g.DrawRoundedRectangle(pen, ToRectangle(b.Left + b.Width * .10F, b.Top + b.Height * .15F, b.Width * .80F, b.Height * .56F), 3);
+        g.DrawLine(pen, b.Left + b.Width * .30F, b.Bottom - b.Height * .16F, b.Right - b.Width * .30F, b.Bottom - b.Height * .16F);
+        g.DrawLine(pen, b.Left + b.Width * .50F, b.Top + b.Height * .71F, b.Left + b.Width * .50F, b.Bottom - b.Height * .16F);
+    }
+
+    private static void DrawBackend(Graphics g, Pen pen, RectangleF b)
+    {
+        for (var i = 0; i < 3; i++)
+        {
+            var y = b.Top + b.Height * (.16F + i * .25F);
+            g.DrawRoundedRectangle(pen, ToRectangle(b.Left + b.Width * .14F, y, b.Width * .72F, b.Height * .20F), 3);
+            using (var brush = new SolidBrush(pen.Color)) g.FillEllipse(brush, b.Left + b.Width * .68F, y + b.Height * .07F, b.Width * .06F, b.Height * .06F);
+        }
+    }
+
+    private static void DrawMessage(Graphics g, Pen pen, RectangleF b)
+    {
+        using (var path = RoundedPath(new RectangleF(b.Left + b.Width * .10F, b.Top + b.Height * .15F, b.Width * .80F, b.Height * .58F), b.Width * .10F)) g.DrawPath(pen, path);
+        g.DrawLine(pen, b.Left + b.Width * .28F, b.Top + b.Height * .73F, b.Left + b.Width * .20F, b.Bottom - b.Height * .09F);
+        g.DrawLine(pen, b.Left + b.Width * .20F, b.Bottom - b.Height * .09F, b.Left + b.Width * .39F, b.Top + b.Height * .73F);
+        g.DrawLine(pen, b.Left + b.Width * .30F, b.Top + b.Height * .42F, b.Right - b.Width * .25F, b.Top + b.Height * .42F);
+    }
+
+    private static void DrawScheduler(Graphics g, Pen pen, RectangleF b)
+    {
+        g.DrawEllipse(pen, b.Left + b.Width * .13F, b.Top + b.Height * .13F, b.Width * .74F, b.Height * .74F);
+        var cx = b.Left + b.Width / 2F; var cy = b.Top + b.Height / 2F;
+        g.DrawLine(pen, cx, cy, cx, b.Top + b.Height * .30F);
+        g.DrawLine(pen, cx, cy, b.Right - b.Width * .29F, cy + b.Height * .12F);
+    }
+
+    private static void DrawVersion(Graphics g, Pen pen, RectangleF b)
+    {
+        var points = new[]
+        {
+            new PointF(b.Left + b.Width / 2F, b.Top + b.Height * .08F),
+            new PointF(b.Right - b.Width * .08F, b.Top + b.Height / 2F),
+            new PointF(b.Left + b.Width / 2F, b.Bottom - b.Height * .08F),
+            new PointF(b.Left + b.Width * .08F, b.Top + b.Height / 2F),
+        };
+        g.DrawPolygon(pen, points);
+    }
+
+    private static void DrawCheck(Graphics g, Pen pen, RectangleF b)
+    {
+        g.DrawEllipse(pen, b.Left + b.Width * .11F, b.Top + b.Height * .11F, b.Width * .78F, b.Height * .78F);
+        g.DrawLine(pen, b.Left + b.Width * .30F, b.Top + b.Height * .52F, b.Left + b.Width * .45F, b.Bottom - b.Height * .29F);
+        g.DrawLine(pen, b.Left + b.Width * .45F, b.Bottom - b.Height * .29F, b.Right - b.Width * .22F, b.Top + b.Height * .31F);
+    }
+
+    private static void DrawShield(Graphics g, Pen pen, RectangleF b)
+    {
+        g.DrawPolygon(pen, new[]
+        {
+            new PointF(b.Left + b.Width * .18F, b.Top + b.Height * .16F),
+            new PointF(b.Right - b.Width * .18F, b.Top + b.Height * .16F),
+            new PointF(b.Right - b.Width * .13F, b.Top + b.Height * .54F),
+            new PointF(b.Left + b.Width * .50F, b.Bottom - b.Height * .12F),
+            new PointF(b.Left + b.Width * .13F, b.Top + b.Height * .54F)
+        });
+    }
+
+    private static Rectangle ToRectangle(float x, float y, float width, float height)
+    {
+        return Rectangle.Round(new RectangleF(x, y, width, height));
+    }
+
+    private static GraphicsPath RoundedPath(RectangleF bounds, float radius)
+    {
+        var path = new GraphicsPath();
+        var diameter = Math.Max(2F, Math.Min(radius * 2F, Math.Min(bounds.Width, bounds.Height)));
+        var topLeft = new RectangleF(bounds.Left, bounds.Top, diameter, diameter);
+        var topRight = new RectangleF(bounds.Right - diameter, bounds.Top, diameter, diameter);
+        var bottomRight = new RectangleF(bounds.Right - diameter, bounds.Bottom - diameter, diameter, diameter);
+        var bottomLeft = new RectangleF(bounds.Left, bounds.Bottom - diameter, diameter, diameter);
+        path.AddArc(topLeft, 180, 90); path.AddArc(topRight, 270, 90); path.AddArc(bottomRight, 0, 90); path.AddArc(bottomLeft, 90, 90); path.CloseFigure();
+        return path;
+    }
+}
+
 internal sealed class VisualSurface : Panel
 {
     internal Action<Graphics> PaintSurface;
@@ -676,6 +974,8 @@ internal sealed class LauncherButton : Button
 {
     internal int Radius { get; set; }
     internal Color BorderColor { get; set; }
+    internal LauncherIconKind IconKind { get; set; }
+    internal bool PrimaryLayout { get; set; }
     private bool hover;
     internal LauncherButton() { Radius = 8; BorderColor = Color.Transparent; FlatStyle = FlatStyle.Flat; FlatAppearance.BorderSize = 0; UseVisualStyleBackColor = false; SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true); }
     protected override void OnResize(EventArgs e)
@@ -703,7 +1003,25 @@ internal sealed class LauncherButton : Button
         using (var brush = new SolidBrush(color)) e.Graphics.FillRoundedRectangle(brush, new Rectangle(0, 0, Width - 1, Height - 1), Radius);
         if (BorderColor.A > 0)
             using (var pen = new Pen(BorderColor, 1F)) e.Graphics.DrawRoundedRectangle(pen, new Rectangle(0, 0, Width - 1, Height - 1), Radius);
-        TextRenderer.DrawText(e.Graphics, Text, Font, ClientRectangle, Enabled ? ForeColor : Color.FromArgb(148, 163, 184), TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
+        var textColor = Enabled ? ForeColor : Color.FromArgb(148, 163, 184);
+        if (IconKind == LauncherIconKind.None)
+        {
+            TextRenderer.DrawText(e.Graphics, Text, Font, ClientRectangle, textColor, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
+        }
+        else if (PrimaryLayout)
+        {
+            var iconSize = Math.Min(30, Math.Max(20, Height - 38));
+            LauncherIconRenderer.Draw(e.Graphics, IconKind, new RectangleF(24, (Height - iconSize) / 2F, iconSize, iconSize), textColor);
+            var textBounds = new Rectangle(66, 0, Math.Max(20, Width - 88), Height);
+            TextRenderer.DrawText(e.Graphics, Text, Font, textBounds, textColor, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
+        }
+        else
+        {
+            var iconSize = Math.Min(34, Math.Max(22, Height / 3));
+            LauncherIconRenderer.Draw(e.Graphics, IconKind, new RectangleF((Width - iconSize) / 2F, 14, iconSize, iconSize), textColor);
+            var textBounds = new Rectangle(8, Math.Max(42, Height / 2), Math.Max(10, Width - 16), Math.Max(20, Height / 2 - 12));
+            TextRenderer.DrawText(e.Graphics, Text, Font, textBounds, textColor, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
+        }
     }
     private static Color Lighten(Color color, int amount) { return Color.FromArgb(color.A, Math.Min(255, color.R + amount), Math.Min(255, color.G + amount), Math.Min(255, color.B + amount)); }
 }
@@ -724,6 +1042,11 @@ internal static class Program
     [STAThread]
     private static void Main(string[] args)
     {
+        // A client package is staged while the current launcher is still
+        // running. Hand the replacement to a detached helper before creating
+        // any WinForms window, then let that helper restart this exact entry
+        // point after the old executable has released its file handle.
+        if (TryHandOffPendingClientUpdate()) return;
         Application.EnableVisualStyles(); Application.SetCompatibleTextRenderingDefault(false);
         var name = Path.GetFileNameWithoutExtension(Application.ExecutablePath);
         var roleArg = args != null && args.Length > 0 ? args[0].ToLowerInvariant() : "";
@@ -731,6 +1054,42 @@ internal static class Program
         var installPath = ReadArgument(args, "--install-path");
         var role = roleArg == "--installer" || name == LauncherText.Installer || name == "xianyu-installer" ? LauncherRole.Installer : roleArg == "--updater" || name == LauncherText.Updater || name == "xianyu-updater" ? LauncherRole.Updater : roleArg == "--stopper" || name == LauncherText.Stopper || name == "xianyu-stopper" ? LauncherRole.Stopper : roleArg == "--diagnostics" || name == LauncherText.Diagnostics || name == "xianyu-diagnostics" ? LauncherRole.Diagnostics : LauncherRole.Dashboard;
         Application.Run(new LauncherForm(role, resume, installPath));
+    }
+
+    private static bool TryHandOffPendingClientUpdate()
+    {
+        try
+        {
+            var packageRoot = AppDomain.CurrentDomain.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            var pendingRoot = Path.Combine(packageRoot, "app", "updates", "pending");
+            if (!Directory.Exists(pendingRoot) || Directory.GetFiles(pendingRoot, "*.zip").Length == 0) return false;
+            var script = Path.Combine(packageRoot, "scripts", "apply-client-update.ps1");
+            if (!File.Exists(script)) return false;
+            var powershell = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "WindowsPowerShell", "v1.0", "powershell.exe");
+            if (!File.Exists(powershell)) return false;
+            var psi = new ProcessStartInfo
+            {
+                FileName = powershell,
+                Arguments = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File " + Quote(script) + " -PackageRoot " + Quote(packageRoot) + " -WaitForProcessId " + Process.GetCurrentProcess().Id + " -RestartExecutable " + Quote(Application.ExecutablePath),
+                WorkingDirectory = packageRoot,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            };
+            psi.EnvironmentVariables["XIANYU_NONINTERACTIVE"] = "1";
+            Process.Start(psi);
+            return true;
+        }
+        catch
+        {
+            // Startup must remain usable if a partially copied package cannot
+            // be handed off. The pending archive is retained for the next run.
+            return false;
+        }
+    }
+
+    private static string Quote(string value)
+    {
+        return "\"" + (value ?? "").Replace("\"", "\\\"") + "\"";
     }
 
     private static string ReadArgument(string[] args, string name)

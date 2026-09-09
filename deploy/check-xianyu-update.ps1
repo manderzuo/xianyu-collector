@@ -39,17 +39,11 @@ if (Test-Path -LiteralPath $credentialSync) {
     & $credentialSync -ProjectRoot $ProjectRoot
 }
 
-$envMap = @{}
-foreach ($line in Get-Content -LiteralPath $EnvFile) {
-    if ($line -match '^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$') { $envMap[$Matches[1]] = $Matches[2] }
-}
-# The launcher itself runs hidden to avoid a console window.  Start the GUI in
-# a separate visible process; otherwise Windows may keep the WinForms window
-# hidden on machines where the parent PowerShell process is hidden.
-$guiArguments = @('-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-File', $GuiScript, '-ProjectRoot', $ProjectRoot)
-if ($Force) { $guiArguments += '-Force' }
-Write-XianyuLog -LogPath $LogPath -Message "gui_launch path=$GuiScript force=$Force"
-$guiProcess = Start-Process -FilePath 'powershell.exe' -ArgumentList $guiArguments -WindowStyle Normal -Wait -PassThru
-Write-XianyuLog -LogPath $LogPath -Message "gui_exit code=$($guiProcess.ExitCode)"
-if ($guiProcess.ExitCode -ne 0) { throw "Update window exited with code $($guiProcess.ExitCode)." }
+# Run the worker in the existing STA process. This removes the old visible
+# PowerShell child window while preserving the WinForms update UI.
+Write-XianyuLog -LogPath $LogPath -Message "gui_direct path=$GuiScript force=$Force"
+if ($Force) { & $GuiScript -ProjectRoot $ProjectRoot -Force } else { & $GuiScript -ProjectRoot $ProjectRoot }
+$guiExitCode = $LASTEXITCODE
+Write-XianyuLog -LogPath $LogPath -Message "gui_exit code=$guiExitCode"
+if ($guiExitCode -ne 0) { throw "Update window exited with code $guiExitCode." }
 exit 0

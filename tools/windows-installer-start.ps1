@@ -4,6 +4,8 @@ $AppRoot = Join-Path $PackageRoot 'app'
 $ComposeFile = Join-Path $AppRoot 'docker-compose.yml'
 $EnvFile = Join-Path $AppRoot '.env'
 $UpdateChecker = Join-Path $AppRoot 'deploy\check-xianyu-update.ps1'
+$UpdaterExecutable = Join-Path $PackageRoot 'xianyu-updater.exe'
+$ChineseUpdaterExecutable = Join-Path $PackageRoot ((-join ([char[]](0x66f4, 0x65b0, 0x95f2, 0x9c7c, 0x7ba1, 0x7406, 0x7cfb, 0x7edf))) + '.exe')
 $DbCredentialSync = Join-Path $AppRoot 'deploy\sync-xianyu-db-credentials.ps1'
 $ProtocolRegistrar = Join-Path $AppRoot 'deploy\register-xianyu-update-protocol.ps1'
 $DockerBootstrap = Join-Path $PackageRoot 'resources\docker-bootstrap.ps1'
@@ -129,11 +131,21 @@ Write-XianyuLog -LogPath $LogPath -Message "startup_completed frontend_port=$fro
 # background process so a slow registry or a failed update check never blocks
 # the local application from opening. Use an argument array instead of a
 # hand-built quoted command line so paths with spaces remain valid.
-if (Test-Path -LiteralPath $UpdateChecker) {
+foreach ($candidate in @($UpdaterExecutable, $ChineseUpdaterExecutable)) {
+    if (-not (Test-Path -LiteralPath $candidate)) { continue }
+    try {
+        $updateProcess = Start-Process -FilePath $candidate -ArgumentList '--updater' -WorkingDirectory $PackageRoot -WindowStyle Normal -PassThru
+        Write-XianyuLog -LogPath $LogPath -Message "update_gui_started path=$candidate pid=$($updateProcess.Id)"
+    } catch {
+        Write-XianyuLog -LogPath $LogPath -Message "update_gui_start_failed error=$($_.Exception.ToString())"
+    }
+    break
+}
+if (-not (Test-Path -LiteralPath $UpdaterExecutable) -and -not (Test-Path -LiteralPath $ChineseUpdaterExecutable) -and (Test-Path -LiteralPath $UpdateChecker)) {
     $checkArguments = @('-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-File', $UpdateChecker)
     try {
         $checkProcess = Start-Process -FilePath 'powershell.exe' -ArgumentList $checkArguments -WindowStyle Hidden -PassThru
-        Write-XianyuLog -LogPath $LogPath -Message "update_check_started pid=$($checkProcess.Id)"
+        Write-XianyuLog -LogPath $LogPath -Message "update_check_started_compat pid=$($checkProcess.Id)"
     } catch {
         Write-XianyuLog -LogPath $LogPath -Message "update_check_start_failed error=$($_.Exception.ToString())"
     }

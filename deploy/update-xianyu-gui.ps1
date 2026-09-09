@@ -1,6 +1,7 @@
 ﻿param(
     [string]$ProjectRoot = (Split-Path -Parent $PSScriptRoot),
-    [switch]$Force
+    [switch]$Force,
+    [switch]$Headless
 )
 
 $ErrorActionPreference = 'Stop'
@@ -423,10 +424,20 @@ $worker = {
         Write-Detail "frontend_check status=$($response.StatusCode) port=$port"
         if ($response.StatusCode -lt 200 -or $response.StatusCode -ge 500) { throw "前端健康检查失败，HTTP $($response.StatusCode)" }
         $pendingClientPath = Install-ClientMaintenance $manifest $latestVersion $latestBuild
-        Set-Content -LiteralPath $versionFile -Value $latestVersion -Encoding UTF8
-        Set-Content -LiteralPath $buildFile -Value $latestBuild -Encoding UTF8
-        Write-Detail "update_completed version=$latestVersion build=$latestBuild"
-        Send-Message 'completed' "更新完成，当前版本 $latestVersion" 100
+        if ($pendingClientPath) {
+            # The client package contains the launcher EXE and the frontend
+            # maintenance files. Do not advance the local version marker until
+            # that package has been applied; otherwise an old executable can
+            # report the new version after a failed file replacement.
+            Write-Detail "client_update_pending version=$latestVersion build=$latestBuild path=$pendingClientPath"
+            Write-Detail "update_completed runtime_version=$latestVersion client_version_pending=true"
+            Send-Message 'completed' "更新包已下载，请关闭并重新启动启动器以应用新版界面" 100
+        } else {
+            Set-Content -LiteralPath $versionFile -Value $latestVersion -Encoding UTF8
+            Set-Content -LiteralPath $buildFile -Value $latestBuild -Encoding UTF8
+            Write-Detail "update_completed version=$latestVersion build=$latestBuild"
+            Send-Message 'completed' "更新完成，当前版本 $latestVersion" 100
+        }
     } catch {
         $detail = $_.Exception.ToString()
         Write-Detail "update_failed error=$detail"
@@ -450,6 +461,31 @@ $worker = {
         try { Invoke-Docker @('ps') '失败后检查容器状态' } catch { Write-Detail "docker_status_failed error=$($_.Exception.ToString())" }
         Send-Message 'failed' '更新失败，请查看下方详细日志' 100 $detail
     }
+}
+
+if ($Headless) {
+    # The C# updater owns the visible window. Run the same worker directly and
+    # forward its log/progress messages to stdout so no legacy PowerShell
+    # WinForms window or console is created.
+    $records = @(& $worker $ProjectRoot 'update' '' 6>&1)
+    $failed = $false
+    foreach ($record in $records) {
+        if ($record -is [System.Management.Automation.InformationRecord]) {
+            $info = $record.MessageData
+            if ($null -ne $info -and $info.Kind -eq 'log') { [Console]::WriteLine([string]$info.Message) }
+            continue
+        }
+        if ($null -eq $record -or $null -eq $record.Kind) { continue }
+        if ($record.Kind -eq 'failed') {
+            $failed = $true
+            [Console]::WriteLine([string]$record.Message)
+            [Console]::WriteLine([string]$record.Data)
+        } else {
+            [Console]::WriteLine([string]$record.Message)
+        }
+    }
+    if ($failed) { exit 1 }
+    exit 0
 }
 
 $form = New-Object System.Windows.Forms.Form

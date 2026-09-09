@@ -279,12 +279,12 @@ export function Sidebar({ systemName = '闲鱼管理系统' }: SidebarProps) {
             !showLabel ? 'justify-center px-2' : 'justify-between px-4'
           )}
         >
-          <div className="flex items-center gap-2.5">
+          <div className="flex min-w-0 flex-1 items-center gap-2.5">
             <div className="w-8 h-8 rounded-lg bg-blue-500 flex items-center justify-center flex-shrink-0">
               <MessageSquare className="w-4 h-4 text-white" />
             </div>
             {showLabel && (
-              <span className="font-semibold text-sm text-slate-900 dark:text-white truncate max-w-[140px]">
+              <span className="min-w-0 flex-1 truncate font-semibold text-sm text-slate-900 dark:text-white">
                 {systemName}
               </span>
             )}

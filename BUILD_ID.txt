@@ -1,1 +1,1 @@
-20260909-1.1.2-wslg-and-client-update-fix
+20260909-1.1.3-client-handoff-ui-fix

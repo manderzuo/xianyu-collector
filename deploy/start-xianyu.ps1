@@ -1,5 +1,6 @@
 $ErrorActionPreference = 'Stop'
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
+$PackageRoot = Split-Path -Parent $ProjectRoot
 $ComposeFile = Join-Path $ProjectRoot 'docker-compose.yml'
 $EnvFile = Join-Path $ProjectRoot '.env'
 $Desktop = [Environment]::GetFolderPath('Desktop')
@@ -8,6 +9,9 @@ $ShortcutPath = Join-Path $Desktop "$ShortcutTitle.lnk"
 $OldShortcutPath = Join-Path $Desktop 'Xianyu System.lnk'
 $IconPath = Join-Path $ProjectRoot 'assets\xianyu-launcher.ico'
 $ProtocolRegistrar = Join-Path $PSScriptRoot 'register-xianyu-update-protocol.ps1'
+$UpdateChecker = Join-Path $PSScriptRoot 'check-xianyu-update.ps1'
+$UpdaterExecutable = Join-Path $PackageRoot 'xianyu-updater.exe'
+$ChineseUpdaterExecutable = Join-Path $PackageRoot ((-join ([char[]](0x66f4, 0x65b0, 0x95f2, 0x9c7c, 0x7ba1, 0x7406, 0x7cfb, 0x7edf))) + '.exe')
 
 function Remove-StaleXianyuShortcuts {
     param([string]$KeepPath)
@@ -55,12 +59,19 @@ if (Test-Path -LiteralPath $ProtocolRegistrar) {
     try { & $ProtocolRegistrar -ProjectRoot $ProjectRoot } catch { Write-Host "[xianyu] Update protocol registration skipped: $($_.Exception.Message)" -ForegroundColor Yellow }
 }
 
-& (Join-Path $PSScriptRoot 'check-xianyu-update.ps1')
-
 docker compose --project-directory $ProjectRoot --env-file $EnvFile -f $ComposeFile up -d
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 $frontendPort = ((Get-Content -LiteralPath $EnvFile | Where-Object { $_ -match '^FRONTEND_PORT=' }) -replace '^FRONTEND_PORT=', '').Trim()
 if ($frontendPort -match '^\d+$') {
-    Start-Process "http://127.0.0.1:$frontendPort"
+    Start-Process "http://127.0.0.1:$frontendPort/?_xianyu_start=$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())"
+}
+
+foreach ($candidate in @($UpdaterExecutable, $ChineseUpdaterExecutable)) {
+    if (-not (Test-Path -LiteralPath $candidate)) { continue }
+    Start-Process -FilePath $candidate -ArgumentList '--updater' -WorkingDirectory $PackageRoot -WindowStyle Normal | Out-Null
+    break
+}
+if (-not (Test-Path -LiteralPath $UpdaterExecutable) -and -not (Test-Path -LiteralPath $ChineseUpdaterExecutable) -and (Test-Path -LiteralPath $UpdateChecker)) {
+    & $UpdateChecker
 }
