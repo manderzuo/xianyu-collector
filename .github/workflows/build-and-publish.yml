@@ -121,10 +121,13 @@ jobs:
           if normalize(target) < normalize(base):
               raise SystemExit(f"refusing release downgrade: base={base}, target={target}")
           PY
+          # Client-only releases keep using the stable runtime image tag. The
+          # manifest version (for example 1.1.2) is not necessarily an image
+          # tag, so validate the resolved runtime tag instead.
           for service in backend websocket scheduler frontend; do
             curl --fail --silent --show-error \
               -H 'Accept: application/vnd.docker.distribution.manifest.v2+json' \
-              "https://${CLIENT_IMAGE_REGISTRY}/v2/${CLIENT_IMAGE_NAMESPACE}/xianyu-${service}/manifests/${base_version}" \
+              "https://${CLIENT_IMAGE_REGISTRY}/v2/${CLIENT_IMAGE_NAMESPACE}/xianyu-${service}/manifests/${runtime_tag}" \
               >/dev/null
           done
           # The original 1.0.10 commercial offline package flattened its
