@@ -381,6 +381,7 @@ jobs:
             done
 
       - name: Verify incremental registry images
+        if: needs.release_base.outputs.images_changed == 'true'
         shell: bash
         env:
           RELEASE_VERSION: ${{ steps.release.outputs.version }}
@@ -393,6 +394,15 @@ jobs:
               "https://${CLIENT_IMAGE_REGISTRY}/v2/${CLIENT_IMAGE_NAMESPACE}/xianyu-${service}/manifests/${RELEASE_VERSION}" \
               >/dev/null
           done
+
+      - name: Verify client-only release artifact
+        if: needs.release_base.outputs.images_changed == 'false'
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          marker_file="xianyu-update-marker-${{ steps.release.outputs.build_id }}.tar.gz"
+          curl --fail --silent --show-error --retry 3 --retry-delay 2 -I \
+            "https://${CLIENT_IMAGE_REGISTRY}/release/xianyu/${marker_file}" >/dev/null
 
       - name: Create update manifest
         run: |
