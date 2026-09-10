@@ -38,6 +38,11 @@ export interface PlatformCategoryCandidate {
   score?: number | null
   is_selected?: boolean
   is_service_category?: boolean
+  /** 由后端按真实 APP 编辑结果标注的履约模式，不是闲鱼官方字段。 */
+  inventory_mode?: 'verified' | 'candidate' | 'service' | 'single'
+  inventory_label?: string
+  inventory_reason?: string
+  inventory_price_unit?: string
 }
 
 export interface PlatformCategoryPropertyOption {
@@ -119,6 +124,7 @@ export interface ProductMaterial {
   description: string
   price: number
   original_price?: number | null
+  publish_type?: 'item' | 'service'
   category?: string | null
   platform_category_id?: string | null
   platform_category_name?: string | null
@@ -129,6 +135,10 @@ export interface ProductMaterial {
   platform_category_path: PlatformCategoryPathItem[]
   platform_card_list?: PlatformCategoryCardData[]
   is_service_category?: boolean
+  inventory_mode?: 'verified' | 'candidate' | 'service' | 'single'
+  inventory_label?: string
+  inventory_reason?: string
+  inventory_price_unit?: string
   platform_attributes: PlatformMaterialAttribute[]
   category_source: 'manual' | 'recommendation'
   category_confidence?: number | null
@@ -155,6 +165,7 @@ export interface MaterialCreateParams {
   description: string
   price: number
   original_price?: number | null
+  publish_type?: 'item' | 'service'
   category?: string | null
   platform_category_id?: string | null
   platform_category_name?: string | null
@@ -165,6 +176,10 @@ export interface MaterialCreateParams {
   platform_category_path?: PlatformCategoryPathItem[]
   platform_card_list?: PlatformCategoryCardData[]
   is_service_category?: boolean
+  inventory_mode?: 'verified' | 'candidate' | 'service' | 'single'
+  inventory_label?: string
+  inventory_reason?: string
+  inventory_price_unit?: string
   platform_attributes?: PlatformMaterialAttribute[]
   category_source?: 'manual' | 'recommendation'
   category_confidence?: number | null
@@ -324,6 +339,7 @@ const normalizeMaterial = (raw: RawRecord): ProductMaterial => {
     description: String(value('description', '')),
     price: Number(value('price', 0) || 0),
     original_price: value('original_price') == null ? null : Number(value('original_price')),
+    publish_type: value('publish_type', value('is_service_category', false) ? 'service' : 'item') as ProductMaterial['publish_type'],
     category: value('category') == null ? null : String(value('category')),
     platform_category_id: value('platform_category_id') == null ? null : String(value('platform_category_id')),
     platform_category_name: value('platform_category_name') == null ? null : String(value('platform_category_name')),
@@ -337,6 +353,10 @@ const normalizeMaterial = (raw: RawRecord): ProductMaterial => {
     }) : [],
     platform_card_list: Array.isArray(value('platform_card_list', [])) ? value('platform_card_list', []) as PlatformCategoryCardData[] : [],
     is_service_category: Boolean(value('is_service_category', false)),
+    inventory_mode: value('inventory_mode') as ProductMaterial['inventory_mode'],
+    inventory_label: value('inventory_label') == null ? undefined : String(value('inventory_label')),
+    inventory_reason: value('inventory_reason') == null ? undefined : String(value('inventory_reason')),
+    inventory_price_unit: value('inventory_price_unit') == null ? undefined : String(value('inventory_price_unit')),
     platform_attributes: Array.isArray(value('platform_attributes', [])) ? value('platform_attributes', []) as PlatformMaterialAttribute[] : [],
     category_source: value('category_source', 'manual') as 'manual' | 'recommendation',
     category_confidence: value('category_confidence') == null ? null : Number(value('category_confidence')),
@@ -444,6 +464,7 @@ export const publishSingle = (params: {
   description: string
   price: number
   original_price?: number | null
+  publish_type?: 'item' | 'service'
   category?: string
   platform_category_id?: string | null
   platform_category_name?: string | null
@@ -454,6 +475,10 @@ export const publishSingle = (params: {
   platform_category_path?: PlatformCategoryPathItem[]
   platform_card_list?: PlatformCategoryCardData[]
   is_service_category?: boolean
+  inventory_mode?: 'verified' | 'candidate' | 'service' | 'single'
+  inventory_label?: string
+  inventory_reason?: string
+  inventory_price_unit?: string
   platform_attributes?: PlatformMaterialAttribute[]
   category_source?: 'manual' | 'recommendation'
   category_confidence?: number | null

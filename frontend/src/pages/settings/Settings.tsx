@@ -612,8 +612,8 @@ export function Settings() {
             <div className="vben-card-body space-y-4">
               <div className="flex items-center justify-between py-3 border-b border-slate-100 dark:border-slate-700">
                 <div>
-                  <p className="font-medium text-slate-900 dark:text-slate-100">允许用户注册</p>
-                  <p className="text-sm text-slate-500 dark:text-slate-400">开启后允许新用户注册账号</p>
+                  <p className="font-medium text-slate-900 dark:text-slate-100">允许邀请码注册</p>
+                  <p className="text-sm text-slate-500 dark:text-slate-400">开启后允许新用户使用有效邀请码注册账号</p>
                 </div>
                 <label className="switch-ios">
                   <input
@@ -723,7 +723,7 @@ export function Settings() {
               </h2>
             </div>
             <div className="vben-card-body space-y-4">
-              <p className="text-sm text-slate-500 dark:text-slate-400">配置SMTP服务器用于发送注册验证码等邮件通知</p>
+          <p className="text-sm text-slate-500 dark:text-slate-400">配置SMTP服务器用于发送登录、找回密码等邮件通知；注册已改为邀请码制</p>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="input-group">
                   <label className="input-label">SMTP服务器</label>

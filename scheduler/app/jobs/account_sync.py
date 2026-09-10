@@ -43,7 +43,9 @@ async def execute_account_sync(
             try:
                 response = await client.post(
                     f"{base_url}/api/v1/internal/accounts/{account.id}/sync",
-                    json={"mode": mode, "page_size": 30, "max_pages": 100},
+                    # 闲鱼商品列表接口的单页上限实测为 20；传 30 会直接返回
+                    # FAIL_BIZ_FORBIDDEN，导致定时同步看似执行但实际没有入库。
+                    json={"mode": mode, "page_size": 20, "max_pages": 100},
                     headers={"X-Internal-Token": settings.jwt_secret},
                 )
                 try:

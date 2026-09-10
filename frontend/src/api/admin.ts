@@ -123,6 +123,65 @@ export const rechargeUser = (
   return post(`${ADMIN_PREFIX}/users/${userId}/recharge`, payload)
 }
 
+// ========== 注册邀请码 ===========
+
+export type RegistrationInviteStatus = 'active' | 'used' | 'revoked' | 'expired'
+
+export interface RegistrationInvite {
+  id: number
+  // 列表接口返回脱敏值；生成接口返回本次生成的完整 code。
+  code: string
+  code_preview?: string
+  status: RegistrationInviteStatus
+  note?: string | null
+  expires_at?: string | null
+  used_at?: string | null
+  used_by?: number | null
+  created_by?: number
+  created_at?: string | null
+}
+
+export interface CreateRegistrationInvitesPayload {
+  count: number
+  expires_at?: string | null
+  note?: string
+}
+
+export interface CreateRegistrationInvitesResult {
+  items: RegistrationInvite[]
+  codes: string[]
+  count: number
+}
+
+export const getRegistrationInvites = async (params?: {
+  status?: RegistrationInviteStatus
+  limit?: number
+  offset?: number
+}): Promise<{ success: boolean; data: RegistrationInvite[]; total: number; message?: string }> => {
+  const query = new URLSearchParams()
+  if (params?.status) query.set('status', params.status)
+  query.set('limit', String(params?.limit || 50))
+  query.set('offset', String(params?.offset || 0))
+  const result = await get<ApiResponse<{ items?: RegistrationInvite[]; total?: number }>>(`${ADMIN_PREFIX}/invites?${query.toString()}`)
+  const items = result.data?.items || []
+  return {
+    success: Boolean(result.success),
+    data: items,
+    total: Number(result.data?.total ?? items.length),
+    message: result.message,
+  }
+}
+
+export const createRegistrationInvites = (
+  payload: CreateRegistrationInvitesPayload,
+): Promise<ApiResponse<CreateRegistrationInvitesResult>> => {
+  return post(`${ADMIN_PREFIX}/invites`, payload)
+}
+
+export const revokeRegistrationInvite = (inviteId: number): Promise<ApiResponse<{ item: RegistrationInvite }>> => {
+  return post(`${ADMIN_PREFIX}/invites/${inviteId}/revoke`)
+}
+
 // ========== 系统日志 ==========
 
 export interface SystemLog {

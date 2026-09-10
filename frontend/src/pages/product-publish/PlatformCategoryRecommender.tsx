@@ -12,7 +12,7 @@ import {
   type PlatformCategoryProperty,
   type PlatformMaterialAttribute,
 } from '@/api/productPublish'
-import type { PublishForm } from './publishTypes'
+import type { PublishForm, PublishType } from './publishTypes'
 import PlatformAttributesEditor, { PlatformOptionField } from './PlatformAttributesEditor'
 
 interface PlatformCategoryRecommenderProps {
@@ -41,6 +41,10 @@ const emptyCategory = {
   platform_category_path: [],
   platform_card_list: [],
   is_service_category: false,
+  inventory_mode: undefined,
+  inventory_label: undefined,
+  inventory_reason: undefined,
+  inventory_price_unit: undefined,
   platform_attributes: [],
   category_source: 'manual' as const,
   category_confidence: undefined,
@@ -52,6 +56,23 @@ function asText(value: unknown) {
 
 function candidateLabel(candidate: PlatformCategoryCandidate) {
   return candidate.cat_name || candidate.channel_cat_name || candidate.path.at(-1)?.name || '未命名分类'
+}
+
+function inventoryLabel(candidate: PlatformCategoryCandidate) {
+  if (candidate.inventory_mode === 'verified') return '库存已验证'
+  if (candidate.inventory_mode === 'candidate') return '库存候选'
+  if (candidate.inventory_mode === 'service') return '服务履约'
+  if (candidate.inventory_mode === 'single') return '普通单库存'
+  return ''
+}
+
+function candidateOptionLabel(candidate: PlatformCategoryCandidate) {
+  const label = inventoryLabel(candidate)
+  return label ? `${candidateLabel(candidate)} · ${label}` : candidateLabel(candidate)
+}
+
+function candidateMatchesPublishType(candidate: PlatformCategoryCandidate, publishType: PublishType) {
+  return publishType === 'service' ? Boolean(candidate.is_service_category) : !candidate.is_service_category
 }
 
 /**
@@ -79,6 +100,10 @@ function candidatePatch(candidate: PlatformCategoryCandidate): Partial<PublishFo
     platform_tb_category_id: candidate.tb_cat_id || '',
     platform_category_path: candidate.path || [],
     is_service_category: Boolean(candidate.is_service_category),
+    inventory_mode: candidate.inventory_mode,
+    inventory_label: candidate.inventory_label,
+    inventory_reason: candidate.inventory_reason,
+    inventory_price_unit: candidate.inventory_price_unit,
     category_source: 'recommendation',
     category_confidence: typeof candidate.score === 'number' ? candidate.score : undefined,
   }
@@ -101,6 +126,10 @@ function candidateFromForm(form: PublishForm): PlatformCategoryCandidate | null 
     tb_cat_id: form.platform_tb_category_id || null,
     path: form.platform_category_path || [],
     is_service_category: form.is_service_category,
+    inventory_mode: form.inventory_mode,
+    inventory_label: form.inventory_label,
+    inventory_reason: form.inventory_reason,
+    inventory_price_unit: form.inventory_price_unit,
     score: typeof form.category_confidence === 'number' ? form.category_confidence : null,
     is_selected: true,
   }
@@ -285,11 +314,25 @@ export function PlatformCategoryRecommender({ form, onChange, categoryLocked = f
   const [retryNonce, setRetryNonce] = useState(0)
   const inputKeyRef = useRef('')
   const requestVersion = useRef(0)
+  const publishType: PublishType = form.publish_type || (form.is_service_category ? 'service' : 'item')
+
+  // 发布入口切换时，旧入口的属性卡不能继续显示。否则从“发服务”切到
+  // “发闲置”时，服务属性（输入类型、功能类型等）会短暂残留，并可能被
+  // 用户误认为是商品类目的发布参数。
+  useEffect(() => {
+    requestVersion.current += 1
+    inputKeyRef.current = ''
+    setCandidates([])
+    setProperties([])
+    setCardList([])
+    setError('')
+    setLoading(false)
+  }, [publishType])
 
   useEffect(() => {
     const title = form.title.trim()
     const description = form.description.trim()
-    const key = `${title}\u0000${description}\u0000${form.account_id}\u0000${categoryLocked ? 'locked' : 'recommend'}\u0000${retryNonce}`
+    const key = `${title}\u0000${description}\u0000${form.account_id}\u0000${publishType}\u0000${categoryLocked ? 'locked' : 'recommend'}\u0000${retryNonce}`
     if (inputKeyRef.current === key) return
     inputKeyRef.current = key
     const version = ++requestVersion.current
@@ -335,7 +378,11 @@ export function PlatformCategoryRecommender({ form, onChange, categoryLocked = f
           return
         }
 
-        const returnedCandidates = response.data.candidates
+        const returnedCandidates = response.data.candidates.filter((candidate) => candidateMatchesPublishType(candidate, publishType))
+        if (!returnedCandidates.length) {
+          setError(publishType === 'service' ? '当前内容没有可用的服务分类，请调整标题或切换为发布商品' : '当前内容没有可用的商品分类，请调整标题或切换为发布服务')
+          return
+        }
         const preferredCandidate = returnedCandidates.find((candidate) => candidate.is_selected && isPublishableCandidate(candidate))
           || returnedCandidates.find((candidate) => sameCandidate({
             cat_id: form.platform_category_id,
@@ -349,7 +396,10 @@ export function PlatformCategoryRecommender({ form, onChange, categoryLocked = f
         setProperties(response.data.properties || [])
         setCardList(response.data.card_list || [])
         if (!preferredCandidate) {
-          setError('接口返回的分类缺少发布所需的分类 ID，请点击重试')
+          // 闲鱼有时只先返回频道分类，完整 catId 要在用户点击分类后
+          // 由第二次推荐请求补齐。保留候选列表，让用户可以继续选择，
+          // 不把“候选存在但尚未补全 ID”误报成接口失败。
+          setError('分类候选已返回，请点击“分类”选择后加载完整发布参数')
           return
         }
         onChange({ ...candidatePatch(preferredCandidate), platform_card_list: response.data.card_list || [], platform_attributes: [], brand: '', condition: '全新' })
@@ -366,7 +416,7 @@ export function PlatformCategoryRecommender({ form, onChange, categoryLocked = f
       // React 严格模式会立即清理首次副作用；若此时请求尚未发出，允许下一次副作用重新调度。
       if (!requestStarted && inputKeyRef.current === key) inputKeyRef.current = ''
     }
-  }, [form.title, form.description, form.account_id, categoryLocked, retryNonce])
+  }, [form.title, form.description, form.account_id, form.publish_type, form.is_service_category, categoryLocked, retryNonce])
 
   const selectCandidate = async (candidate: PlatformCategoryCandidate) => {
     const title = form.title.trim()
@@ -391,7 +441,11 @@ export function PlatformCategoryRecommender({ form, onChange, categoryLocked = f
         return
       }
 
-      const refreshedCandidates = response.data.candidates
+      const refreshedCandidates = response.data.candidates.filter((item) => candidateMatchesPublishType(item, publishType))
+      if (!refreshedCandidates.length) {
+        setError(publishType === 'service' ? '当前内容没有可用的服务分类' : '当前内容没有可用的商品分类')
+        return
+      }
       const refreshedCandidate = refreshedCandidates.find((item) => sameCandidate(item, candidate)) || candidate
       setCandidates(refreshedCandidates)
       setProperties(response.data.properties || [])
@@ -420,6 +474,17 @@ export function PlatformCategoryRecommender({ form, onChange, categoryLocked = f
     path: form.platform_category_path,
   }, candidate))
   const selectedIndex = selectedCandidate ? String(candidates.indexOf(selectedCandidate)) : ''
+  const selectedPriceUnit = form.platform_attributes.find((attribute) => attribute.property_id === '150360447')?.value_name || ''
+  const selectedInventoryMode = selectedCandidate?.inventory_mode || form.inventory_mode || 'single'
+  const selectedInventoryLabel = selectedCandidate?.inventory_label || form.inventory_label || ''
+  const selectedInventoryReason = selectedCandidate?.inventory_reason || form.inventory_reason || ''
+  const inventoryTone = selectedInventoryMode === 'verified'
+    ? 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-300'
+    : selectedInventoryMode === 'candidate'
+      ? 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-700 dark:bg-amber-900/20 dark:text-amber-300'
+      : selectedInventoryMode === 'service'
+        ? 'border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-700 dark:bg-blue-900/20 dark:text-blue-300'
+        : 'border-slate-200 bg-slate-50 text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300'
 
   const updateAttributes = (platformAttributes: PlatformMaterialAttribute[]) => {
     const nextCardList = syncCardListAttributes(
@@ -483,7 +548,7 @@ export function PlatformCategoryRecommender({ form, onChange, categoryLocked = f
               disabled={loading || categoryLocked}
               options={candidates.map((candidate, index) => ({
                 value: String(index),
-                label: candidateLabel(candidate),
+                label: candidateOptionLabel(candidate),
               }))}
               onSelect={(value) => {
                 const candidate = candidates[Number(value)]
@@ -491,12 +556,21 @@ export function PlatformCategoryRecommender({ form, onChange, categoryLocked = f
               }}
             />
             <PlatformAttributesEditor
-              properties={properties}
+              properties={selectedCandidate ? properties : []}
               attributes={form.platform_attributes}
               candidate={selectedCandidate}
               onChange={updateAttributes}
             />
           </div>
+          {selectedCandidate && (
+            <div className={`rounded-lg border px-3 py-2 text-xs leading-5 ${inventoryTone}`}>
+              <div className="font-medium">库存模式：{selectedInventoryLabel || inventoryLabel(selectedCandidate)}</div>
+              <div>{selectedInventoryReason || '平台未返回明确库存能力，发布前请先核验 APP 编辑页面。'}</div>
+              {(selectedInventoryMode === 'verified' || selectedInventoryMode === 'candidate') && selectedPriceUnit !== '元/件' && (
+                <div className="mt-1 font-medium">请将“计价方式”选择为“元/件”，否则 APP 可能不显示库存。</div>
+              )}
+            </div>
+          )}
         </div>
       )}
     </section>

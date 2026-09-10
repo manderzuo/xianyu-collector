@@ -22,6 +22,11 @@ from common.models import FeatureRecord
 
 router = APIRouter(prefix="/api/v1/keywords-with-item-id", tags=["关键词规则"])
 FEATURE = "keywords-with-item-id"
+RULE_FIELDS = (
+    "keyword", "reply", "item_id", "type", "image_url", "description",
+    "priority", "match_mode", "conversation_stage", "stages",
+    "enabled", "is_enabled", "needs_human", "approval_status",
+)
 
 
 def _uid(user: dict[str, Any]) -> int:
@@ -35,6 +40,33 @@ def _serialize(item: FeatureRecord) -> dict[str, Any]:
     data = dict(item.payload or {})
     data.update({"id": str(item.id), "created_at": item.created_at, "updated_at": item.updated_at})
     return data
+
+
+def _rule_payload(account_id: str, value: dict[str, Any], *, keep_unknown: dict[str, Any] | None = None) -> dict[str, Any]:
+    """统一保存规则元数据，兼容旧客户端只提交 keyword/reply/item_id。"""
+    payload = dict(keep_unknown or {})
+    previous = keep_unknown or {}
+    payload.update({
+        "account_id": str(account_id),
+        "keyword": str(value.get("keyword") if "keyword" in value else previous.get("keyword") or "").strip(),
+        "reply": str(value.get("reply") if "reply" in value else previous.get("reply") or ""),
+        "item_id": str(value.get("item_id") if "item_id" in value else previous.get("item_id") or "").strip(),
+        "type": str(value.get("type") if "type" in value else previous.get("type") or "text"),
+    })
+    for key in RULE_FIELDS:
+        if key in {"keyword", "reply", "item_id", "type"} or key not in value:
+            continue
+        payload[key] = value[key]
+    if "priority" in payload:
+        try:
+            payload["priority"] = int(payload["priority"] or 0)
+        except (TypeError, ValueError):
+            payload["priority"] = 0
+    if "match_mode" in payload:
+        payload["match_mode"] = str(payload["match_mode"] or "contains").strip().lower()
+        if payload["match_mode"] not in {"contains", "prefix", "exact"}:
+            payload["match_mode"] = "contains"
+    return payload
 
 
 async def _account_rows(account_id: str | None, user: dict[str, Any], db: AsyncSession):
@@ -76,7 +108,7 @@ async def save_keywords(account_id: str, payload: dict[str, Any] | None = Body(d
     for value in keywords:
         if not isinstance(value, dict) or not str(value.get("keyword") or "").strip():
             continue
-        item = FeatureRecord(owner_id=_uid(user), feature=FEATURE, external_id=uuid4().hex, status="active", payload={"account_id": str(account_id), "keyword": str(value.get("keyword") or ""), "reply": str(value.get("reply") or ""), "item_id": str(value.get("item_id") or ""), "type": str(value.get("type") or "text")})
+        item = FeatureRecord(owner_id=_uid(user), feature=FEATURE, external_id=uuid4().hex, status="active", payload=_rule_payload(account_id, value))
         db.add(item)
         created.append(item)
     await db.commit()
@@ -130,8 +162,7 @@ async def update_keyword(account_id: str, keyword: str, old_item_id: str | None 
         if duplicate is not None:
             raise HTTPException(status_code=409, detail="目标账号已存在相同商品范围的关键词")
 
-    data = dict(item.payload or {})
-    data.update({key: value for key, value in values.items() if key in {"keyword", "reply", "item_id", "type"}})
+    data = _rule_payload(account_id, values, keep_unknown=dict(item.payload or {}))
     # 编辑时切换所属账号必须迁移规则，而不是只返回成功但继续留在原账号。
     data["account_id"] = target_account_id
     item.payload = data
@@ -156,11 +187,11 @@ async def delete_keyword(account_id: str, keyword: str, item_id: str | None = Qu
 async def export_keywords(account_id: str, user=Depends(get_current_user), db: AsyncSession = Depends(get_session)):
     rows = await _account_rows(account_id, user, db)
     buffer = io.StringIO(newline="")
-    writer = csv.DictWriter(buffer, fieldnames=["keyword", "reply", "item_id", "type"])
+    writer = csv.DictWriter(buffer, fieldnames=["keyword", "reply", "item_id", "type", "priority", "match_mode", "conversation_stage", "enabled", "needs_human", "approval_status"])
     writer.writeheader()
     for row in rows:
         data = row.payload or {}
-        writer.writerow({key: data.get(key, "") for key in ("keyword", "reply", "item_id", "type")})
+        writer.writerow({key: data.get(key, "") for key in ("keyword", "reply", "item_id", "type", "priority", "match_mode", "conversation_stage", "enabled", "needs_human", "approval_status")})
     content = ("\ufeff" + buffer.getvalue()).encode("utf-8")
     return StreamingResponse(io.BytesIO(content), media_type="text/csv; charset=utf-8", headers={"Content-Disposition": f'attachment; filename="keywords_{account_id}.csv"'})
 
@@ -182,7 +213,7 @@ async def add_image_keyword(
     image_url = f"/static/uploads/keywords/{target.name}"
     item = FeatureRecord(
         owner_id=_uid(user), feature=FEATURE, external_id=uuid4().hex, status="active",
-        payload={"account_id": str(account_id), "keyword": keyword.strip(), "reply": "", "item_id": item_id or "", "type": "image", "image_url": image_url},
+        payload=_rule_payload(account_id, {"keyword": keyword, "reply": "", "item_id": item_id or "", "type": "image", "image_url": image_url}),
     )
     db.add(item)
     await db.commit()
@@ -205,7 +236,18 @@ async def import_keywords(account_id: str, file: UploadFile = File(...), user=De
         keyword = str(value.get("keyword") or value.get("关键词") or "").strip()
         if not keyword:
             continue
-        payload = {"account_id": str(account_id), "keyword": keyword, "reply": str(value.get("reply") or value.get("回复") or ""), "item_id": str(value.get("item_id") or value.get("商品ID") or ""), "type": "text"}
+        payload = _rule_payload(account_id, {
+            "keyword": keyword,
+            "reply": str(value.get("reply") or value.get("回复") or ""),
+            "item_id": str(value.get("item_id") or value.get("商品ID") or ""),
+            "type": "text",
+            "priority": value.get("priority") or value.get("优先级") or 0,
+            "match_mode": value.get("match_mode") or value.get("匹配方式") or "contains",
+            "conversation_stage": value.get("conversation_stage") or value.get("会话阶段") or "",
+            "enabled": value.get("enabled") if value.get("enabled") is not None else value.get("启用"),
+            "needs_human": value.get("needs_human") if value.get("needs_human") is not None else value.get("需人工审核"),
+            "approval_status": value.get("approval_status") or value.get("审核状态") or "",
+        })
         item = existing.get(keyword)
         if item is None:
             db.add(FeatureRecord(owner_id=_uid(user), feature=FEATURE, external_id=uuid4().hex, status="active", payload=payload))

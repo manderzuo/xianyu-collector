@@ -395,6 +395,38 @@ def _is_service_category(item_data: dict[str, Any]) -> bool:
     )
 
 
+def _publish_type(item_data: dict[str, Any]) -> str:
+    """读取顶层发布入口；缺失时按旧素材的服务分类字段兼容推断。"""
+    value = _text(item_data.get("publish_type")).lower()
+    if value in {"item", "service"}:
+        return value
+    return "service" if _is_service_category(item_data) else "item"
+
+
+def _inventory_mode(item_data: dict[str, Any]) -> str:
+    """读取发布页按真实平台结果标注的库存模式。"""
+    value = _text(item_data.get("inventory_mode")).lower()
+    if value in {"verified", "candidate", "service", "single"}:
+        return value
+    channel_id = _text(item_data.get("platform_channel_category_id"))
+    tb_id = _text(item_data.get("platform_tb_category_id"))
+    if channel_id == "201454708" and tb_id == "201160807":
+        return "verified"
+    if _is_service_category(item_data):
+        return "service"
+    return "single"
+
+
+def _selected_price_unit(item_data: dict[str, Any]) -> str:
+    """读取分类属性中用户选择的计价方式。"""
+    for attribute in item_data.get("platform_attributes") or []:
+        if not isinstance(attribute, dict):
+            continue
+        if _text(attribute.get("property_id")) == "150360447":
+            return _text(attribute.get("value_name"))
+    return ""
+
+
 def _draft_payload(values: dict[str, Any]) -> dict[str, Any]:
     """生成与闲鱼网页 ``t7.xP`` 等价的服务类草稿数据。
 
@@ -769,11 +801,25 @@ async def publish_item(*, item_data: dict[str, Any], cookie: str, platform_accou
     if item_data.get("videos"):
         raise GoofishPublishError("视频发布需要先完成视频媒体上传配置，当前未提交视频内容")
     service_category = _is_service_category(item_data)
+    inventory_mode = _inventory_mode(item_data)
+    # 直接提交的草稿有时没有带 is_service_category，但分类推荐已经明确标注了
+    # 服务/库存履约模式。以分类标注补齐该字段，避免错误走“发闲置”链路。
+    if inventory_mode in {"verified", "candidate", "service"}:
+        service_category = True
+    publish_type = _publish_type(item_data)
+    if publish_type == "service" and not service_category:
+        raise GoofishPublishError("已选择发布服务，请先选择服务类目")
+    if publish_type == "item" and service_category:
+        raise GoofishPublishError("已选择发布商品，请改选商品类目，不能使用发服务类目")
     if not is_fish_shop and not service_category and (item_data.get("specifications") or item_data.get("sku_rows")):
         raise GoofishPublishError("当前账号未开通鱼小铺，不能发布多规格和独立库存商品")
     personal = not is_fish_shop
-    properties, sku_rows, has_sku = _sku_payload(item_data) if is_fish_shop else ([], [], False)
+    properties, sku_rows, has_sku = _sku_payload(item_data) if is_fish_shop and publish_type == "item" else ([], [], False)
     requested_quantity = _quantity(item_data.get("quantity") or item_data.get("stock"))
+    if service_category and requested_quantity > 1 and inventory_mode not in {"verified", "candidate"}:
+        raise GoofishPublishError("当前分类属于服务履约类，闲鱼 APP 不展示库存；课件或卡密请改用库存型分类")
+    if service_category and requested_quantity > 1 and inventory_mode in {"verified", "candidate"} and _selected_price_unit(item_data) != "元/件":
+        raise GoofishPublishError("库存型分类必须选择“元/件”计价方式，才能进行多库存管理")
     if personal and not service_category and requested_quantity != 1:
         raise GoofishPublishError("当前普通卖家账号不支持多库存商品，请将线上库存设为1或开通鱼小铺")
     labels = _category_labels(item_data)

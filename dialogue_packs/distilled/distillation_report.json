@@ -1,0 +1,146 @@
+{
+  "created_at": "2026-09-06T11:35:16+08:00",
+  "source_file": "D:\\xianyu-rewrite\\dialogue_packs\\dialogue_pack_20260905_125944.json",
+  "source_sha256_prefix": "5632bbfc2f0eaf65",
+  "source_status": "completed",
+  "source_sessions": 1700,
+  "source_session_status": {
+    "completed": 1695,
+    "failed": 5
+  },
+  "source_templates": 8017,
+  "deduplicated_templates": 8017,
+  "production_templates": 334,
+  "production_import_rows": 331,
+  "review_items": 1750,
+  "distilled_scenarios": 35,
+  "max_per_scenario": 10,
+  "ambiguous_keywords": 3872,
+  "top_ambiguous_keywords": [
+    [
+      "自动发货吗",
+      322
+    ],
+    [
+      "要等多久",
+      237
+    ],
+    [
+      "卡密无效",
+      222
+    ],
+    [
+      "多久发货",
+      201
+    ],
+    [
+      "客服在吗",
+      185
+    ],
+    [
+      "有货吗",
+      169
+    ],
+    [
+      "什么时候发",
+      157
+    ],
+    [
+      "多久收到",
+      153
+    ],
+    [
+      "能退款吗",
+      150
+    ],
+    [
+      "什么时候发货",
+      148
+    ],
+    [
+      "客服在线时间",
+      142
+    ],
+    [
+      "没收到",
+      140
+    ],
+    [
+      "换卡",
+      130
+    ],
+    [
+      "客服什么时候在线",
+      129
+    ],
+    [
+      "激活失败",
+      127
+    ],
+    [
+      "便宜点",
+      123
+    ],
+    [
+      "在吗",
+      120
+    ],
+    [
+      "多久回复",
+      119
+    ],
+    [
+      "没发货",
+      118
+    ],
+    [
+      "急着用",
+      117
+    ],
+    [
+      "自动发吗",
+      112
+    ],
+    [
+      "没收到卡密",
+      110
+    ],
+    [
+      "自动发货",
+      106
+    ],
+    [
+      "有库存吗",
+      102
+    ],
+    [
+      "怎么发货",
+      101
+    ],
+    [
+      "等多久",
+      101
+    ],
+    [
+      "多久到账",
+      98
+    ],
+    [
+      "怎么激活",
+      96
+    ],
+    [
+      "核验要多久",
+      92
+    ],
+    [
+      "截图发哪里",
+      91
+    ]
+  ],
+  "placeholder_replies": 11,
+  "needs_human_templates": 1358,
+  "unlinked_templates": 540,
+  "non_importable_selected": 3,
+  "recommendation": "先审核 distilled_review.json，再导入 distilled_keywords_import.json；不要全量导入原始 keywords_import 文件。"
+}

@@ -18,8 +18,10 @@ from backend.app.core.dependencies import get_current_user
 from backend.app.core.response import error, ok
 from common.db.session import async_session_maker, get_session
 from common.models import Account, AccountContent, AccountCookie, CapabilityCheck, FeatureRecord
+from common.services.account_renewal import renew_account_session
 from common.services.account_sync import sync_account_products
 from common.services.amap_inputtips import AmapInputTipsError, search_input_tips
+from common.services.cookie_renewal import is_session_expired_message
 from common.services.goofish_mtop import mtop_call
 from common.services.goofish_publish import GoofishPublishError, detect_publish_capability, publish_item
 from common.services.goofish_client import GoofishClient
@@ -135,11 +137,20 @@ async def _find_service_template(
     current_cookie = str(account.cookie or "")
     if not _is_service_payload(item_data) or not current_cookie.strip():
         return None, current_cookie
-    target_category = str(
-        item_data.get("platform_category_id")
-        or item_data.get("platform_tb_category_id")
-        or ""
-    ).strip()
+    # 闲鱼服务类目同时存在 catId、tbCatId、channelCatId 三套 ID。
+    # 表单和同步商品不一定保存同一套 ID：例如表单可能只有 tbCatId，
+    # 而 AccountContent.cardData.categoryId 保存的是 catId。只比较一个
+    # ID 会把真实的同类服务商品误判为“没有模板”，从而退回 APP 扫码草稿。
+    target_category_ids = {
+        str(item_data.get(key) or "").strip()
+        for key in (
+            "platform_category_id",
+            "platform_tb_category_id",
+            "platform_channel_category_id",
+            "platform_leaf_id",
+        )
+        if str(item_data.get(key) or "").strip()
+    }
     rows = list(
         (
             await db.execute(
@@ -155,14 +166,38 @@ async def _find_service_template(
         payload = row.payload if isinstance(row.payload, dict) else {}
         card = payload.get("cardData") if isinstance(payload.get("cardData"), dict) else payload
         detail_url = str(card.get("detailUrl") or payload.get("detail_url") or "")
-        category_id = str(card.get("categoryId") or payload.get("category_id") or "").strip()
-        is_skill = "isskill=true" in detail_url.lower() or str(payload.get("attribute_product") or "").lower() == "skill"
-        if not is_skill or not row.external_id:
+        category_ids = {
+            str(card.get(key) or payload.get(key) or "").strip()
+            for key in ("categoryId", "catId", "tbCatId", "channelCatId", "leafId")
+            if str(card.get(key) or payload.get(key) or "").strip()
+        }
+        category_ids.update(
+            str(payload.get(key) or "").strip()
+            for key in ("category_id", "platform_category_id", "platform_tb_category_id", "platform_channel_category_id", "platform_leaf_id")
+            if str(payload.get(key) or "").strip()
+        )
+        item_skill = (
+            card.get("itemSkillDTO")
+            or payload.get("itemSkillDTO")
+            or payload.get("item_skill_dto")
+        )
+        attribute_product = str(
+            card.get("attribute_product") or payload.get("attribute_product") or ""
+        ).lower()
+        is_skill = (
+            "isskill=true" in detail_url.lower()
+            or attribute_product == "skill"
+            or isinstance(item_skill, dict)
+        )
+        same_category = bool(target_category_ids.intersection(category_ids))
+        # 同类商品即使同步卡片没有 isSkill 标记也要尝试读取编辑详情，
+        # 由闲鱼返回的 itemSkillDTO/attribute_product 决定是否确实为服务商品。
+        if not is_skill and not same_category:
             continue
-        if target_category and category_id and category_id != target_category:
+        if not row.external_id:
             continue
         # 在售商品优先；同类分类优先；最后才使用其它已同步服务商品。
-        score = (0 if row.status == "on_sale" else 10) + (0 if target_category and category_id == target_category else 5)
+        score = (0 if row.status == "on_sale" else 10) + (0 if same_category else 5) + (0 if is_skill else 2)
         candidates.append((score, row))
     candidates.sort(key=lambda value: (value[0], -int(value[1].id or 0)))
 
@@ -185,12 +220,23 @@ async def _find_service_template(
             continue
         skill = detail.get("itemSkillDTO")
         item_cat = detail.get("itemCatDTO") if isinstance(detail.get("itemCatDTO"), dict) else {}
-        actual_category = str(item_cat.get("catId") or "").strip()
+        actual_category_ids = {
+            str(item_cat.get(key) or "").strip()
+            for key in ("catId", "tbCatId", "channelCatId", "leafId")
+            if str(item_cat.get(key) or "").strip()
+        }
+        attribute_product = str(detail.get("attribute_product") or "").lower()
+        skill_confirmed = attribute_product == "skill" or (
+            isinstance(skill, dict) and str(skill.get("skillCategoryId") or "").strip()
+        )
+        category_confirmed = not target_category_ids or not actual_category_ids or bool(
+            target_category_ids.intersection(actual_category_ids)
+        )
         if (
-            str(detail.get("attribute_product") or "").lower() == "skill"
+            skill_confirmed
             and isinstance(skill, dict)
             and str(skill.get("skillCategoryId") or "").strip()
-            and (not target_category or not actual_category or actual_category == target_category)
+            and category_confirmed
         ):
             return {
                 "itemSkillDTO": dict(skill),
@@ -281,6 +327,51 @@ async def _detect_for_account(account: Account, db: AsyncSession) -> dict[str, A
             )
         except Exception as exc:  # 外部平台异常必须转成页面可读错误
             result = {"success": False, "account_invalid": False, "message": f"账号发布能力检测失败：{exc}", "cookies_str": account.cookie}
+
+    # 能力检测是发布页进入时的第一条真实闲鱼请求。若这里已经确认
+    # Session 失效，只标记 expired 会让用户一直看到“检测失败”，而不会
+    # 触发已有的 Cookie/API/浏览器续期链路。现在立即强制续期一次，成功后
+    # 重新检测；续期失败才让前端提示重新扫码，避免把可恢复会话误判成必须
+    # 手工登录。
+    if is_session_expired_message(str(result.get("message") or "")):
+        try:
+            renewal = await renew_account_session(
+                db,
+                account,
+                source="publish_capability_session_expired",
+                force=True,
+                notify_runtime=True,
+                observed_session_expired=True,
+            )
+        except Exception as exc:  # 续期异常不能阻断能力记录与页面返回
+            renewal = {
+                "success": False,
+                "message": f"自动续期执行异常：{str(exc)[:300]}",
+            }
+        if renewal.get("success") and (account.cookie or "").strip():
+            try:
+                refreshed = await detect_publish_capability(
+                    cookie=account.cookie,
+                    platform_account_id=str(account.goofish_id or account.id),
+                    proxy=account.proxy,
+                )
+                if not refreshed.get("success"):
+                    refreshed["message"] = f"自动续期后能力检测仍失败：{refreshed.get('message') or '闲鱼未返回有效结果'}"
+                result = refreshed
+            except Exception as exc:  # noqa: BLE001
+                result = {
+                    "success": False,
+                    "account_invalid": False,
+                    "message": f"自动续期后能力检测失败：{str(exc)[:500]}",
+                    "cookies_str": account.cookie,
+                }
+        else:
+            result = {
+                **result,
+                "message": f"{result.get('message') or '闲鱼登录态已失效'}；自动续期失败：{renewal.get('message') or '请重新扫码登录账号'}",
+                "account_invalid": True,
+                "cookies_str": account.cookie,
+            }
     if result.get("account_invalid") and any(marker in str(result.get("message") or "").upper() for marker in ("SESSION", "COOKIE", "登录态")):
         # 让账号列表与真实平台状态一致；扫码登录成功后 qr_login 会恢复 active。
         account.status = "expired"

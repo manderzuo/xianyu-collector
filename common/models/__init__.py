@@ -6,6 +6,7 @@
 """
 from common.db.base import Base
 from common.models.users import User
+from common.models.registration_invites import RegistrationInvite
 from common.models.accounts import Account
 from common.models.messages import Message
 from common.models.products import Product
@@ -35,6 +36,7 @@ from common.models.extended import (
 __all__ = [
     "Base",
     "User",
+    "RegistrationInvite",
     "Account",
     "Message",
     "Product",

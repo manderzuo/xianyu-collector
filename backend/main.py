@@ -14,6 +14,7 @@ from backend.app.core.response import ok
 from backend.app.api.routes.auth import router as auth_router
 from backend.app.api.routes.user_profile import router as user_profile_router
 from backend.app.api.routes.admin_users import router as admin_users_router
+from backend.app.api.routes.registration_invites import router as registration_invites_router
 from backend.app.api.routes.cards import router as cards_router
 from backend.app.api.routes.keywords import router as keywords_router
 from backend.app.api.routes.message_filters import router as message_filters_router
@@ -99,6 +100,7 @@ async def api_health():
 app.include_router(auth_router)
 app.include_router(user_profile_router)
 app.include_router(admin_users_router)
+app.include_router(registration_invites_router)
 app.include_router(cards_router)
 app.include_router(keywords_router)
 app.include_router(message_filters_router)

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Users as UsersIcon, RefreshCw, Plus, ChevronLeft, ChevronRight, Loader2, Pencil, Power, PowerOff, Wallet, Search, X } from 'lucide-react'
+import { Users as UsersIcon, RefreshCw, Plus, ChevronLeft, ChevronRight, Loader2, Pencil, Power, PowerOff, Wallet, Search, X, Ticket } from 'lucide-react'
 import { getUsers, deleteUser, updateUser } from '@/api/admin'
 import { useUIStore } from '@/store/uiStore'
 import { useAuthStore } from '@/store/authStore'
@@ -7,6 +7,7 @@ import { PageLoading } from '@/components/common/Loading'
 import { ConfirmModal } from '@/components/common/ConfirmModal'
 import { UserFormModal } from './UserFormModal'
 import { UserRechargeModal } from './UserRechargeModal'
+import { RegistrationInviteModal } from './RegistrationInviteModal'
 import { getApiErrorMessage } from '@/utils/request'
 import type { User } from '@/types'
 
@@ -63,6 +64,7 @@ export function Users() {
   const [showFormModal, setShowFormModal] = useState(false)
   const [editingUser, setEditingUser] = useState<User | null>(null)
   const [rechargingUser, setRechargingUser] = useState<User | null>(null)
+  const [showInviteModal, setShowInviteModal] = useState(false)
 
   const loadUsers = async () => {
     if (!_hasHydrated || !isAuthenticated || !token) return
@@ -168,6 +170,10 @@ export function Users() {
           <p className="page-description">管理系统用户账号</p>
         </div>
         <div className="flex gap-3">
+          <button onClick={() => setShowInviteModal(true)} className="btn-ios-secondary">
+            <Ticket className="w-4 h-4" />
+            邀请码管理
+          </button>
           <button onClick={handleOpenCreate} className="btn-ios-primary">
             <Plus className="w-4 h-4" />
             添加用户
@@ -402,6 +408,8 @@ export function Users() {
           }}
         />
       )}
+
+      {showInviteModal && <RegistrationInviteModal onClose={() => setShowInviteModal(false)} />}
     </div>
   )
 }

@@ -1,4 +1,6 @@
 # -*- coding: utf-8 -*-
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
@@ -7,7 +9,8 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 from common.schemas.api import LoginRequest
 from common.db.session import get_session
-from common.models import User, SystemSetting
+from common.models import RegistrationInvite, User, SystemSetting
+from common.services.registration_invites import hash_invite_code, normalize_invite_code
 from backend.app.core.dependencies import get_current_user
 from backend.app.core.response import ok
 from backend.app.core.security import create_access_token, create_refresh_token, decode_refresh_token, hash_password, verify_password
@@ -20,10 +23,11 @@ DEFAULT_ADMIN_PASSWORD = "admin123"
 class RegisterRequest(BaseModel):
     username: str = Field(min_length=3, max_length=64)
     password: str = Field(min_length=6, max_length=128)
+    invite_code: str = Field(min_length=8, max_length=128)
     nickname: str | None = None
+    session_id: str | None = Field(default=None, max_length=128)
+    # 保留可选邮箱字段，供旧客户端写入用户资料；注册不再校验邮箱验证码。
     email: str | None = None
-    verification_code: str | None = None
-    session_id: str | None = None
 
 
 class PasswordRequest(BaseModel):
@@ -119,24 +123,60 @@ async def logout(user=Depends(get_current_user)):
 
 @router.post("/register")
 async def register(request: RegisterRequest, session: AsyncSession = Depends(get_session)):
+    registration_enabled = (
+        await session.execute(
+            select(SystemSetting.setting_value)
+            .where(SystemSetting.setting_key == "registration_enabled")
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if str(registration_enabled or "").strip().lower() not in {"1", "true", "yes", "on"}:
+        raise HTTPException(status_code=403, detail="注册功能已关闭，请联系管理员")
+    invite_code = normalize_invite_code(request.invite_code)
+    if len(invite_code) < 8:
+        raise HTTPException(status_code=400, detail="邀请码格式无效")
     email = (request.email or "").strip().lower() or None
-    if email:
-        if not request.verification_code:
-            raise HTTPException(status_code=400, detail="请输入邮箱验证码")
-        from backend.app.api.routes.captcha import check_email_code
-        verified, message = check_email_code(email, request.verification_code, "register")
-        if not verified:
-            raise HTTPException(status_code=400, detail=message)
     existing = (await session.execute(select(User).where(User.username == request.username.strip()))).scalar_one_or_none()
     if existing is not None:
         raise HTTPException(status_code=409, detail="用户名已存在")
-    if email:
-        existing_email = (await session.execute(select(User).where(User.email == email).limit(1))).scalar_one_or_none()
-        if existing_email is not None:
-            raise HTTPException(status_code=409, detail="邮箱已被注册")
+
+    # 锁定邀请码记录后再核销，保证同一个邀请码在并发注册时只能成功一次。
+    invite = (
+        await session.execute(
+            select(RegistrationInvite)
+            .where(RegistrationInvite.code_hash == hash_invite_code(invite_code))
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+    if invite is None:
+        raise HTTPException(status_code=400, detail="邀请码无效，请向管理员索取有效邀请码")
+    now = datetime.now()
+    if invite.status != "active":
+        status_message = {
+            "used": "邀请码已使用",
+            "revoked": "邀请码已撤销",
+            "expired": "邀请码已过期",
+        }.get(invite.status, "邀请码不可用")
+        raise HTTPException(status_code=400, detail=status_message)
+    if invite.expires_at and invite.expires_at <= now:
+        invite.status = "expired"
+        await session.commit()
+        raise HTTPException(status_code=400, detail="邀请码已过期")
+
+    if not request.session_id:
+        raise HTTPException(status_code=400, detail="请先完成图形验证码")
+    from backend.app.api.routes.captcha import consume_captcha
+    captcha_verified, captcha_message = consume_captcha(request.session_id)
+    if not captcha_verified:
+        raise HTTPException(status_code=400, detail=captcha_message)
+
     user = User(username=request.username.strip(), password_hash=hash_password(request.password), nickname=request.nickname, email=email, role="user", status=1)
     session.add(user)
+    invite.status = "used"
+    invite.used_at = now
     try:
+        await session.flush()
+        invite.used_by = user.id
         await session.commit(); await session.refresh(user)
     except SQLAlchemyError as exc:
         await session.rollback(); raise HTTPException(status_code=409, detail="注册失败，用户名可能已存在") from exc

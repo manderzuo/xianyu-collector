@@ -15,9 +15,9 @@ let publicSettingsPromise: Promise<Record<string, unknown>> | null = null
  * 获取公共系统设置（带缓存）
  * 同一页面生命周期内只请求一次
  */
-const getPublicSettings = async (): Promise<Record<string, unknown>> => {
+const getPublicSettings = async (forceRefresh = false): Promise<Record<string, unknown>> => {
   // 如果已有缓存，直接返回
-  if (publicSettingsCache) {
+  if (!forceRefresh && publicSettingsCache) {
     return publicSettingsCache
   }
   // 如果正在请求中，等待该请求完成
@@ -91,7 +91,9 @@ export const logout = (): Promise<ApiResponse> => {
 
 // 获取注册状态 - 从系统设置获取
 export const getRegistrationStatus = async (): Promise<{ enabled: boolean }> => {
-  const settings = await getPublicSettings()
+  // 注册开关可能由管理员在另一个页面或另一个浏览器标签页修改，
+  // 不能复用登录页生命周期内的旧公开设置缓存。
+  const settings = await getPublicSettings(true)
   // 处理多种可能的值类型：true, 'true', 1, '1'
   const value = settings.registration_enabled
   return { enabled: value === true || value === 'true' || value === 1 || value === '1' }
@@ -153,16 +155,14 @@ export const sendVerificationCode = async (email: string, type: string, sessionI
 // 用户注册 - 使用新后端接口
 export const register = (data: { 
   username: string
+  invite_code: string
   password: string
-  email?: string
-  verification_code?: string
-  session_id?: string
+  session_id: string
 }): Promise<ApiResponse> => {
   return post(`${AUTH_PREFIX}/register`, {
     username: data.username,
+    invite_code: data.invite_code,
     password: data.password,
-    email: data.email,
-    verification_code: data.verification_code,
     session_id: data.session_id,
   })
 }

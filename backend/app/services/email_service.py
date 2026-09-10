@@ -113,7 +113,6 @@ async def send_verification_code_email(
     code_type: str,
 ) -> None:
     action = {
-        "register": "注册账号",
         "login": "登录账号",
         "reset_password": "重置密码",
     }.get(code_type, "安全操作")
