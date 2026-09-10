@@ -27,6 +27,9 @@ from common.models.chat import ChatMessageRecord
 from common.models.notification_channels import NotificationChannel, MessageNotificationBinding
 from common.models.risk_control_logs import RiskControlLog
 from common.models.polish_logs import PolishLog
+from common.models.entitlements import (
+    Plan, PlanEntitlement, UserEntitlementOverride, QuotaReservation, EntitlementAuditLog,
+)
 from common.models.extended import (
     QrSession, QrLoginSession, ProxyEndpoint, AiProvider, PublishJob, CapabilityCheck,
     AutoRateRule, RefundCase, DistributionItem, CompassMetric, Popup,
@@ -50,6 +53,7 @@ __all__ = [
     "AccountContent", "AccountSyncState",
     "ChatMessageRecord", "NotificationChannel", "MessageNotificationBinding",
     "RiskControlLog", "PolishLog",
+    "Plan", "PlanEntitlement", "UserEntitlementOverride", "QuotaReservation", "EntitlementAuditLog",
     "FeatureRecord",
     "QrSession", "QrLoginSession", "ProxyEndpoint", "AiProvider", "PublishJob", "CapabilityCheck",
     "AutoRateRule", "RefundCase", "DistributionItem", "CompassMetric", "Popup",
