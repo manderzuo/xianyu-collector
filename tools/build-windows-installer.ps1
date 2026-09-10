@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$OutputDirectory = '',
     [switch]$Force,
     [switch]$IncludeDockerImages,
@@ -89,6 +89,7 @@ Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows-installer-stop.ps1') -D
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows-installer-diagnostics.ps1') -Destination (Join-Path $ScriptsRoot 'diagnostics.ps1') -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows-installer-upload-diagnostics.ps1') -Destination (Join-Path $ScriptsRoot 'upload-diagnostics.ps1') -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows-installer-update.ps1') -Destination (Join-Path $ScriptsRoot 'update.ps1') -Force
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows-installer-status.ps1') -Destination (Join-Path $ScriptsRoot 'status.ps1') -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows-installer-apply-client-update.ps1') -Destination (Join-Path $ScriptsRoot 'apply-client-update.ps1') -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows-installer-docker.ps1') -Destination (Join-Path $ResourcesRoot 'docker-bootstrap.ps1') -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows-installer-wsl.ps1') -Destination (Join-Path $ResourcesRoot 'prepare-wsl.ps1') -Force

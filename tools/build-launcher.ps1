@@ -15,9 +15,14 @@ if ($resolvedOutputCandidate -eq $resolvedSource -or
     $resolvedSource.StartsWith($resolvedOutputCandidate + '\', [StringComparison]::OrdinalIgnoreCase)) {
     throw 'OutputDirectory must be outside the source tree.'
 }
-$source = Join-Path $PSScriptRoot 'launcher\XianyuLauncher.cs'
+$sourceDir = Join-Path $PSScriptRoot 'launcher'
+$source = Join-Path $sourceDir 'XianyuLauncher.cs'
+$sourceCore = Join-Path $sourceDir 'XianyuLauncherCore.cs'
+$appManifest = Join-Path $sourceDir 'app.manifest'
 $icon = Join-Path (Split-Path -Parent $PSScriptRoot) 'assets\xianyu-launcher.ico'
+$iconPng = Join-Path (Split-Path -Parent $PSScriptRoot) 'assets\xianyu-app-icon.png'
 if (-not (Test-Path -LiteralPath $source)) { throw "Launcher source not found: $source" }
+if (-not (Test-Path -LiteralPath $sourceCore)) { throw "Launcher source not found: $sourceCore" }
 if (-not (Test-Path -LiteralPath $OutputDirectory)) { New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null }
 
 $compilerCandidates = @(
@@ -42,9 +47,14 @@ $arguments = @(
     '/reference:System.dll',
     '/reference:System.Drawing.dll',
     '/reference:System.Windows.Forms.dll',
+    '/reference:System.Web.Extensions.dll',
+    '/reference:System.Core.dll',
     "/out:$launcherPath"
 )
 if (Test-Path -LiteralPath $icon) { $arguments += "/win32icon:$icon" }
+if (Test-Path -LiteralPath $iconPng) { $arguments += "/resource:$iconPng,xianyu-app-icon.png" }
+if (Test-Path -LiteralPath $appManifest) { $arguments += "/win32manifest:$appManifest" }
+$arguments += $sourceCore
 $arguments += $source
 
 Write-Host "[xianyu] Building desktop launcher: $launcherPath" -ForegroundColor Cyan

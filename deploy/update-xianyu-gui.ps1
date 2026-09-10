@@ -1,7 +1,8 @@
 ﻿param(
     [string]$ProjectRoot = (Split-Path -Parent $PSScriptRoot),
     [switch]$Force,
-    [switch]$Headless
+    [switch]$Headless,
+    [switch]$CheckOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -14,6 +15,12 @@ $LogFile = Join-Path $LogDir 'update.log'
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
+
+try {
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [Console]::OutputEncoding = $utf8NoBom
+    $global:OutputEncoding = $utf8NoBom
+} catch { }
 
 $font = New-Object System.Drawing.Font('Microsoft YaHei UI', 10)
 $fontSmall = New-Object System.Drawing.Font('Microsoft YaHei UI', 9)
@@ -30,6 +37,12 @@ $worker = {
     param([string]$Root, [string]$Mode, [string]$ManifestJson)
 
     $ErrorActionPreference = 'Stop'
+    function Get-FileSha256([string]$Path) {
+        $sha = [Security.Cryptography.SHA256]::Create()
+        try {
+            return ([BitConverter]::ToString($sha.ComputeHash([IO.File]::ReadAllBytes($Path))) -replace '-', '').ToLowerInvariant()
+        } finally { $sha.Dispose() }
+    }
     $compose = Join-Path $Root 'docker-compose.yml'
     $envFile = Join-Path $Root '.env'
     $versionFile = Join-Path $Root 'VERSION.txt'
@@ -45,6 +58,57 @@ $worker = {
 
     function Send-Message([string]$Kind, [string]$Message = '', [int]$Percent = -1, [string]$Data = '') {
         [pscustomobject]@{ Kind = $Kind; Message = $Message; Percent = $Percent; Data = $Data }
+    }
+
+    # Structured GUI protocol records. The C# launcher renders these verbatim
+    # (type/stage/status/detail/code). They travel on the information stream so
+    # they never contaminate function return values or the legacy Send-Message
+    # contract that the in-process PowerShell dialog still relies on.
+    $script:UpdateStage = 'fetch'
+    function Emit-GuiEvent([string]$Json) {
+        Write-Information -MessageData ([pscustomobject]@{ Kind = 'uievent'; Json = $Json }) -Tags 'XianyuGuiEvent' -InformationAction Continue
+    }
+    function Send-Stage([string]$Stage, [string]$Status, [string]$Detail = '', [string]$Code = '') {
+        if ($Status -eq 'running') { $script:UpdateStage = $Stage }
+        $payload = [ordered]@{ v = 1; type = 'stage'; operation = 'update'; stage = $Stage; status = $Status; progress = -1; detail = $Detail; code = $Code }
+        Emit-GuiEvent ($payload | ConvertTo-Json -Compress)
+    }
+    function Send-Meta([string]$Key, [string]$Value) {
+        $payload = [ordered]@{ v = 1; type = 'meta'; key = $Key; value = "$Value" }
+        Emit-GuiEvent ($payload | ConvertTo-Json -Compress)
+    }
+    function Send-Result([string]$Status, [string]$Detail = '', [string]$Code = '') {
+        $payload = [ordered]@{ v = 1; type = 'result'; operation = 'update'; status = $Status; detail = $Detail; code = $Code }
+        Emit-GuiEvent ($payload | ConvertTo-Json -Compress)
+    }
+    function Get-FailureCode([string]$Stage, [string]$Message) {
+        $text = "$Message"
+        if ($text -match '签名') { return 'E_UPDATE_SIGNATURE' }
+        switch ($Stage) {
+            'fetch'   { if ($text -match '清单') { return 'E_UPDATE_MANIFEST' } return 'E_NETWORK_UPDATE_SERVER' }
+            'prepare' { return 'E_UPDATE_MANIFEST' }
+            'protect' { return 'E_ROLLBACK_FAILED' }
+            'apply'   {
+                if ($text -match 'SHA-256|下载|download') { return 'E_UPDATE_DOWNLOAD' }
+                if ($text -match '客户端') { return 'E_UPDATE_CLIENT' }
+                return 'E_UPDATE_IMAGE'
+            }
+            'restart' { return 'E_UPDATE_SERVICE_START' }
+            'health'  { return 'E_UPDATE_HEALTH' }
+            'rollback' { return 'E_ROLLBACK_FAILED' }
+            default   { return 'E_UPDATE' }
+        }
+    }
+    function Test-RollbackCapability([string]$Registry, [string]$Namespace, [string]$Tag) {
+        if (-not (Test-Path -LiteralPath $envFile) -or -not (Test-Path -LiteralPath $compose)) { return 'unavailable:config_missing' }
+        if (-not $Registry -or -not $Namespace -or -not $Tag) { return 'unavailable:previous_reference_unknown' }
+        $missing = @()
+        foreach ($service in @('backend', 'websocket', 'scheduler', 'frontend')) {
+            $ref = '{0}/{1}/xianyu-{2}:{3}' -f $Registry, $Namespace, $service, $Tag
+            if (-not (Get-LocalImageId $ref)) { $missing += $service }
+        }
+        if ($missing.Count -gt 0) { return ('unavailable:image_missing:' + ($missing -join ',')) }
+        return 'available'
     }
 
     function Write-Detail([string]$Message) {
@@ -149,7 +213,7 @@ $worker = {
             if (-not (Test-Path -LiteralPath $launcherFile -PathType Leaf)) {
                 $launcherMismatch = $true
             } else {
-                $actualLauncher = (Get-FileHash -Algorithm SHA256 -LiteralPath $launcherFile).Hash.ToLowerInvariant()
+                $actualLauncher = Get-FileSha256 $launcherFile
                 $launcherMismatch = $actualLauncher -ne $expectedLauncher
             }
         }
@@ -157,7 +221,7 @@ $worker = {
             if (-not (Test-Path -LiteralPath $frontendIndexFile -PathType Leaf)) {
                 $frontendMismatch = $true
             } else {
-                $actualFrontend = (Get-FileHash -Algorithm SHA256 -LiteralPath $frontendIndexFile).Hash.ToLowerInvariant()
+                $actualFrontend = Get-FileSha256 $frontendIndexFile
                 $frontendMismatch = $actualFrontend -ne $expectedFrontend
             }
         }
@@ -356,7 +420,11 @@ $worker = {
     }
 
     function Sync-RuntimeImages($Manifest, [string]$Registry, [string]$Namespace, [string]$Tag, [string]$PreviousRegistry, [string]$PreviousNamespace, [string]$PreviousTag) {
-        foreach ($service in @('backend', 'websocket', 'scheduler', 'frontend')) {
+        $serviceList = @('backend', 'websocket', 'scheduler', 'frontend')
+        $serviceIndex = 0
+        foreach ($service in $serviceList) {
+            $serviceIndex++
+            Send-Stage 'apply' 'running' ("正在准备 $service 服务镜像（$serviceIndex / $($serviceList.Count)）")
             $imageRef = '{0}/{1}/xianyu-{2}:{3}' -f $Registry, $Namespace, $service, $Tag
             $remoteDigest = Get-RemoteImageDigest $Registry $Namespace $service $Tag
             $localDigest = Get-LocalImageDigest $imageRef
@@ -468,7 +536,7 @@ $worker = {
                 $rsa.Dispose()
             }
             if (-not $valid) { throw '更新清单签名校验失败，已拒绝本次更新' }
-            $signatureHash = (Get-FileHash -LiteralPath $signaturePath -Algorithm SHA256).Hash.ToLowerInvariant()
+            $signatureHash = Get-FileSha256 $signaturePath
             Write-Detail "manifest_signature_verified algorithm=RSA-SHA256 sha256=$signatureHash"
             return [pscustomobject]@{ Verified = $true; Required = $required; Url = $signatureUrl; Algorithm = 'RSA-SHA256' }
         } finally {
@@ -492,12 +560,14 @@ $worker = {
                 if (-not $url -or -not $imageRef -or -not $expectedHash) { throw "更新包清单第 $index 项字段不完整" }
                 $currentId = Get-LocalImageId $imageRef
                 if ($expectedId -and $currentId -and $currentId -eq $expectedId) {
+                    Send-Stage 'apply' 'running' "$($artifact.service) 镜像已是最新，跳过"
                     Write-Detail "artifact_skip service=$($artifact.service) reason=image_id_match image_id=$currentId"
                     continue
                 }
                 if ($expectedId) {
                     $existingRef = Find-LocalImageRefById $expectedId
                     if ($existingRef -and $existingRef -ne $imageRef) {
+                        Send-Stage 'apply' 'running' "正在复用本机已有的 $($artifact.service) 镜像"
                         Invoke-DockerCli @('tag', $existingRef, $imageRef) "复用 $($artifact.service) 未变化镜像"
                         Write-Detail "artifact_skip service=$($artifact.service) reason=local_image_id_match source_ref=$existingRef image_id=$expectedId"
                         continue
@@ -505,15 +575,18 @@ $worker = {
                 }
                 $uri = Assert-SecureUrl $url '镜像更新包' $EnvMap
                 $archive = Join-Path $tempDir ('image-' + $index + '.tar.gz')
-                Write-Detail "artifact_download service=$($artifact.service) url=$url"
+                $serviceName = "$($artifact.service)"
+                Send-Stage 'apply' 'running' "正在下载 $serviceName 镜像更新包（$index / $($artifacts.Count)）"
+                Write-Detail "artifact_download service=$serviceName url=$url"
                 Invoke-WebRequest -UseBasicParsing -Uri $uri.AbsoluteUri -TimeoutSec 900 -OutFile $archive
-                $actualHash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
-                if ($actualHash -ne $expectedHash) { throw "更新包校验失败：$($artifact.service)" }
-                Write-Detail "artifact_verified service=$($artifact.service) sha256=$actualHash bytes=$((Get-Item -LiteralPath $archive).Length)"
-                Invoke-DockerCli @('load', '--input', $archive) "导入 $($artifact.service) 镜像"
+                $actualHash = Get-FileSha256 $archive
+                if ($actualHash -ne $expectedHash) { throw "更新包校验失败：$serviceName" }
+                Write-Detail "artifact_verified service=$serviceName sha256=$actualHash bytes=$((Get-Item -LiteralPath $archive).Length)"
+                Send-Stage 'apply' 'running' "正在导入 $serviceName 镜像（$index / $($artifacts.Count)）"
+                Invoke-DockerCli @('load', '--input', $archive) "导入 $serviceName 镜像"
                 $loadedId = Get-LocalImageId $imageRef
                 if (-not $loadedId) { throw "镜像导入后未找到目标标签：$imageRef" }
-                if ($expectedId -and $loadedId -ne $expectedId) { throw "镜像导入后 ID 不一致：$($artifact.service)" }
+                if ($expectedId -and $loadedId -ne $expectedId) { throw "镜像导入后 ID 不一致：$serviceName" }
             }
             return $true
         } finally {
@@ -537,7 +610,7 @@ $worker = {
         try {
             Write-Detail "client_package_download url=$url"
             Invoke-WebRequest -UseBasicParsing -Uri $uri.AbsoluteUri -TimeoutSec 900 -OutFile $tempArchive
-            $actualHash = (Get-FileHash -LiteralPath $tempArchive -Algorithm SHA256).Hash.ToLowerInvariant()
+                $actualHash = Get-FileSha256 $tempArchive
             if ($actualHash -ne $expectedHash) { throw '客户端维护包 SHA-256 校验失败' }
             $safeBuild = ($Build -replace '[^A-Za-z0-9._-]', '-')
             if (-not $safeBuild) { $safeBuild = $Version }
@@ -560,6 +633,7 @@ $worker = {
             # application start will retry after installation initializes it.
             Write-Detail "update_skipped reason=environment_missing path=$envFile"
             Send-Message 'latest' '本地环境尚未初始化，已跳过本次更新检查' 100
+            Send-Result 'latest' '本地环境尚未初始化，已跳过本次更新检查'
             return
         }
         $envMap = Get-EnvMap $envFile
@@ -574,6 +648,7 @@ $worker = {
         $signatureInfo = [pscustomobject]@{ Verified = $false; Required = (Test-TrueValue "$($envMap['UPDATE_REQUIRE_SIGNATURE'])"); Url = ''; Algorithm = '' }
         $pendingClientPath = ''
         if ($Mode -eq 'check') {
+            Send-Stage 'fetch' 'running' '正在获取并校验更新清单...'
             $manifestTempDir = New-UpdateTempDirectory 'manifest'
             $manifestPath = Join-Path $manifestTempDir 'latest.json'
             try {
@@ -586,7 +661,9 @@ $worker = {
             } finally {
                 Remove-Item -LiteralPath $manifestTempDir -Recurse -Force -ErrorAction SilentlyContinue
             }
+            Send-Stage 'fetch' 'success' $(if ($signatureInfo.Verified) { '更新清单已获取并通过签名校验' } else { '更新清单已获取' })
         } else {
+            Send-Stage 'fetch' 'running' '正在载入已校验的更新清单...'
             $received = $ManifestJson | ConvertFrom-Json
             if ($null -ne $received.manifest) {
                 $manifest = $received.manifest
@@ -602,6 +679,7 @@ $worker = {
             if ($signatureInfo.Required -and -not $signatureInfo.Verified) {
                 throw '更新清单未通过签名校验，已拒绝本次更新'
             }
+            Send-Stage 'fetch' 'success' '更新清单已就绪'
         }
         $latestVersion = "$($manifest.version)".Trim()
         $latestBuild = "$($manifest.build_id)".Trim()
@@ -617,6 +695,7 @@ $worker = {
             $runtimeImagesDeferred = Test-TrueValue "$($manifest.runtime_images_deferred)"
         }
         $runtimeSyncNeeded = Test-Path -LiteralPath $runtimeSyncMarker -PathType Leaf
+        Send-Stage 'prepare' 'running' '正在校验本机文件与版本状态...'
         $offlineRuntimeMatch = Test-OfflineRuntimeState $manifest $latestVersion $tag
         Write-Detail "manifest_response version=$latestVersion build=$latestBuild registry=$registry namespace=$namespace tag=$tag"
         if (-not $latestVersion -or -not $registry -or -not $namespace -or -not $tag) { throw '更新清单字段不完整' }
@@ -635,19 +714,66 @@ $worker = {
         $versionAvailable = $versionResult -gt 0 -or ($versionResult -eq 0 -and $latestBuild -and $latestBuild -ne $currentBuild)
         $available = $versionAvailable -or $clientIntegrity.RepairNeeded -or $runtimeSyncNeeded
         Write-Detail "version_compare current=$currentVersion/$currentBuild latest=$latestVersion/$latestBuild version_available=$versionAvailable client_repair_needed=$($clientIntegrity.RepairNeeded) launcher_mismatch=$($clientIntegrity.LauncherMismatch) frontend_mismatch=$($clientIntegrity.FrontendMismatch) available=$available"
+        $updateReason = 'none'
+        if ($versionResult -gt 0) { $updateReason = 'version' }
+        elseif ($versionAvailable) { $updateReason = 'build' }
+        elseif ($runtimeSyncNeeded) { $updateReason = 'runtime_sync' }
+        elseif ($clientIntegrity.RepairNeeded) { $updateReason = 'client_repair' }
+        Send-Meta 'latest_version' $latestVersion
+        Send-Meta 'latest_build' $latestBuild
+        Send-Meta 'update_reason' $updateReason
+        Send-Meta 'notes' $(if ($manifest.notes) { "$($manifest.notes)" } else { '' })
+        Send-Stage 'prepare' 'success' '本机校验完成'
         if ($Mode -eq 'check') {
             if ($available) {
                 $payload = [ordered]@{ manifest = $manifest; signature_verified = [bool]$signatureInfo.Verified; signature_url = $signatureInfo.Url; signature_algorithm = $signatureInfo.Algorithm }
                 $message = if ($versionAvailable) { "发现新版本 $latestVersion" } elseif ($runtimeSyncNeeded) { '检测到运行时镜像尚未同步，准备校准' } else { '检测到本机客户端文件不完整，准备修复' }
                 Send-Message 'available' $message 8 ($payload | ConvertTo-Json -Compress -Depth 20)
-            } else { Send-Message 'latest' "当前已是最新版本 $currentVersion" 100 }
+                Send-Result 'available' $message
+            } else {
+                Send-Message 'latest' "当前已是最新版本 $currentVersion" 100
+                Send-Result 'latest' "当前已是最新版本 $currentVersion"
+            }
             return
         }
-        if (-not $available) { Send-Message 'latest' "当前已是最新版本 $currentVersion" 100; return }
+        if (-not $available) { Send-Message 'latest' "当前已是最新版本 $currentVersion" 100; Send-Result 'latest' "当前已是最新版本 $currentVersion"; return }
         $previousDeployMode = "$($envMap['XR_DEPLOY_MODE'])"
         $previousRegistry = "$($envMap['XR_IMAGE_REGISTRY'])"
         $previousNamespace = "$($envMap['XR_IMAGE_NAMESPACE'])"
         $previousTag = "$($envMap['XR_IMAGE_TAG'])"
+        Send-Stage 'protect' 'running' '正在保护当前版本（配置与镜像状态快照）...'
+        $rollbackCapability = 'unavailable:unknown'
+        try {
+            $snapshotDir = Join-Path $Root 'updates'
+            if (-not (Test-Path -LiteralPath $snapshotDir)) { New-Item -ItemType Directory -Path $snapshotDir -Force | Out-Null }
+            $imageSnapshots = [ordered]@{}
+            foreach ($service in @('backend', 'websocket', 'scheduler', 'frontend')) {
+                $ref = if ($previousRegistry -and $previousNamespace -and $previousTag) { '{0}/{1}/xianyu-{2}:{3}' -f $previousRegistry, $previousNamespace, $service, $previousTag } else { '' }
+                $imageSnapshots[$service] = if ($ref) { Get-LocalImageId $ref } else { '' }
+            }
+            $snapshot = [ordered]@{
+                captured_at     = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+                version         = $currentVersion
+                build_id        = $currentBuild
+                deploy_mode     = $previousDeployMode
+                image_registry  = $previousRegistry
+                image_namespace = $previousNamespace
+                image_tag       = $previousTag
+                images          = $imageSnapshots
+            }
+            Set-Content -LiteralPath (Join-Path $snapshotDir 'pre-update-state.json') -Value ($snapshot | ConvertTo-Json -Depth 6) -Encoding UTF8
+            $rollbackCapability = Test-RollbackCapability $previousRegistry $previousNamespace $previousTag
+        } catch {
+            Write-Detail "protect_snapshot_failed error=$($_.Exception.ToString())"
+            $rollbackCapability = 'unavailable:snapshot_failed'
+        }
+        Send-Meta 'rollback_capability' $rollbackCapability
+        if ($rollbackCapability -eq 'available') {
+            Send-Stage 'protect' 'success' '当前版本快照已保存，可完整回滚'
+        } else {
+            Send-Stage 'protect' 'warning' "回滚保护不完整：$rollbackCapability" 'E_ROLLBACK_CAPABILITY'
+        }
+        Send-Stage 'apply' 'running' '正在应用更新...'
         Send-Message 'phase' '正在准备更新环境...' 15
         $runtimeSyncRequired = ($runtimeImagesRequired -or $runtimeSyncNeeded) -and -not $offlineRuntimeMatch
         if ($runtimeSyncRequired) {
@@ -665,8 +791,12 @@ $worker = {
         }
         # Images have already been imported or pulled above. Never let the
         # service restart phase initiate an implicit network pull.
+        Send-Stage 'apply' 'success' '镜像与更新内容已应用'
+        Send-Stage 'restart' 'running' '正在重启业务服务...'
         Invoke-Docker @('up', '-d', '--force-recreate', '--no-build', '--pull', 'never') '重启应用服务'
+        Send-Stage 'restart' 'success' '业务服务已重启'
         Send-Message 'phase' '正在检查容器状态...' 90
+        Send-Stage 'health' 'running' '正在检查容器与前端服务...'
         Invoke-Docker @('ps') '检查容器状态'
         if ($runtimeSyncRequired) { Test-RuntimeContainers $registry $namespace $tag }
         $port = "$($envMap['FRONTEND_PORT'])"
@@ -674,6 +804,7 @@ $worker = {
         $response = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:$port" -TimeoutSec 15
         Write-Detail "frontend_check status=$($response.StatusCode) port=$port"
         if ($response.StatusCode -lt 200 -or $response.StatusCode -ge 500) { throw "前端健康检查失败，HTTP $($response.StatusCode)" }
+        Send-Stage 'health' 'success' '容器与前端服务检查通过'
         $needsClientPackage = $versionAvailable -or $clientIntegrity.RepairNeeded
         if ($needsClientPackage) {
             $pendingClientPath = Install-ClientMaintenance $manifest $latestVersion $latestBuild
@@ -698,12 +829,17 @@ $worker = {
         }
     } catch {
         $detail = $_.Exception.ToString()
-        Write-Detail "update_failed error=$detail"
+        $failedStage = if ($script:UpdateStage) { $script:UpdateStage } else { 'prepare' }
+        $failureCode = Get-FailureCode $failedStage $_.Exception.Message
+        Send-Stage $failedStage 'failed' "$($_.Exception.Message)" $failureCode
+        Write-Detail "update_failed stage=$failedStage code=$failureCode error=$detail"
         if ($pendingClientPath -and (Test-Path -LiteralPath $pendingClientPath)) {
             Remove-Item -LiteralPath $pendingClientPath -Force -ErrorAction SilentlyContinue
             Write-Detail "client_package_discarded path=$pendingClientPath"
         }
         if ($previousDeployMode -ne $null) {
+            Send-Stage 'rollback' 'running' '正在恢复原版本...'
+            $rollbackOk = $false
             try {
                 Set-EnvValue $envFile 'XR_DEPLOY_MODE' $previousDeployMode
                 Set-EnvValue $envFile 'XR_IMAGE_REGISTRY' $previousRegistry
@@ -714,7 +850,19 @@ $worker = {
                 # report that fact instead of downloading a large image while
                 # handling the original failure.
                 Invoke-Docker @('up', '-d', '--force-recreate', '--no-build', '--pull', 'never') '失败后恢复旧版本'
-            } catch { Write-Detail "rollback_failed error=$($_.Exception.ToString())" }
+                $rollbackOk = $true
+                Send-Stage 'rollback' 'success' '已恢复原版本配置并重启旧服务'
+            } catch {
+                Write-Detail "rollback_failed error=$($_.Exception.ToString())"
+                Send-Stage 'rollback' 'failed' '自动恢复未完成，部分服务可能没有正常启动' 'E_ROLLBACK_FAILED'
+            }
+            if ($rollbackOk) {
+                Send-Result 'rolled_back' $(if ($currentVersion) { "已安全恢复到版本 $currentVersion" } else { '已安全恢复到原版本' }) $failureCode
+            } else {
+                Send-Result 'rollback_failed' '更新失败，自动恢复未完成' 'E_ROLLBACK_FAILED'
+            }
+        } else {
+            Send-Result 'failed' '更新失败' $failureCode
         }
         try { Invoke-Docker @('ps') '失败后检查容器状态' } catch { Write-Detail "docker_status_failed error=$($_.Exception.ToString())" }
         Send-Message 'failed' '更新失败，请查看下方详细日志' 100 $detail
@@ -731,26 +879,31 @@ if ($Headless) {
         $availableData = ''
         $records = @(& $worker $ProjectRoot $Mode $Data 6>&1)
         foreach ($record in $records) {
-            if ($record -is [System.Management.Automation.InformationRecord]) {
-                $info = $record.MessageData
-                if ($null -ne $info -and $info.Kind -eq 'log') { [Console]::WriteLine([string]$info.Message) }
-                continue
-            }
+            # A merged information stream (6>&1) unwraps Write-Information to
+            # its MessageData payload; some hosts wrap it as an
+            # InformationRecord instead. Normalize both shapes.
+            if ($record -is [System.Management.Automation.InformationRecord]) { $record = $record.MessageData }
             if ($null -eq $record -or $null -eq $record.Kind) { continue }
+            if ($record.Kind -eq 'uievent') { [Console]::Out.WriteLine('@@XIANYU_UI@@' + [string]$record.Json); continue }
+            if ($record.Kind -eq 'log') { [Console]::Out.WriteLine([string]$record.Message); continue }
             if ($record.Kind -eq 'available') { $availableData = [string]$record.Data }
             if ($record.Kind -eq 'failed') {
                 $failed = $true
-                [Console]::WriteLine([string]$record.Message)
-                [Console]::WriteLine([string]$record.Data)
+                [Console]::Out.WriteLine([string]$record.Message)
+                [Console]::Out.WriteLine([string]$record.Data)
             } else {
-                [Console]::WriteLine([string]$record.Message)
+                [Console]::Out.WriteLine([string]$record.Message)
             }
         }
+        [Console]::Out.Flush()
         return [pscustomobject]@{ Failed = $failed; AvailableData = $availableData }
     }
 
     $checkResult = Invoke-HeadlessWorker 'check'
     if ($checkResult.Failed) { exit 1 }
+    # -CheckOnly: the C# updater shows its own confirmation page, so do not
+    # apply anything until it re-invokes us without the switch.
+    if ($CheckOnly) { exit 0 }
     if ($checkResult.AvailableData) {
         $updateResult = Invoke-HeadlessWorker 'update' $checkResult.AvailableData
         if ($updateResult.Failed) { exit 1 }
@@ -786,7 +939,10 @@ $status.AutoSize = $true
 $form.Controls.Add($status)
 
 $version = New-Object System.Windows.Forms.Label
-$version.Text = '当前版本：读取中'
+$initialVersionText = '未知'
+if (Test-Path -LiteralPath $VersionFile) { $initialVersionText = (Get-Content -LiteralPath $VersionFile -Raw).Trim() }
+$initialBuildText = if (Test-Path -LiteralPath $BuildFile) { (Get-Content -LiteralPath $BuildFile -Raw).Trim() } else { '' }
+if ($initialBuildText) { $version.Text = "当前版本：$initialVersionText  ($initialBuildText)" } else { $version.Text = "当前版本：$initialVersionText" }
 $version.ForeColor = $muted
 $version.Location = New-Object System.Drawing.Point(32, 108)
 $version.AutoSize = $true
@@ -955,12 +1111,20 @@ $timer.Add_Tick({
             try {
                 $payload = $manifestJson | ConvertFrom-Json
                 $manifest = if ($null -ne $payload.manifest) { $payload.manifest } else { $payload }
-                $version.Text = "当前版本：$((Get-Content -LiteralPath $VersionFile -Raw).Trim())    最新版本：$($manifest.version)"
+                $curVersion = (Get-Content -LiteralPath $VersionFile -Raw).Trim()
+                $curBuildText = if (Test-Path -LiteralPath $BuildFile) { (Get-Content -LiteralPath $BuildFile -Raw).Trim() } else { '' }
+                $latestText = "$($manifest.version)"
+                if ($manifest.build_id) { $latestText += "  ($($manifest.build_id))" }
+                $currentText = "$curVersion"
+                if ($curBuildText) { $currentText += "  ($curBuildText)" }
+                $version.Text = "当前版本：$currentText    →    最新版本：$latestText"
                 $notes.Text = if ($manifest.notes) { $manifest.notes } else { '本次更新包含功能优化和稳定性修复。' }
             } catch { }
             Finish-Check 'available' $message.Message
         } elseif ($message.Kind -eq 'latest') {
-            $version.Text = "当前版本：$((Get-Content -LiteralPath $VersionFile -Raw).Trim())"
+            $curV = (Get-Content -LiteralPath $VersionFile -Raw).Trim()
+            $curB = if (Test-Path -LiteralPath $BuildFile) { (Get-Content -LiteralPath $BuildFile -Raw).Trim() } else { '' }
+            if ($curB) { $version.Text = "当前版本：$curV  ($curB)" } else { $version.Text = "当前版本：$curV" }
             $notes.Text = '当前已经是最新版本，无需更新。'
             Finish-Check 'latest'
         } elseif ($message.Kind -eq 'completed') {

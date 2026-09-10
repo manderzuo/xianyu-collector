@@ -1,7 +1,7 @@
 # 闲鱼管理系统 Agent 交接文档
 
-更新时间：2026-09-10  
-交接主题：以当前最新代码为基础继续开发 Windows 离线安装包、Docker 镜像归档和增量更新流程
+更新时间：2026-09-11（UI 第二轮：控制台微调、DPI 四档、品牌图标统一，见 §14）  
+交接主题：以当前最新代码为基础继续开发 Windows 离线安装包、Docker 镜像归档和增量更新流程；UI 三界面重做已完成并全状态验证，剩余事项见 §14 末尾清单
 
 ## 0. 基线与重要提醒
 
@@ -11,7 +11,7 @@
 C:\Users\StarLink\.codex\worktrees\8172\xianyu-rewrite
 ~~~
 
-当前基线是 detached HEAD，提交为 57da30c（origin/main 当前指向的最新提交）。当前工作树存在有意保留的未提交和未跟踪改动，**不要执行 git reset --hard、git checkout --、清理未跟踪文件或覆盖这些改动**。
+当前基线是 detached HEAD，提交为 57da30c（origin/main 当前指向的最新提交）。当前工作树存在有意保留的未提交和未跟踪改动，**不要执行 git reset --hard、git checkout --、清理未跟踪文件或覆盖这些改动**。（注：截至 §14 本轮，工作树 HEAD 已前进到 f322ecc，未提交清单以 §14"当前工作区状态"为准。）
 
 另一个工作树 C:\Users\StarLink\.codex\worktrees\aa16\xianyu-rewrite 是另一条业务开发线，不是本交接的安装包基线；不要把它的业务改动混入本任务。
 
@@ -382,3 +382,86 @@ foreach ($entry in $manifest.images) {
   - `artifacts/xianyu-installer-update-20260910-startup-check-fix.zip`
 
 该更新包包含本节两个首次启动更新检查修复，以及上一节的 Docker Desktop/WSL 两个修复，共四个文件。已有有效 `.env` 的安装仍按原流程执行更新检查；本修复不会自动用 `.env.example` 覆盖或生成密码，避免破坏现有环境。
+
+## 13. 2026-09-10 三界面重做与全状态验证（UI 轮）
+
+按 `D:\Desktop\UI界面修改意见.txt` 完成安装向导、更新器、服务控制台三个窗口的重做与真机验证。本轮全部改动集中在 `tools/launcher/XianyuLauncher.cs`、`tools/launcher/XianyuLauncherCore.cs`（未提交）。
+
+**协议与测试钩子**
+
+- 事件协议 `@@XIANYU_UI@@{json}`（stage/meta/result/progress）与 `@@XIANYU_STATUS@@{json}` 保持不变；C# 只渲染，脚本决定真实状态。
+- 新增环境变量测试钩子 `XIANYU_GUI_REPLAY`：指向文件则每次脚本运行回放该文件；指向目录则按文件名顺序第 N 次运行回放第 N 个文件（`1-*.txt`、`2-*.txt`…）。回放直接喂给 `ScriptRunner` 的 onLine 回调，支持 `#exit N`、`#delay MS` 指令，零副作用（不启动 powershell、不碰 Docker、不联网）。剧本在 `D:\xianyu-ui-build\replay\`。
+- `XIANYU_LAUNCHER_TRACE=1` 写 `logs\launcher-trace.log`；本轮排障靠它定位了多个问题。均为测试专用开关，不影响生产路径。
+
+**本轮修复清单（按根因）**
+
+1. TableLayoutPanel 未声明 RowStyle 的行默认 AutoSize，Dock=Fill 子级按 100px 测量导致文字截断/重叠——全文件补 42 处显式行样式；StageRow 详情行 26px + AutoEllipsis。
+2. `AppendLog` 在 stdout 异步读线程里直接操作 RichTextBox 抛异常杀死读线程（更新器收不到 result 事件的元凶）——改 BeginInvoke marshal + 处理器 try/catch。
+3. 失败语义分三级：`failed`（红色横幅"更新失败，当前版本未受影响"+重试）、`rolled_back`（琥珀"已安全恢复到版本 vX"+回滚卡+重试）、`rollback_failed`（红色"自动恢复未完成"+诊断按钮+查看日志）。失败时不再自动展开日志。
+4. `ShowBanner` 清理横幅时把 failureCard 一并移出容器——失败摘要卡从未显示过——保留条件修正；`ResizeBannerArea` 高度同步 140。
+5. `Panel.BackColor` 默认 Transparent 导致 UserPaint 控件 `g.Clear` 出黑底（HeroBand、StatusBadge、IconBox、Ghost 按钮四处）——新增 `Ui.ResolveBackdrop` 沿父链取首个不透明色统一修复。
+6. Lucide 图标数据 `square-arrow-out-up-right` 一个条目塞了三条路径（`|` 分隔），`GetShapes` 不拆分导致解析器在 `|` 处零长度线段死循环 → OutOfMemory → 按钮画成红叉——`GetShapes` 按 `|` 拆分 + 解析器加垃圾字符跳过与 20000 次迭代保险丝。
+7. 服务控制台 `RefreshLayoutMode` 在构造早期 OnResize 时 cards 字典为空，KeyNotFound 中断且 `wide` 标志被污染，四张服务卡永远留在隐藏的 gridTwo——加 `cards.Count` 守卫与可见性一致性检查。
+8. 折叠日志区 CollapsibleSection 构造未设 Height（默认 100 抢空间）；AutoScroll 容器内 Dock=Top 卡片被压缩——改无 Dock + 显式 Size + Resize 同步宽度。
+
+**验证结果（真机截图 + UIA，均通过）**
+
+- 安装向导 5 步：欢迎/环境检测（真实 Docker/WSL/离线包/网络四项）/安装位置（真实 95GB 可写校验）走真实脚本；正在安装（6 行进度、5/6 计数、日志条浅色）/完成页（服务摘要+访问地址+快捷方式勾选+启动按钮）走回放。
+- 更新器 6 态：检查失败（真实 HTTPS 拒绝）、available、latest、completed（6/6）、rolled_back（琥珀+3/6）、rollback_failed（红+运行自动诊断）全部渲染正确。
+- 服务控制台：四卡状态色（绿/绿/红/灰）、异常 summary、真实活动流、新版本链接齐全。
+- 截图目录 `D:\xianyu-ui-build\shots\`（22-63 号为本轮），验证工具：PrintWindow 离屏截图（不受遮挡）+ UIA BoundingRectangle + PostMessage 无鼠标点击（避免与用户抢指针）。
+
+**尚未验证**：~~200%/150% DPI 缩放~~（已于 §14 四档通过）；真实更新服务器的 available→下载→回滚全链路（本轮只测了 UI 层）；`restart_client` 结果态；升级安装（覆盖旧版本）场景。下一轮建议用 `build-windows-installer.ps1` 出正式包后在虚拟机做一次端到端。
+
+**边界确认**：本轮所有测试均未触碰 `D:\本地安装包`，未执行任何真实安装/镜像拉取/容器启停（用户调试容器不受影响），未运行 docker 写操作。
+
+## 14. 2026-09-11 控制台微调、DPI 四档、品牌图标统一（UI 第二轮）
+
+改动集中在 `tools/launcher/XianyuLauncher.cs`、`tools/launcher/XianyuLauncherCore.cs`、`tools/build-launcher.ps1`、新增 `assets/xianyu-app-icon.png`（均未提交）。
+
+### 14.1 控制台/窗口微调（用户反馈驱动，全部截图验证）
+
+1. 仪表盘头部行高 96→108（StatusBadge 被卡片遮挡的根因：24px 行 + Label 默认 9px 外边距把内容下移溢出）；headText 行 42/26/26，两个 Label 与 systemStatus 全部 `Margin = new Padding(0)`。
+2. 启动期徽标覆盖条件收窄：仅 `level == "unknown" || level == "down"` 时显示"正在启动服务并检查更新…"，否则如实显示脚本状态。
+3. 页脚列序改 Percent(100)+AutoSize（原 AutoSize+Percent 导致版本串"v1.2.0 ·"被截断）。
+4. "查看全部"按钮宽 116、活动区头部行 44/padding(16,8,12,0)（原 30px 行减 12px padding 放不下 28px 按钮，四字顶部被裁）。
+5. 按用户要求**移除**最近活动行的悬停 tooltip（rowRects/MouseMove/OnMove 全部删除，PaintRecords 保留行命中绘制）——注意这与规格 §22 相悖，是用户当面拍板的偏离。
+6. "诊断与日志"从"静默后台脚本+notepad"改为打开任务窗口：`AppOps.LaunchPackageExecutable(packageRoot, "xianyu-diagnostics", LauncherText.Diagnostics, "--diagnostics", "", "")`，找不到诊断程序时徽标提示"找不到诊断程序，请重新安装"。
+7. TaskWindow 两个渲染 bug：StatusBadge 未设 `Dock = DockStyle.Fill`（AutoSize 列内宽 0 不可见）；"完成"按钮文字裁切（Panel+Anchor+手动 Left 布局失效）→ 改 `FlowLayoutPanel { Dock=Fill, FlowDirection=RightToLeft, WrapContents=false }` 装 120×40 按钮（与更新器页脚 1432-1449 行同款模式，改按钮布局优先用这个模式）。
+
+### 14.2 DPI 四档验证（补上 §13"尚未验证"的头号缺口）
+
+- **注册表方案在 Win11 无效**：HKCU `Control Panel\Desktop` 的 `LogPixels`+`Win8DpiScaling`+广播 `WM_SETTINGCHANGE('User32DpiHint')` 后新进程仍是 96dpi（真实缩放存于 per-monitor 二进制 blob）。已恢复注册表原值（LogPixels 删除、Win8DpiScaling=0）。不要再走这条路。
+- **新增测试钩子 `XIANYU_FORCE_DPI`**（接受 `1.5` 或 `150`）：`Ui.DpiScale` 取强制值，新增 `Ui.ActualDpiScale` 记录真实 DC 比例，`Ui.Pt()` 乘 `DpiScale/ActualDpiScale` 补偿点字体 → 布局与文字同步放大。`LauncherWindow` 的 `AutoScaleMode.None`（core ~1140 行）保证 WinForms 不会二次缩放。该钩子与真实 DPI 走同一代码路径，环境变量门控，生产无影响。
+- **修复真实 bug**：`LauncherWindow` 尺寸钳制原用 `Screen.FromPoint(Cursor.Position).WorkingArea`——窗口大小取决于鼠标当时停在哪个显示器，多屏环境高 DPI 下必然出错（实测副屏竖屏时 1280 设计宽被钳到 1390/1360 物理 px）。已改 `Screen.PrimaryScreen.WorkingArea`（窗口本就 CenterScreen）。
+- **结论**：控制台 125/150/175/200 + 安装向导 200 + 更新器 200 全部通过（`D:\xianyu-ui-build\shots\dpi-*.png`）。1440p 屏 @200% 窗口被钳到 2480×1320，内容无裁切（只压缩卡片留白）；4K @200% 无钳制。
+- **残留**：仿真未覆盖 DWM 圆角与光标位图，建议在 VM 真 4K@200% 抽查一次截图即可销项。
+
+### 14.3 品牌图标统一（金鱼）
+
+- **正确图标 = 仓库 `assets/xianyu-launcher.ico`（金鱼，16-256 六帧）**。它一直通过 build 脚本 `/win32icon` 内嵌进 exe，任务栏/Alt-Tab/资源管理器从未出错。"图标没换"的实际问题是**窗口内**标题栏与品牌栏画的是手绘占位蓝底鱼（`Lucide.DrawLogoMark`）。
+- **严禁误用**：`D:\Desktop\online-1.0.6\assets\` 下的放大镜+五平台花瓣图标是**采集平台**的图标，不是本产品的。本轮曾误将其做成 ico/资源并部署，已全部回滚（git checkout 恢复 ico，删除误放 png，重编译确认 exe 无残留）。
+- **GDI+ 陷阱**：`new Icon(path,w,h)`/`Icon.ToBitmap` 对 PNG 压缩帧的 ico 会**误读成噪点**——不代表 ico 损坏。要看真实帧内容：手动解析 ICO 目录（6 字节头+16 字节/帧），按 offset/size 切出原始 PNG blob 直接落盘。
+- **新构建依赖**：`assets/xianyu-app-icon.png`（金鱼 256 帧裁掉透明边距后 232×195，64KB）。build 脚本以 `/resource:...,xianyu-app-icon.png` 嵌入。**此文件必须入库**；缺失时 `Ui.LoadBrandLogo()` 得 null，各绘制点回退手绘占位鱼（不会崩，但图标不对）。
+- **绘制机制**：`Ui.LoadBrandLogo()`（Program.Main 启动时调用）+ `Ui.DrawLogo(g, box[, alpha])`——等比居中、透明直贴、HighQualityBicubic，alpha<1 时走 ColorMatrix（注意 `DrawImage` 带 ImageAttributes 的重载**只接受 int Rectangle**，RectangleF 版不存在，CS1502）。
+- **接入点与尺寸**（用户要求：任何位置不得垫背景色块）：标题栏 LogoBox 24→32（列 24→36，三窗口共用）；安装向导品牌栏 RailPanel 占位 44→真图 64（y 88→80）；更新器 hero 标题列 34→44（IconBox `__logo` 走全框等比）；HeroBand 右下装饰水印 100px @10% alpha。死代码 `productIcon`/`TryLoadIcon` 文件读取已删。
+- 排障教训：上一轮"没换成功"是水印处 DrawImage 重载编译失败 → pkg 里静默部署了旧 exe。**build 后必须先 grep error CS 再 Copy-Item 部署**。
+
+### 14.4 当前工作区状态（本轮末）
+
+- HEAD：f322ecc（§0/§1 里的 57da30c 已过时）。
+- 已修改未提交：`deploy/update-xianyu-gui.ps1`、`docs/AGENT_HANDOFF_20260910_OFFLINE_INSTALLER.md`、`tools/build-launcher.ps1`、`tools/build-windows-installer.ps1`、`tools/import-offline-image-bundle.ps1`、`tools/launcher/XianyuLauncher.cs`、`tools/launcher/XianyuLauncherCore.cs`、`tools/windows-installer-install.ps1`、`tools/windows-installer-update.ps1`。
+- 新增未跟踪（**要入库**）：`assets/xianyu-app-icon.png`。
+- 无关未跟踪（勿混入提交）：`.tmp-lucide/`、`artifacts/pelican-frame-*.png`、`pelican-bicycle.html`。
+- 提交/推送仍需用户确认。
+- 冒烟构建：`& $env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\build-launcher.ps1 -OutputDirectory 'D:\xianyu-ui-build\launcher'` → 杀 `*闲鱼*` 进程 → `Copy-Item 'D:\xianyu-ui-build\launcher\*' 'D:\xianyu-ui-build\pkg\' -Force`（pkg 内 10 个 exe 同源改名）。
+
+### 14.5 下一位 Agent 的待办（按优先级）
+
+1. **VM 端到端**：`build-windows-installer.ps1` 出正式包，跑规格 §25 验收矩阵未测的 11 项（Docker 未装引导、WSL 3010、离线无网、签名失败、升级安装、`restart_client` 结果态等）+ 真 4K@200% DPI 抽查截图。
+2. **真实更新服务器**全链路：available→下载→应用→健康检查→（故障注入）回滚。
+3. `status.ps1` 真实 docker 分支验证（本轮只验证了 UI 消费侧，脚本侧依赖用户调试容器，不可动）。
+4. 等用户拍板两问：trace 开关（`XIANYU_LAUNCHER_TRACE`）交付包是否保留；路径页"浏览"按钮焦点框样式。
+5. 已知 Windows 行为：exe 原地替换后资源管理器图标缓存可能不刷新，属系统缓存非 bug（`ie4uinit.exe -show` 可刷，勿主动执行）。
+
+**边界确认（本轮）**：未调用任何 docker 命令；未触碰 `D:\本地安装包`；注册表 DPI 试验已完全恢复原值；用户调试容器全程未受影响。

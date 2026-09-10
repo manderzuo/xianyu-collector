@@ -11,6 +11,16 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+function Get-FileSha256([string]$Path) {
+    $stream = [System.IO.File]::OpenRead($Path)
+    try {
+        $sha = [System.Security.Cryptography.SHA256]::Create()
+        try {
+            return ([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-', '').ToLowerInvariant()
+        } finally { $sha.Dispose() }
+    } finally { $stream.Dispose() }
+}
+
 function Fail([string]$Message) {
     throw "Offline image bundle failed: $Message"
 }
@@ -142,7 +152,7 @@ try {
             Fail "Docker archive validation failed for $($spec.Name); it does not contain image layers."
         }
         Compress-GzipFile -InputPath $tarPath -OutputPath $archivePath
-        $hash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+        $hash = Get-FileSha256 $archivePath
         $archiveBytes = (Get-Item -LiteralPath $archivePath).Length
         $tarBytes = (Get-Item -LiteralPath $tarPath).Length
         if ($tarBytes -lt 1048576) { Fail "Exported archive for $($spec.Name) is unexpectedly small ($tarBytes bytes)." }

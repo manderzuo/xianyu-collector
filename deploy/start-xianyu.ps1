@@ -80,11 +80,18 @@ if ($frontendPort -match '^\d+$') {
     Start-Process "http://127.0.0.1:$frontendPort/?_xianyu_start=$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())"
 }
 
-foreach ($candidate in @($UpdaterExecutable, $ChineseUpdaterExecutable)) {
-    if (-not (Test-Path -LiteralPath $candidate)) { continue }
-    Start-Process -FilePath $candidate -ArgumentList '--updater' -WorkingDirectory $PackageRoot -WindowStyle Normal | Out-Null
-    break
-}
-if (-not (Test-Path -LiteralPath $UpdaterExecutable) -and -not (Test-Path -LiteralPath $ChineseUpdaterExecutable) -and (Test-Path -LiteralPath $UpdateChecker)) {
-    & $UpdateChecker
+$updateCheckOnStart = $true
+try {
+    $setting = Get-Content -LiteralPath $EnvFile | Where-Object { $_ -match '^\s*UPDATE_CHECK_ON_START\s*=' } | Select-Object -First 1
+    if ($setting -match '=\s*(false|0|no)\s*$') { $updateCheckOnStart = $false }
+} catch { }
+if ($updateCheckOnStart) {
+    foreach ($candidate in @($UpdaterExecutable, $ChineseUpdaterExecutable)) {
+        if (-not (Test-Path -LiteralPath $candidate)) { continue }
+        Start-Process -FilePath $candidate -ArgumentList '--updater' -WorkingDirectory $PackageRoot -WindowStyle Normal | Out-Null
+        break
+    }
+    if (-not (Test-Path -LiteralPath $UpdaterExecutable) -and -not (Test-Path -LiteralPath $ChineseUpdaterExecutable) -and (Test-Path -LiteralPath $UpdateChecker)) {
+        & $UpdateChecker
+    }
 }

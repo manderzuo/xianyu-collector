@@ -1,4 +1,4 @@
-param(
+﻿param(
     [Parameter(Mandatory = $true)]
     [string]$PackageRoot,
     [string]$TempDirectory = ''
@@ -6,7 +6,24 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# GUI protocol events (XIANYU_GUI_PROTOCOL=1): report per-archive import state
+# so the installer wizard shows which image is being imported right now.
+$script:GuiProtocolEnabled = ("$env:XIANYU_GUI_PROTOCOL".Trim() -eq '1')
+$script:FailStage = 'images_base'
+try { $utf8NoBom = New-Object System.Text.UTF8Encoding($false); [Console]::OutputEncoding = $utf8NoBom } catch { }
+
+function Write-Stage {
+    param([string]$Stage, [string]$Status, [string]$Detail = '', [string]$Code = '')
+    if (-not $script:GuiProtocolEnabled) { return }
+    try {
+        $payload = [ordered]@{ v = 1; type = 'stage'; operation = 'install'; stage = $Stage; status = $Status; progress = -1; detail = $Detail; code = $Code }
+        [Console]::Out.WriteLine('@@XIANYU_UI@@' + ($payload | ConvertTo-Json -Compress))
+        [Console]::Out.Flush()
+    } catch { }
+}
+
 function Fail([string]$Message) {
+    if ($script:GuiProtocolEnabled) { Write-Stage $script:FailStage 'failed' $Message 'E_INSTALL_IMAGE_IMPORT' }
     throw "Offline image import failed: $Message"
 }
 
@@ -80,8 +97,14 @@ New-Item -ItemType Directory -Path $tempBase -Force | Out-Null
 $tempRoot = Join-Path $tempBase ('xianyu-image-import-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
 $imageRootWithSlash = $imageRoot.TrimEnd('\') + '\'
+$entries = @($manifest.images)
 try {
-    foreach ($entry in @($manifest.images)) {
+    $entryIndex = 0
+    foreach ($entry in $entries) {
+        $entryIndex++
+        $entryName = "$($entry.name)"
+        $script:FailStage = if ($entryName -match '^(mysql|redis)') { 'images_base' } else { 'images_app' }
+        Write-Stage $script:FailStage 'running' "正在校验 $entryName（$entryIndex / $($entries.Count)）"
         $archiveName = [string]$entry.archive
         if ([string]::IsNullOrWhiteSpace($archiveName) -or $archiveName -match '[\\/:]' -or $archiveName -in @('.', '..')) {
             Fail "Invalid archive name for $($entry.name)"
@@ -139,7 +162,10 @@ try {
             if ($LASTEXITCODE -ne 0) { Fail "Could not create registry-compatible tag for $($entry.name): $sourceImage" }
         }
         Remove-Item -LiteralPath $tarPath -Force
+        Write-Stage $script:FailStage 'running' "已完成 $entryName 导入（$entryIndex / $($entries.Count)）"
     }
+    Write-Stage 'images_base' 'success' '基础镜像导入完成'
+    Write-Stage 'images_app' 'success' '业务镜像导入完成'
     Write-Host '[xianyu] All offline images imported successfully.' -ForegroundColor Green
 } finally {
     if (Test-Path -LiteralPath $tempRoot) { Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue }

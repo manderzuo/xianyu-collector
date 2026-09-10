@@ -1,8 +1,14 @@
-param(
-    [switch]$Headless
+﻿param(
+    [switch]$Headless,
+    [switch]$CheckOnly
 )
 
 $ErrorActionPreference = 'Stop'
+try {
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [Console]::OutputEncoding = $utf8NoBom
+    $global:OutputEncoding = $utf8NoBom
+} catch { }
 $PackageRoot = Split-Path -Parent $PSScriptRoot
 $AppRoot = Join-Path $PackageRoot 'app'
 $GuiScript = Join-Path $AppRoot 'deploy\update-xianyu-gui.ps1'
@@ -24,7 +30,11 @@ if (-not (Test-Path -LiteralPath $GuiScript)) {
 }
 
 if ($Headless) {
-    & $GuiScript -ProjectRoot $AppRoot -Headless
+    # NB: array-splatting bare '-Name' strings binds them positionally in
+    # Windows PowerShell, which silently broke the -Headless switch and fell
+    # through to the legacy dialog. Pass the switches explicitly.
+    if ($CheckOnly) { & $GuiScript -ProjectRoot $AppRoot -Headless -CheckOnly }
+    else { & $GuiScript -ProjectRoot $AppRoot -Headless }
     $guiExitCode = $LASTEXITCODE
     Stop-XianyuLogSession
     exit $guiExitCode

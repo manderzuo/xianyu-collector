@@ -165,23 +165,32 @@ Write-XianyuLog -LogPath $LogPath -Message "startup_completed frontend_port=$fro
 # background process so a slow registry or a failed update check never blocks
 # the local application from opening. Use an argument array instead of a
 # hand-built quoted command line so paths with spaces remain valid.
-foreach ($candidate in @($UpdaterExecutable, $ChineseUpdaterExecutable)) {
-    if (-not (Test-Path -LiteralPath $candidate)) { continue }
-    try {
-        $updateProcess = Start-Process -FilePath $candidate -ArgumentList '--updater' -WorkingDirectory $PackageRoot -WindowStyle Normal -PassThru
-        Write-XianyuLog -LogPath $LogPath -Message "update_gui_started path=$candidate pid=$($updateProcess.Id)"
-    } catch {
-        Write-XianyuLog -LogPath $LogPath -Message "update_gui_start_failed error=$($_.Exception.ToString())"
+$updateCheckOnStart = $true
+try {
+    $setting = Get-Content -LiteralPath $EnvFile | Where-Object { $_ -match '^\s*UPDATE_CHECK_ON_START\s*=' } | Select-Object -First 1
+    if ($setting -match '=\s*(false|0|no)\s*$') { $updateCheckOnStart = $false }
+} catch { }
+if ($updateCheckOnStart) {
+    foreach ($candidate in @($UpdaterExecutable, $ChineseUpdaterExecutable)) {
+        if (-not (Test-Path -LiteralPath $candidate)) { continue }
+        try {
+            $updateProcess = Start-Process -FilePath $candidate -ArgumentList '--updater' -WorkingDirectory $PackageRoot -WindowStyle Normal -PassThru
+            Write-XianyuLog -LogPath $LogPath -Message "update_gui_started path=$candidate pid=$($updateProcess.Id)"
+        } catch {
+            Write-XianyuLog -LogPath $LogPath -Message "update_gui_start_failed error=$($_.Exception.ToString())"
+        }
+        break
     }
-    break
-}
-if (-not (Test-Path -LiteralPath $UpdaterExecutable) -and -not (Test-Path -LiteralPath $ChineseUpdaterExecutable) -and (Test-Path -LiteralPath $UpdateChecker)) {
-    $checkArguments = @('-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-File', $UpdateChecker)
-    try {
-        $checkProcess = Start-Process -FilePath 'powershell.exe' -ArgumentList $checkArguments -WindowStyle Hidden -PassThru
-        Write-XianyuLog -LogPath $LogPath -Message "update_check_started_compat pid=$($checkProcess.Id)"
-    } catch {
-        Write-XianyuLog -LogPath $LogPath -Message "update_check_start_failed error=$($_.Exception.ToString())"
+    if (-not (Test-Path -LiteralPath $UpdaterExecutable) -and -not (Test-Path -LiteralPath $ChineseUpdaterExecutable) -and (Test-Path -LiteralPath $UpdateChecker)) {
+        $checkArguments = @('-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-File', $UpdateChecker)
+        try {
+            $checkProcess = Start-Process -FilePath 'powershell.exe' -ArgumentList $checkArguments -WindowStyle Hidden -PassThru
+            Write-XianyuLog -LogPath $LogPath -Message "update_check_started_compat pid=$($checkProcess.Id)"
+        } catch {
+            Write-XianyuLog -LogPath $LogPath -Message "update_check_start_failed error=$($_.Exception.ToString())"
+        }
     }
+} else {
+    Write-XianyuLog -LogPath $LogPath -Message 'update_gui_skipped reason=UPDATE_CHECK_ON_START_false'
 }
 Stop-XianyuLogSession
