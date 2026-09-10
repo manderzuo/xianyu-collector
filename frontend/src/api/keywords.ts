@@ -19,7 +19,7 @@ export const getKeywords = async (cookieId?: string): Promise<Keyword[]> => {
 export const saveKeywords = (cookieId: string, keywords: Keyword[]): Promise<ApiResponse> => {
   // 只发送文本类型的关键词，图片类型通过单独接口处理
   const textKeywords = keywords
-    .filter(k => k.type !== 'image')
+    .filter(k => k.type !== 'image' && !k.builtin && k.source !== 'builtin' && !k.read_only)
     .map(k => ({
       keyword: k.keyword,
       reply: k.reply || '',

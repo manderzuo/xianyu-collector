@@ -7,6 +7,7 @@ const FEATURE_LABELS: Record<string, string> = {
   'card.auto_delivery': '自动发货卡券',
   'product.auto_publish': '自动发布商品',
   'ai.smart_reply': 'AI 智能回复',
+  'ai.builtin_reply': '内置AI自动回复',
   'keyword.reply': '关键词回复',
 }
 

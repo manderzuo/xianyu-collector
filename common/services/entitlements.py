@@ -13,6 +13,7 @@ FEATURE_ACCOUNT = "account.manage"
 FEATURE_CARD_AUTO_DELIVERY = "card.auto_delivery"
 FEATURE_PRODUCT_AUTO_PUBLISH = "product.auto_publish"
 FEATURE_AI_SMART_REPLY = "ai.smart_reply"
+FEATURE_BUILTIN_AI_REPLY = "ai.builtin_reply"
 FEATURE_KEYWORD_REPLY = "keyword.reply"
 
 ENTITLEMENT_FEATURES = (
@@ -20,6 +21,7 @@ ENTITLEMENT_FEATURES = (
     FEATURE_CARD_AUTO_DELIVERY,
     FEATURE_PRODUCT_AUTO_PUBLISH,
     FEATURE_AI_SMART_REPLY,
+    FEATURE_BUILTIN_AI_REPLY,
     FEATURE_KEYWORD_REPLY,
 )
 
@@ -29,6 +31,7 @@ DEFAULT_PLAN_ENTITLEMENTS = {
         FEATURE_CARD_AUTO_DELIVERY: {"enabled": True, "limit_value": 1, "unlimited": False},
         FEATURE_PRODUCT_AUTO_PUBLISH: {"enabled": True, "limit_value": 1, "unlimited": False},
         FEATURE_AI_SMART_REPLY: {"enabled": False, "limit_value": None, "unlimited": False},
+        FEATURE_BUILTIN_AI_REPLY: {"enabled": False, "limit_value": None, "unlimited": False},
         FEATURE_KEYWORD_REPLY: {"enabled": True, "limit_value": 5, "unlimited": False},
     },
     "VIP": {
@@ -36,6 +39,7 @@ DEFAULT_PLAN_ENTITLEMENTS = {
         FEATURE_CARD_AUTO_DELIVERY: {"enabled": True, "limit_value": None, "unlimited": True},
         FEATURE_PRODUCT_AUTO_PUBLISH: {"enabled": True, "limit_value": None, "unlimited": True},
         FEATURE_AI_SMART_REPLY: {"enabled": True, "limit_value": None, "unlimited": True},
+        FEATURE_BUILTIN_AI_REPLY: {"enabled": True, "limit_value": None, "unlimited": True},
         FEATURE_KEYWORD_REPLY: {"enabled": True, "limit_value": None, "unlimited": True},
     },
 }

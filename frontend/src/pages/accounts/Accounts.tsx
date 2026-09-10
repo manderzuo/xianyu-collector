@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Plus, RefreshCw, QrCode, Key, Edit2, Trash2, Power, PowerOff, X, Loader2, Clock, CheckCircle, MessageSquare, Bot, Globe, Timer, ScanFace, ChevronLeft, ChevronRight, ChevronDown, ImagePlus, Filter, Repeat, MoreHorizontal, PackageCheck, Star, ShieldCheck, Flower2, Eye, EyeOff, Ban, Download, Upload, Send, Ticket, AlertCircle, UploadCloud } from 'lucide-react'
-import { getAccountDetailsPaginated, deleteAccount, updateAccountCookie, updateAccountStatus, updateAccountsStatusBatch, closeAccountsNoticeBatch, clearTokenCacheBatch, updateAccountRemark, addAccount, generateQRLogin, checkQRLoginStatus, passwordLogin, checkPasswordLoginStatus, cancelPasswordLogin, updateAccountAutoConfirm, updateAccountPauseDuration, updateAccountMessageExpireTime, updateAccountReplyDelay, updateAccountLoginInfo, updateAccountScheduledRedelivery, updateAccountScheduledRate, updateAccountAutoPolish, updateAccountConfirmBeforeSend, updateAccountSendBeforeConfirm, updateAccountOnlySendCard, updateAccountAutoRedFlower, updateAccountAiReplyBlockOrderedUsers, getAIReplySettings, updateAIReplySettings, testAIConnection, fetchAIModels, AI_PROVIDER_OPTIONS, AI_PROVIDER_DEFAULT_BASE_URLS, getProxyConfig, updateProxyConfig, getFaceVerificationScreenshot, deleteFaceVerificationScreenshot, getConfirmReceiptMessage, updateConfirmReceiptMessage, uploadConfirmReceiptImage, exportAccountsExcel, importAccountsExcel, getRewriteAccountContentDetail, syncRewriteAccountContent, syncCloudSession, listCloudSessions, restoreCloudSession, revokeCloudSession, type CloudSessionSummary, type AIProviderType, type AIModelOption, type ProxyConfig, type FaceVerificationScreenshot, type AccountFilterParams, type RewriteAccountContentDetail } from '@/api/accounts'
+import { Plus, RefreshCw, QrCode, Key, Edit2, Trash2, Power, PowerOff, X, Loader2, Clock, CheckCircle, MessageSquare, Bot, Sparkles, Globe, Timer, ScanFace, ChevronLeft, ChevronRight, ChevronDown, ImagePlus, Filter, Repeat, MoreHorizontal, PackageCheck, Star, ShieldCheck, Flower2, Eye, EyeOff, Ban, Download, Upload, Send, Ticket, AlertCircle } from 'lucide-react'
+import { getAccountDetailsPaginated, deleteAccount, updateAccountCookie, updateAccountStatus, updateAccountsStatusBatch, closeAccountsNoticeBatch, clearTokenCacheBatch, updateAccountRemark, addAccount, generateQRLogin, checkQRLoginStatus, passwordLogin, checkPasswordLoginStatus, cancelPasswordLogin, updateAccountAutoConfirm, updateAccountPauseDuration, updateAccountMessageExpireTime, updateAccountReplyDelay, updateAccountLoginInfo, updateAccountScheduledRedelivery, updateAccountScheduledRate, updateAccountAutoPolish, updateAccountConfirmBeforeSend, updateAccountSendBeforeConfirm, updateAccountOnlySendCard, updateAccountAutoRedFlower, updateAccountAiReplyBlockOrderedUsers, getAIReplySettings, updateAIReplySettings, updateBuiltinAIReply, testAIConnection, fetchAIModels, AI_PROVIDER_OPTIONS, AI_PROVIDER_DEFAULT_BASE_URLS, getProxyConfig, updateProxyConfig, getFaceVerificationScreenshot, deleteFaceVerificationScreenshot, getConfirmReceiptMessage, updateConfirmReceiptMessage, uploadConfirmReceiptImage, exportAccountsExcel, importAccountsExcel, getRewriteAccountContentDetail, syncRewriteAccountContent, type AIProviderType, type AIModelOption, type ProxyConfig, type FaceVerificationScreenshot, type AccountFilterParams, type RewriteAccountContentDetail } from '@/api/accounts'
 import { getDefaultReply, updateDefaultReply, uploadDefaultReplyImage } from '@/api/keywords'
 import { getAutoRateConfig, updateAutoRateConfig } from '@/api/autoRate'
 import { checkAdminDefaultPassword } from '@/api/auth'
@@ -23,6 +23,7 @@ type ModalType = 'qrcode' | 'password' | 'manual' | 'edit' | 'default-reply' | '
 interface AccountWithKeywordCount extends AccountDetail {
   keywordCount?: number
   aiEnabled?: boolean
+  builtinAiReplyEnabled?: boolean
 }
 
 interface AccountPagination {
@@ -80,9 +81,6 @@ export function Accounts() {
   const navigate = useNavigate()
   const [loading, setLoading] = useState(true)
   const [accounts, setAccounts] = useState<AccountWithKeywordCount[]>([])
-  const [cloudSessions, setCloudSessions] = useState<CloudSessionSummary[]>([])
-  const [cloudSessionsOpen, setCloudSessionsOpen] = useState(false)
-  const [cloudSessionsLoading, setCloudSessionsLoading] = useState(false)
   const [activeModal, setActiveModal] = useState<ModalType>(null)
   const activeModalRef = useRef<ModalType>(null)
   const [pagination, setPagination] = useState<AccountPagination>({
@@ -273,6 +271,7 @@ export function Accounts() {
   // 是否管理员：管理员可查看全量账号，需展示账号所属用户列
   const isAdmin = Boolean(user?.is_admin)
   const canUseAI = isAdmin || user?.entitlements?.features?.['ai.smart_reply'] === true
+  const canUseBuiltinAI = isAdmin || user?.entitlements?.features?.['ai.builtin_reply'] === true
 
   const openContentDetail = async (account: AccountWithKeywordCount) => {
     setContentDetailAccount(account)
@@ -1116,51 +1115,6 @@ export function Accounts() {
     }
   }
 
-  const handleCloudSync = async (account: AccountDetail) => {
-    try {
-      const result = await syncCloudSession(account.id)
-      if (!result.success) throw new Error(result.message || '同步失败')
-      addToast({ type: 'success', message: '闲鱼登录会话已加密同步到云端' })
-    } catch (error) {
-      addToast({ type: 'error', message: getApiErrorMessage(error, '云端同步失败') })
-    }
-  }
-
-  const loadCloudSessions = async () => {
-    setCloudSessionsLoading(true)
-    try {
-      setCloudSessions(await listCloudSessions())
-      setCloudSessionsOpen(true)
-    } catch (error) {
-      addToast({ type: 'error', message: getApiErrorMessage(error, '云端会话加载失败，请重新登录后重试') })
-    } finally {
-      setCloudSessionsLoading(false)
-    }
-  }
-
-  const handleCloudRestore = async (sessionId: number) => {
-    try {
-      const result = await restoreCloudSession(sessionId)
-      if (!result.success) throw new Error(result.message || '恢复失败')
-      addToast({ type: 'success', message: '闲鱼登录会话已恢复到本机' })
-      setCloudSessionsOpen(false)
-      await loadAccounts()
-    } catch (error) {
-      addToast({ type: 'error', message: getApiErrorMessage(error, '云端会话恢复失败') })
-    }
-  }
-
-  const handleCloudRevoke = async (sessionId: number) => {
-    try {
-      const result = await revokeCloudSession(sessionId)
-      if (!result.success) throw new Error(result.message || '撤销失败')
-      setCloudSessions(prev => prev.filter(item => item.id !== sessionId))
-      addToast({ type: 'success', message: '云端会话已撤销' })
-    } catch (error) {
-      addToast({ type: 'error', message: getApiErrorMessage(error, '撤销云端会话失败') })
-    }
-  }
-
   // ==================== 编辑账号 ====================
   const openEditModal = (account: AccountDetail) => {
     setEditingAccount(account)
@@ -1353,6 +1307,27 @@ export function Accounts() {
       await loadAccounts()
     } catch (error) {
       addToast({ type: 'error', message: getApiErrorMessage(error, '操作失败') })
+    }
+  }
+
+  // ==================== VIP内置AI自动回复开关 ====================
+  const handleToggleBuiltinAI = async (account: AccountWithKeywordCount) => {
+    if (!canUseBuiltinAI) {
+      addToast({ type: 'warning', message: '内置AI自动回复仅对VIP用户开放' })
+      return
+    }
+    const newEnabled = !account.builtinAiReplyEnabled
+    try {
+      const result = await updateBuiltinAIReply(newEnabled)
+      if (!result.success) {
+        addToast({ type: 'warning', message: result.message || '内置AI自动回复设置失败' })
+        return
+      }
+      setAccounts(prev => prev.map(item => ({ ...item, builtinAiReplyEnabled: newEnabled })))
+      addToast({ type: 'success', message: `内置AI自动回复已${newEnabled ? '开启' : '关闭'}，所有闲鱼账号共享` })
+      await loadAccounts()
+    } catch (error) {
+      addToast({ type: 'error', message: getApiErrorMessage(error, '内置AI自动回复设置失败') })
     }
   }
 
@@ -2087,28 +2062,7 @@ export function Accounts() {
           <RefreshCw className="w-4 h-4" />
           刷新
         </button>
-        <button onClick={() => void loadCloudSessions()} className="btn-ios-secondary" disabled={cloudSessionsLoading}>
-          {cloudSessionsLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
-          云端会话
-        </button>
       </div>
-
-      {cloudSessionsOpen && (
-        <div className="vben-card">
-          <div className="vben-card-header flex-between">
-            <div><h2 className="vben-card-title">云端闲鱼账号</h2><p className="text-xs text-slate-500 mt-1">仅显示当前平台账号同步的会话，不跨用户共享。</p></div>
-            <button className="btn-ios-secondary btn-sm" onClick={() => setCloudSessionsOpen(false)}>关闭</button>
-          </div>
-          <div className="divide-y divide-slate-100 dark:divide-slate-700">
-            {cloudSessions.length === 0 ? <div className="px-4 py-6 text-sm text-slate-500">暂无云端会话，请先在账号列表点击“同步”。</div> : cloudSessions.map(item => (
-              <div key={item.id} className="flex items-center justify-between gap-4 px-4 py-3">
-                <div><p className="font-medium text-slate-800 dark:text-slate-100">{item.account_name || item.account_key}</p><p className="text-xs text-slate-500">{item.account_key} · 修订 {item.revision}</p></div>
-                <div className="flex gap-2"><button className="btn-ios-primary btn-sm" onClick={() => void handleCloudRestore(item.id)}>拉取到本机</button><button className="btn-ios-secondary btn-sm text-red-600" onClick={() => void handleCloudRevoke(item.id)}>撤销</button></div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
 
       {/* Add Account Card */}
       <div className="vben-card">
@@ -2622,6 +2576,20 @@ export function Accounts() {
                             <Bot className="w-3.5 h-3.5" />
                           </button>
                         )}
+                        {canUseBuiltinAI && (
+                          <button
+                            onClick={() => void handleToggleBuiltinAI(account)}
+                            aria-label="内置AI自动回复"
+                            className={`inline-flex items-center justify-center w-7 h-7 rounded transition-colors ${
+                              account.builtinAiReplyEnabled
+                                ? 'bg-amber-100 text-amber-700 hover:bg-amber-200 dark:bg-amber-900/30 dark:text-amber-300 dark:hover:bg-amber-900/50'
+                                : 'bg-slate-100 text-slate-400 hover:bg-slate-200 dark:bg-slate-700 dark:text-slate-500 dark:hover:bg-slate-600'
+                            }`}
+                            title={`内置AI自动回复：${account.builtinAiReplyEnabled ? '已开启（点击关闭）' : '已关闭（点击开启）'}`}
+                          >
+                            <Sparkles className="w-3.5 h-3.5" />
+                          </button>
+                        )}
                         {/* 定时补发货 */}
                         <button
                           onClick={() => handleToggleScheduledRedelivery(account)}
@@ -2779,16 +2747,6 @@ export function Accounts() {
                           >
                             <Bot className="w-3.5 h-3.5 text-purple-500" />
                             <span className="text-purple-600 dark:text-purple-400">平台AI设置</span>
-                          </button>
-                        )}
-                        {account.has_password !== undefined && (
-                          <button
-                            onClick={() => void handleCloudSync(account)}
-                            className="inline-flex items-center gap-1 px-2 py-1 text-xs rounded hover:bg-cyan-50 dark:hover:bg-cyan-900/30 transition-colors"
-                            title="加密同步登录会话到云端"
-                          >
-                            <UploadCloud className="w-3.5 h-3.5 text-cyan-500" />
-                            <span className="text-cyan-600 dark:text-cyan-400">同步</span>
                           </button>
                         )}
                         <button

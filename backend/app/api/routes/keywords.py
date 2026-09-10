@@ -15,6 +15,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.dependencies import get_current_user
 from backend.app.core.response import ok
+from backend.app.services.account_settings import load_platform_ai_settings
+from backend.app.services.builtin_keyword_service import builtin_keyword_payloads
+from backend.app.services.entitlements import FEATURE_BUILTIN_AI_REPLY, get_effective_entitlement
 from common.config import settings
 from common.db.session import get_session
 from common.models.accounts import Account
@@ -40,6 +43,25 @@ def _serialize(item: FeatureRecord) -> dict[str, Any]:
     data = dict(item.payload or {})
     data.update({"id": str(item.id), "created_at": item.created_at, "updated_at": item.updated_at})
     return data
+
+
+async def _builtin_rows(account_ids: list[str], user: dict[str, Any], db: AsyncSession) -> list[dict[str, Any]]:
+    """只向已开启且有 VIP 内置话术授权的用户展示预置规则。"""
+    if not account_ids:
+        return []
+    settings = await load_platform_ai_settings(db, _uid(user))
+    if not settings.get("builtin_ai_reply_enabled"):
+        return []
+    entitlement = await get_effective_entitlement(db, user, FEATURE_BUILTIN_AI_REPLY)
+    if not entitlement.enabled:
+        return []
+    result: list[dict[str, Any]] = []
+    for account_id in account_ids:
+        for payload in builtin_keyword_payloads():
+            item = dict(payload)
+            item["account_id"] = str(account_id)
+            result.append(item)
+    return result
 
 
 def _rule_payload(account_id: str, value: dict[str, Any], *, keep_unknown: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -82,6 +104,10 @@ async def _account_rows(account_id: str | None, user: dict[str, Any], db: AsyncS
 async def list_all_keywords(user=Depends(get_current_user), db: AsyncSession = Depends(get_session)):
     rows = await _account_rows(None, user, db)
     items = [_serialize(row) for row in rows]
+    account_ids = sorted({str((row.payload or {}).get("account_id") or "") for row in rows if (row.payload or {}).get("account_id")})
+    if not account_ids:
+        account_ids = [str(account.id) for account in (await db.execute(select(Account).where(Account.user_id == _uid(user)))).scalars().all()]
+    items.extend(await _builtin_rows(account_ids, user, db))
     return ok({"items": items, "list": items, "total": len(items)}, "关键词查询成功")
 
 
@@ -89,6 +115,7 @@ async def list_all_keywords(user=Depends(get_current_user), db: AsyncSession = D
 async def list_keywords(account_id: str, user=Depends(get_current_user), db: AsyncSession = Depends(get_session)):
     rows = await _account_rows(account_id, user, db)
     items = [_serialize(row) for row in rows]
+    items.extend(await _builtin_rows([str(account_id)], user, db))
     return ok({"items": items, "list": items, "total": len(items)}, "关键词查询成功")
 
 
@@ -107,6 +134,9 @@ async def save_keywords(account_id: str, payload: dict[str, Any] | None = Body(d
     created = []
     for value in keywords:
         if not isinstance(value, dict) or not str(value.get("keyword") or "").strip():
+            continue
+        # 内置 VIP 规则只读，不能被“保存全部”操作复制进用户规则表。
+        if value.get("builtin") is True or value.get("source") == "builtin":
             continue
         item = FeatureRecord(owner_id=_uid(user), feature=FEATURE, external_id=uuid4().hex, status="active", payload=_rule_payload(account_id, value))
         db.add(item)

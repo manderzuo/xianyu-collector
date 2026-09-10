@@ -17,6 +17,7 @@ interface CurrentAccount {
   created_at?: string | null
   online?: boolean
   ai_enabled?: boolean
+  builtin_ai_reply_enabled?: boolean
   scheduled_redelivery?: boolean
   scheduled_rate?: boolean
   auto_polish?: boolean
@@ -81,6 +82,7 @@ function mapCurrentAccount(item: CurrentAccount): AccountDetail {
     filter_count: item.filter_count ?? 0,
     today_reply_count: item.today_reply_count ?? 0,
     aiEnabled: item.ai_enabled ?? false,
+    builtinAiReplyEnabled: item.builtin_ai_reply_enabled ?? false,
     use_ai_reply: item.ai_enabled ?? false,
     use_default_reply: false,
   }
@@ -165,43 +167,6 @@ export const addAccount = (data: { id: string; cookie: string }): Promise<ApiRes
 // 更新账号 Cookie 值
 export const updateAccountCookie = (id: string, value: string): Promise<ApiResponse> => {
   return put(`/api/v1/accounts/${id}`, { cookie: value })
-}
-
-export interface CloudSessionSummary {
-  id: number
-  account_key: string
-  account_name: string
-  device_id: string
-  revision: number
-  status: string
-  last_validated_at?: string | null
-  updated_at?: string | null
-}
-
-const getDeviceId = (): string => {
-  const key = 'xianyu_device_id'
-  const existing = localStorage.getItem(key)
-  if (existing) return existing
-  const value = crypto.randomUUID()
-  localStorage.setItem(key, value)
-  return value
-}
-
-export const listCloudSessions = async (): Promise<CloudSessionSummary[]> => {
-  const result = await get<ApiResponse<{ items?: CloudSessionSummary[] }>>('/api/v1/accounts/cloud-sessions')
-  return result.data?.items || []
-}
-
-export const syncCloudSession = (id: string): Promise<ApiResponse<CloudSessionSummary>> => {
-  return post(`/api/v1/accounts/${id}/cloud-sync`, undefined, { headers: { 'X-Device-ID': getDeviceId() } })
-}
-
-export const restoreCloudSession = (sessionId: number): Promise<ApiResponse> => {
-  return post(`/api/v1/accounts/cloud-sessions/${sessionId}/restore`)
-}
-
-export const revokeCloudSession = (sessionId: number): Promise<ApiResponse> => {
-  return del(`/api/v1/accounts/cloud-sessions/${sessionId}`)
 }
 
 // 更新账号启用/禁用状态
@@ -482,6 +447,7 @@ export const AI_PROVIDER_OPTIONS: { value: AIProviderType; label: string; descri
 // AI 回复设置接口 - 与后端 AIReplySettings 模型对应
 export interface AIReplySettings {
   ai_enabled: boolean
+  builtin_ai_reply_enabled?: boolean
   provider_type?: AIProviderType
   model_name?: string
   api_key?: string
@@ -513,6 +479,7 @@ export const getAIReplySettings = async (): Promise<AIReplySettings> => {
   const data = result.data ?? ({} as AIReplySettings)
   return {
     ai_enabled: data.ai_enabled ?? false,
+    builtin_ai_reply_enabled: data.builtin_ai_reply_enabled ?? false,
     enabled: data.ai_enabled ?? false,
     provider_type: data.provider_type,
     model_name: data.model_name,
@@ -525,6 +492,11 @@ export const getAIReplySettings = async (): Promise<AIReplySettings> => {
     ai_time_range_start: data.ai_time_range_start,
     ai_time_range_end: data.ai_time_range_end,
   }
+}
+
+// 更新平台账号共享的 VIP 内置话术开关
+export const updateBuiltinAIReply = (enabled: boolean): Promise<ApiResponse> => {
+  return put(`${AI_SETTINGS_PREFIX}/builtin`, { enabled })
 }
 
 // 更新AI回复设置

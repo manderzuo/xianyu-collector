@@ -101,6 +101,7 @@ def default_platform_ai_settings() -> dict[str, Any]:
     """平台账号级 AI 配置；同一平台账号下的闲鱼账号共享。"""
     return {
         "ai_enabled": False,
+        "builtin_ai_reply_enabled": False,
         "ai_settings": {},
     }
 
@@ -134,6 +135,7 @@ def _copy_platform_ai_settings(payload: dict[str, Any] | None) -> dict[str, Any]
         if isinstance(nested, dict):
             settings["ai_settings"] = dict(nested)
     settings["ai_enabled"] = bool(settings.get("ai_enabled"))
+    settings["builtin_ai_reply_enabled"] = bool(settings.get("builtin_ai_reply_enabled"))
     settings["ai_settings"] = dict(settings.get("ai_settings") or {})
     return settings
 

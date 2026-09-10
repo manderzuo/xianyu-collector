@@ -233,6 +233,10 @@ export function Keywords() {
   }
 
   const openEditModal = (keyword: Keyword) => {
+    if (keyword.builtin || keyword.source === 'builtin' || keyword.read_only) {
+      addToast({ type: 'warning', message: '内置AI自动回复内容为VIP预置话术，只能查看，不能直接编辑' })
+      return
+    }
     // 图片关键词不支持编辑
     if (keyword.type === 'image') {
       addToast({ type: 'warning', message: '图片关键词不支持编辑，请删除后重新添加' })
@@ -415,6 +419,10 @@ export function Keywords() {
   }
 
   const handleDelete = async (keyword: Keyword) => {
+    if (keyword.builtin || keyword.source === 'builtin' || keyword.read_only) {
+      addToast({ type: 'warning', message: '内置AI自动回复内容不能删除，请在账号列表关闭内置AI自动回复' })
+      return
+    }
     setDeleting(true)
     try {
       const accountId = getKeywordAccountId(keyword)
@@ -441,6 +449,7 @@ export function Keywords() {
   const getKeywordUniqueId = (keyword: Keyword) => keyword.id || `${getKeywordAccountId(keyword)}_${keyword.keyword}_${keyword.item_id || ''}`
 
   const toggleKeywordSelect = (keyword: Keyword) => {
+    if (keyword.builtin || keyword.source === 'builtin' || keyword.read_only) return
     const id = getKeywordUniqueId(keyword)
     setSelectedKeywordIds((prev) => {
       const next = new Set(prev)
@@ -454,10 +463,11 @@ export function Keywords() {
   }
 
   const toggleSelectAllKeywords = () => {
-    if (selectedKeywordIds.size === keywords.length) {
+    const editableKeywords = keywords.filter((keyword) => !keyword.builtin && keyword.source !== 'builtin' && !keyword.read_only)
+    if (selectedKeywordIds.size === editableKeywords.length) {
       setSelectedKeywordIds(new Set())
     } else {
-      setSelectedKeywordIds(new Set(keywords.map(getKeywordUniqueId)))
+      setSelectedKeywordIds(new Set(editableKeywords.map(getKeywordUniqueId)))
     }
   }
 
@@ -474,6 +484,7 @@ export function Keywords() {
 
     for (const keyword of keywords) {
       if (selectedKeywordIds.has(getKeywordUniqueId(keyword))) {
+        if (keyword.builtin || keyword.source === 'builtin' || keyword.read_only) continue
         try {
           const accountId = getKeywordAccountId(keyword)
           if (!accountId) {
@@ -745,9 +756,9 @@ export function Keywords() {
                   <button
                     onClick={toggleSelectAllKeywords}
                     className="p-1 hover:bg-gray-100 dark:hover:bg-gray-700 rounded"
-                    title={selectedKeywordIds.size === keywords.length ? '取消全选' : '全选'}
+                    title={selectedKeywordIds.size === keywords.filter((keyword) => !keyword.builtin && keyword.source !== 'builtin' && !keyword.read_only).length ? '取消全选' : '全选'}
                   >
-                    {selectedKeywordIds.size === keywords.length && keywords.length > 0 ? (
+                    {selectedKeywordIds.size === keywords.filter((keyword) => !keyword.builtin && keyword.source !== 'builtin' && !keyword.read_only).length && keywords.length > 0 ? (
                       <CheckSquare className="w-4 h-4 text-blue-600 dark:text-blue-400" />
                     ) : (
                       <Square className="w-4 h-4 text-gray-400" />
@@ -784,6 +795,7 @@ export function Keywords() {
                     <td>
                       <button
                         onClick={() => toggleKeywordSelect(keyword)}
+                        disabled={keyword.builtin || keyword.source === 'builtin' || keyword.read_only}
                         className="p-1 hover:bg-gray-100 dark:hover:bg-gray-700 rounded"
                       >
                         {selectedKeywordIds.has(getKeywordUniqueId(keyword)) ? (
@@ -837,26 +849,32 @@ export function Keywords() {
                     <td>
                       {keyword.type === 'image' ? (
                         <span className="badge-primary">图片</span>
+                      ) : keyword.builtin || keyword.source === 'builtin' || keyword.read_only ? (
+                        <span className="badge-primary">内置</span>
                       ) : (
                         <span className="badge-gray">文本</span>
                       )}
                     </td>
                     <td>
                       <div className="">
-                        <button
-                          onClick={() => openEditModal(keyword)}
-                          className="p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
-                          title="编辑"
-                        >
-                          <Edit2 className="w-4 h-4 text-blue-500 dark:text-blue-400" />
-                        </button>
-                        <button
-                          onClick={() => setDeleteConfirm({ open: true, keyword })}
-                          className="p-2 rounded-lg hover:bg-red-50 dark:hover:bg-red-900/30 transition-colors"
-                          title="删除"
-                        >
-                          <Trash2 className="w-4 h-4 text-red-500" />
-                        </button>
+                        {!(keyword.builtin || keyword.source === 'builtin' || keyword.read_only) && (
+                          <>
+                            <button
+                              onClick={() => openEditModal(keyword)}
+                              className="p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
+                              title="编辑"
+                            >
+                              <Edit2 className="w-4 h-4 text-blue-500 dark:text-blue-400" />
+                            </button>
+                            <button
+                              onClick={() => setDeleteConfirm({ open: true, keyword })}
+                              className="p-2 rounded-lg hover:bg-red-50 dark:hover:bg-red-900/30 transition-colors"
+                              title="删除"
+                            >
+                              <Trash2 className="w-4 h-4 text-red-500" />
+                            </button>
+                          </>
+                        )}
                       </div>
                     </td>
                   </tr>

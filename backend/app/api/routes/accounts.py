@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 import httpx
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, select
 from sqlalchemy.exc import SQLAlchemyError
@@ -28,7 +28,6 @@ from backend.app.core.response import ok
 from backend.app.services.account_settings import load_account_settings_map, load_platform_ai_settings
 from backend.app.services.entitlements import FEATURE_ACCOUNT, finalize_quota, reserve_quota
 from common.services.account_identity import display_account_name, extract_account_nickname, is_generated_account_name
-from common.services.cloud_auth import CloudAuthError, cloud_auth_request, cloud_auth_url
 
 router = APIRouter(prefix="/api/v1/accounts", tags=["账号管理"])
 
@@ -61,7 +60,7 @@ def serialize(account: Account, account_settings: dict | None = None) -> dict:
     settings = account_settings or {}
     # 将账号列表需要的开关一并返回，确保按钮操作后刷新页面仍保持真实状态。
     for key in (
-        "ai_enabled", "scheduled_redelivery", "scheduled_rate", "auto_polish",
+        "ai_enabled", "builtin_ai_reply_enabled", "scheduled_redelivery", "scheduled_rate", "auto_polish",
         "auto_confirm", "confirm_before_send", "send_before_confirm", "only_send_card",
         "auto_red_flower", "ai_reply_block_ordered_users", "delivery_disabled",
         "delivery_disabled_reason", "pause_duration", "message_expire_time",
@@ -100,6 +99,7 @@ async def _settings_for_accounts(session: AsyncSession, user: dict, accounts: li
         platform_settings = await load_platform_ai_settings(session, _uid(user))
         for item in accounts:
             result.setdefault(int(item.id), {})["ai_enabled"] = bool(platform_settings.get("ai_enabled"))
+            result.setdefault(int(item.id), {})["builtin_ai_reply_enabled"] = bool(platform_settings.get("builtin_ai_reply_enabled"))
         return result
     result: dict[int, dict] = {}
     for owner_id in {int(item.user_id) for item in accounts}:
@@ -108,6 +108,7 @@ async def _settings_for_accounts(session: AsyncSession, user: dict, accounts: li
         platform_settings = await load_platform_ai_settings(session, owner_id)
         for item in owner_accounts:
             result.setdefault(int(item.id), {})["ai_enabled"] = bool(platform_settings.get("ai_enabled"))
+            result.setdefault(int(item.id), {})["builtin_ai_reply_enabled"] = bool(platform_settings.get("builtin_ai_reply_enabled"))
     return result
 
 
@@ -219,82 +220,6 @@ async def _notify_runtime(account: Account, action: str) -> dict:
         return {"status": "failed", "error": payload.get("message", "连接服务拒绝请求")}
     except (httpx.HTTPError, ValueError) as exc:
         return {"status": "unavailable", "error": str(exc)}
-
-
-def _cloud_token(user: dict) -> str:
-    token = str(user.get("cloud_session_token") or "").strip()
-    if not cloud_auth_url() or not token:
-        raise HTTPException(status_code=409, detail="当前未启用云端账号同步")
-    return token
-
-
-async def _cloud_request(action: str, payload: dict, user: dict) -> dict:
-    try:
-        return await cloud_auth_request(action, payload, _cloud_token(user)) or {}
-    except CloudAuthError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
-
-
-@router.get("/cloud-sessions")
-async def list_cloud_sessions(user=Depends(get_current_user)):
-    remote = await _cloud_request("list_account_sessions", {}, user)
-    return ok({"items": remote.get("items") or []}, "云端会话查询成功")
-
-
-@router.post("/{account_id}/cloud-sync")
-async def sync_cloud_session(
-    account_id: int,
-    device_id: str = Header(default="", alias="X-Device-ID"),
-    user=Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
-):
-    account = (await session.execute(_account_scope(select(Account), user, account_id))).scalar_one_or_none()
-    if account is None:
-        raise HTTPException(status_code=404, detail="账号不存在")
-    if not account.cookie:
-        raise HTTPException(status_code=409, detail="该账号尚未登录，无法同步")
-    result = await _cloud_request("sync_account_session", {
-        "account_key": account.goofish_id or f"local:{account.id}",
-        "account_name": account.account_name,
-        "device_id": (device_id or "unknown-device")[:128],
-        "session_payload": {"cookie": account.cookie, "goofish_id": account.goofish_id, "account_name": account.account_name},
-        "metadata": {"status": account.status, "cookie_expire_at": account.cookie_expire_at.isoformat() if account.cookie_expire_at else None},
-    }, user)
-    return ok(result.get("session") or {}, "闲鱼登录会话已加密同步")
-
-
-@router.post("/cloud-sessions/{session_id}/restore")
-async def restore_cloud_session(
-    session_id: int,
-    user=Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
-):
-    remote = await _cloud_request("get_account_session", {"session_id": session_id}, user)
-    payload = (remote.get("session") or {}).get("session_payload") or {}
-    cookie = str(payload.get("cookie") or "").strip()
-    account_key = str(payload.get("goofish_id") or (remote.get("session") or {}).get("account_key") or "").strip()
-    if not cookie or not account_key:
-        raise HTTPException(status_code=502, detail="云端会话内容不完整")
-    account = (await session.execute(_account_scope(select(Account), user))).scalars().all()
-    target = next((item for item in account if item.goofish_id == account_key), None)
-    if target is None:
-        reservation = await reserve_quota(session, user, FEATURE_ACCOUNT, resource_key=account_key, idempotency_key=f"cloud-restore:{account_key}")
-        target = Account(user_id=int(user.get("sub", 1)), account_name=str(payload.get("account_name") or account_key)[:64], goofish_id=account_key, cookie=cookie, status="active")
-        session.add(target)
-        finalize_quota(reservation)
-    else:
-        target.cookie = cookie
-        target.status = "active"
-    await session.commit()
-    await session.refresh(target)
-    runtime = await _notify_runtime(target, "start")
-    return ok({**serialize(target), "online": bool(runtime.get("is_connected")), "runtime": runtime}, "闲鱼登录会话已恢复")
-
-
-@router.delete("/cloud-sessions/{session_id}")
-async def delete_cloud_session(session_id: int, user=Depends(get_current_user)):
-    await _cloud_request("delete_account_session", {"session_id": session_id}, user)
-    return ok({"deleted": True}, "云端会话已撤销")
 
 
 @router.get("")

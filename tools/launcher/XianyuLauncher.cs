@@ -1554,6 +1554,11 @@ internal sealed class UpdaterWindow : LauncherWindow
 
     private void StartCheck()
     {
+        if (!IsInstalledRuntime())
+        {
+            ShowNotInstalled();
+            return;
+        }
         SetState(OperationState.Checking);
         ScriptRunner.RunAsync(packageRoot, "update.ps1", "-Headless -CheckOnly", OnLine).ContinueWith(t =>
         {
@@ -1563,12 +1568,40 @@ internal sealed class UpdaterWindow : LauncherWindow
 
     private void StartUpdate()
     {
+        if (!IsInstalledRuntime())
+        {
+            ShowNotInstalled();
+            return;
+        }
         ResetStages();
         SetState(OperationState.Running);
         ScriptRunner.RunAsync(packageRoot, "update.ps1", "-Headless", OnLine).ContinueWith(t =>
         {
             try { BeginInvoke((MethodInvoker)(() => OnScriptFinished(t.Result == null ? 1 : t.Result.ExitCode, false))); } catch { }
         });
+    }
+
+    private bool IsInstalledRuntime()
+    {
+        return File.Exists(Path.Combine(appRoot, "docker-compose.yml"))
+            && File.Exists(Path.Combine(appRoot, ".env"));
+    }
+
+    private void ShowNotInstalled()
+    {
+        ResetStages();
+        foreach (var pair in stageRows)
+            pair.Value.SetState(StageStatus.Skipped, "尚未安装，未执行更新检查", "");
+        ApplyCapability("unavailable:config_missing");
+        ShowBanner(StageStatus.Warning, "当前目录尚未完成安装，请先运行“安装闲鱼管理系统.exe”", "E_NOT_INSTALLED");
+        state = OperationState.Completed;
+        nowButton.Enabled = true;
+        nowButton.SetLoading(false);
+        nowButton.Text = "关闭";
+        nowButton.IconName = "";
+        laterButton.Visible = false;
+        progressBar.Value = 100;
+        progressCaption.Text = "未安装，已跳过更新检查";
     }
 
     private void ResetStages()

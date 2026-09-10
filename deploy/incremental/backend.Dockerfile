@@ -15,6 +15,7 @@ RUN old_hash="$(tr -d '\r' < /app/backend/requirements.txt | sha256sum | cut -d'
     && rm -rf /app/common /app/backend
 COPY common /app/common
 COPY backend /app/backend
+COPY dialogue_packs /app/dialogue_packs
 COPY VERSION.txt /app/VERSION.txt
 COPY BUILD_ID.txt /app/BUILD_ID.txt
 RUN if [ -n "$APP_VERSION" ]; then printf '%s\n' "$APP_VERSION" > /app/VERSION.txt; fi \

@@ -112,6 +112,7 @@ export interface AccountDetail extends Account {
   keywords?: Keyword[]
   keywordCount?: number
   aiEnabled?: boolean
+  builtinAiReplyEnabled?: boolean
   message_expire_time?: number
   reply_delay_seconds?: number
   filter_count?: number  // 消息过滤规则数量
@@ -135,6 +136,10 @@ export interface Keyword {
   enabled?: boolean
   needs_human?: boolean
   approval_status?: string
+  scene?: string
+  source?: string
+  builtin?: boolean
+  read_only?: boolean
   created_at?: string
   updated_at?: string
 }

@@ -31,7 +31,8 @@ from common.services.ai_provider_service import (
     read_ai_enabled,
 )
 from backend.app.services.account_settings import load_account_settings, load_platform_ai_settings
-from backend.app.services.entitlements import FEATURE_AI_SMART_REPLY, get_effective_entitlement
+from backend.app.services.builtin_keyword_service import load_builtin_keyword_rules
+from backend.app.services.entitlements import FEATURE_AI_SMART_REPLY, FEATURE_BUILTIN_AI_REPLY, get_effective_entitlement
 
 logger = logging.getLogger("xr.backend.auto_reply")
 
@@ -155,8 +156,11 @@ def _format_reply(reply: str, message: dict[str, Any], item_id: str) -> str | No
         "buyer_id": _message_value(message, "buyer_id", "buyerId", "senderId", "sender_id"),
         "item_title": _message_value(message, "item_title", "itemTitle", "title", "goodsTitle"),
         "item_price": _message_value(message, "item_price", "itemPrice", "price"),
+        "price": _message_value(message, "price", "item_price", "itemPrice"),
         "stock": _message_value(message, "stock", "inventory", "quantity"),
         "item_id": item_id,
+        "order_id": _message_value(message, "order_id", "orderId"),
+        "DELIVERY_CONTENT": _message_value(message, "delivery_content", "deliveryContent"),
     }
     fields = {
         field_name
@@ -256,7 +260,7 @@ async def _load_account(account_id: int) -> Account | None:
         ).scalar_one_or_none()
 
 
-async def _load_rules(account: Account) -> list[FeatureRecord]:
+async def _load_rules(account: Account) -> list[Any]:
     async with async_session_maker() as db:
         rows = (
             await db.execute(
@@ -271,11 +275,24 @@ async def _load_rules(account: Account) -> list[FeatureRecord]:
         ).scalars().all()
         # 只返回当前账号的规则。账号 ID 保存在 payload 中，是现行关键词接口
         # 的持久化格式；不能只按 owner_id 查询，否则会串号回复。
-        return [
+        filtered = [
             row
             for row in rows
             if str((row.payload or {}).get("account_id") or "") == str(account.id)
         ]
+        platform_settings = await load_platform_ai_settings(db, int(account.user_id))
+        if not platform_settings.get("builtin_ai_reply_enabled"):
+            return filtered
+        owner = await db.get(User, int(account.user_id))
+        principal = {
+            "sub": str(account.user_id),
+            "role": owner.role if owner is not None else "user",
+            "plan_code": owner.plan_code if owner is not None else "NORMAL",
+        }
+        entitlement = await get_effective_entitlement(db, principal, FEATURE_BUILTIN_AI_REPLY)
+        if not entitlement.enabled:
+            return filtered
+        return filtered + list(load_builtin_keyword_rules())
 
 
 async def _should_skip_reply(account: Account, text: str) -> bool:
@@ -392,7 +409,15 @@ async def match_keyword_reply(account: Account, message: dict[str, Any]) -> Auto
                 conversation_stage=message_stage,
             )
         raw_reply = str(payload.get("reply") or "")
-        reply = _format_reply(raw_reply, message, item_id)
+        reply_message = message
+        if payload.get("builtin"):
+            # 内置话术允许在没有商品详情上下文的聊天入口先给出基础答复，
+            # 同时不会把模板占位符原样发送给买家。
+            reply_message = dict(message)
+            reply_message.setdefault("item_title", "这款商品")
+            reply_message.setdefault("price", "页面价格")
+            reply_message.setdefault("item_price", "页面价格")
+        reply = _format_reply(raw_reply, reply_message, item_id)
         if reply is None:
             continue
         return AutoReplyMatch(

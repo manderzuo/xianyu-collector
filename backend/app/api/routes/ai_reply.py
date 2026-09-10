@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.core.dependencies import get_current_user
 from backend.app.core.response import ok
 from backend.app.services.account_settings import load_platform_ai_settings, save_platform_ai_settings
-from backend.app.services.entitlements import FEATURE_AI_SMART_REPLY, require_feature
+from backend.app.services.entitlements import FEATURE_AI_SMART_REPLY, FEATURE_BUILTIN_AI_REPLY, require_feature
 from common.db.session import get_session
 from common.models.accounts import Account
 from common.services.ai_provider_service import fetch_ai_model_list, test_ai_connection
@@ -81,9 +81,24 @@ async def all_settings(user=Depends(get_current_user), db: AsyncSession = Depend
     await require_feature(db, user, FEATURE_AI_SMART_REPLY)
     settings = await load_platform_ai_settings(db, _uid(user))
     return ok(
-        {**dict(settings.get("ai_settings") or {}), "ai_enabled": bool(settings.get("ai_enabled"))},
+        {**dict(settings.get("ai_settings") or {}), "ai_enabled": bool(settings.get("ai_enabled")), "builtin_ai_reply_enabled": bool(settings.get("builtin_ai_reply_enabled"))},
         "平台账号 AI 设置查询成功",
     )
+
+
+@router.put("/builtin")
+async def put_builtin_settings(
+    payload: dict[str, Any] | None = Body(default=None),
+    user=Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+):
+    """开启或关闭 VIP 内置话术；同一平台账号下的闲鱼账号共享。"""
+    await require_feature(db, user, FEATURE_BUILTIN_AI_REPLY)
+    values = payload or {}
+    current = await load_platform_ai_settings(db, _uid(user))
+    enabled = bool(values.get("enabled", values.get("builtin_ai_reply_enabled", current.get("builtin_ai_reply_enabled"))))
+    saved = await save_platform_ai_settings(db, _uid(user), {"builtin_ai_reply_enabled": enabled})
+    return ok({"builtin_ai_reply_enabled": bool(saved.get("builtin_ai_reply_enabled"))}, f"内置AI自动回复已{'开启' if enabled else '关闭'}")
 
 
 @router.post("")

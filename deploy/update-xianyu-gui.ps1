@@ -364,17 +364,36 @@ $worker = {
         if ($exitCode -ne 0) { throw "Docker 操作失败：$Label（退出码 $exitCode）" }
     }
 
-    function Get-LocalImageId([string]$ImageRef) {
-        $previousPreference = $ErrorActionPreference
-        $ErrorActionPreference = 'Continue'
+    function Get-LocalImageId([string]$ImageRef, [int]$TimeoutSeconds = 5) {
+        # docker image inspect can wait forever when Docker Desktop is stopping,
+        # starting, or has a stale engine socket. The updater must report a
+        # limited rollback capability instead of leaving the GUI at
+        # “回滚保护检测中”.
+        $process = New-Object System.Diagnostics.Process
+        $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+        $startInfo.FileName = 'docker.exe'
+        $startInfo.Arguments = 'image inspect "' + ($ImageRef -replace '"', '\\"') + '" --format "{{.Id}}"'
+        $startInfo.UseShellExecute = $false
+        $startInfo.CreateNoWindow = $true
+        $startInfo.RedirectStandardOutput = $true
+        $startInfo.RedirectStandardError = $true
+        $process.StartInfo = $startInfo
         try {
-            $result = & docker image inspect $ImageRef --format '{{.Id}}' 2>$null
-            if ($LASTEXITCODE -eq 0) {
-                $first = $result | Select-Object -First 1
+            if (-not $process.Start()) { return '' }
+            if (-not $process.WaitForExit([Math]::Max(1, $TimeoutSeconds) * 1000)) {
+                try { $process.Kill() } catch { }
+                Write-Detail "docker_image_inspect_timeout image=$ImageRef timeout_seconds=$TimeoutSeconds"
+                return ''
+            }
+            $result = $process.StandardOutput.ReadToEnd()
+            if ($process.ExitCode -eq 0 -and $result) {
+                $first = $result -split "`r?`n" | Where-Object { $_.Trim() } | Select-Object -First 1
                 if ($null -ne $first) { return $first.ToString().Trim() }
             }
+        } catch {
+            Write-Detail "docker_image_inspect_failed image=$ImageRef error=$($_.Exception.Message)"
         } finally {
-            $ErrorActionPreference = $previousPreference
+            $process.Dispose()
         }
         return ''
     }
