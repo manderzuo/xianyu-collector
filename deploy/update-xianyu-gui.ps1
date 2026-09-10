@@ -279,24 +279,56 @@ $worker = {
         return $true
     }
 
-    function Invoke-Docker([string[]]$Arguments, [string]$Label) {
+    function Quote-NativeArgument([string]$Value) {
+        if ($null -eq $Value) { return '""' }
+        $escaped = "$Value" -replace '(\\*)"', '$1$1\"'
+        $escaped = $escaped -replace '(\\+)$', '$1$1'
+        return '"' + $escaped + '"'
+    }
+
+    function Invoke-NativeProcess([string]$FileName, [string[]]$Arguments, [string]$Label, [int]$TimeoutSeconds = 300) {
+        $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+        $startInfo.FileName = $FileName
+        $startInfo.Arguments = (($Arguments | ForEach-Object { Quote-NativeArgument $_ }) -join ' ')
+        $startInfo.UseShellExecute = $false
+        $startInfo.CreateNoWindow = $true
+        $startInfo.RedirectStandardOutput = $true
+        $startInfo.RedirectStandardError = $true
+        $process = New-Object System.Diagnostics.Process
+        $process.StartInfo = $startInfo
+        try {
+            if (-not $process.Start()) { throw "无法启动外部命令：$FileName" }
+            $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+            $stderrTask = $process.StandardError.ReadToEndAsync()
+            if (-not $process.WaitForExit([Math]::Max(1, $TimeoutSeconds) * 1000)) {
+                try { $process.Kill() } catch { }
+                try { $process.WaitForExit(5000) } catch { }
+                Write-Detail "native_timeout label=$Label timeout_seconds=$TimeoutSeconds"
+                throw "Docker 操作超时：$Label（超过 $TimeoutSeconds 秒）"
+            }
+            $process.WaitForExit()
+            $stdout = $stdoutTask.GetAwaiter().GetResult()
+            $stderr = $stderrTask.GetAwaiter().GetResult()
+            $lines = @()
+            if ($stdout) { $lines += ($stdout -split "`r?`n") }
+            if ($stderr) { $lines += ($stderr -split "`r?`n") }
+            return [pscustomobject]@{ ExitCode = $process.ExitCode; Output = @($lines | Where-Object { $_ -ne '' }) }
+        } finally {
+            $process.Dispose()
+        }
+    }
+
+    function Invoke-Docker([string[]]$Arguments, [string]$Label, [int]$TimeoutSeconds = 300) {
         Write-Detail "docker_start label=$Label args=$($Arguments -join ' ')"
         # Docker Compose writes normal progress/status lines (for example
-        # "Container ... Running") to stderr. Windows PowerShell turns those
-        # lines into ErrorRecord objects and, with Stop enabled, may abort an
-        # otherwise successful update. Capture them with Continue and decide
-        # success exclusively from the native process exit code.
-        $previousPreference = $ErrorActionPreference
-        $ErrorActionPreference = 'Continue'
-        try {
-            $output = & docker compose --project-directory $Root --env-file $envFile -f $compose @Arguments 2>&1
-            $exitCode = $LASTEXITCODE
-        } finally {
-            $ErrorActionPreference = $previousPreference
-        }
-        foreach ($line in $output) { Write-Detail "docker_output label=$Label text=$line" }
-        Write-Detail "docker_end label=$Label exit_code=$exitCode"
-        if ($exitCode -ne 0) { throw "Docker 操作失败：$Label（退出码 $exitCode）" }
+        # "Container ... Running") to stderr. Capture both native streams and
+        # enforce a timeout so a stopped Docker Desktop or stale engine socket
+        # cannot leave the update window waiting forever.
+        $dockerArguments = @('compose', '--project-directory', $Root, '--env-file', $envFile, '-f', $compose) + $Arguments
+        $result = Invoke-NativeProcess 'docker.exe' $dockerArguments $Label $TimeoutSeconds
+        foreach ($line in $result.Output) { Write-Detail "docker_output label=$Label text=$line" }
+        Write-Detail "docker_end label=$Label exit_code=$($result.ExitCode)"
+        if ($result.ExitCode -ne 0) { throw "Docker 操作失败：$Label（退出码 $($result.ExitCode)）" }
     }
 
     function Test-RuntimeManifestImages($Manifest, [string]$Registry, [string]$Namespace, [string]$Tag) {
@@ -314,54 +346,41 @@ $worker = {
 
     function Test-RuntimeContainers([string]$Registry, [string]$Namespace, [string]$Tag) {
         foreach ($service in @('backend', 'websocket', 'scheduler', 'frontend')) {
-            $previousPreference = $ErrorActionPreference
-            $ErrorActionPreference = 'Continue'
-            try {
-                $ids = @(& docker compose --project-directory $Root --env-file $envFile -f $compose ps -q $service 2>$null)
-                $composeExitCode = $LASTEXITCODE
-                $firstId = $ids | Select-Object -First 1
-                $containerId = if ($null -ne $firstId) { "$firstId".Trim() } else { '' }
-                if ($composeExitCode -ne 0 -or -not $containerId) {
-                    throw "未找到服务 $service 的运行容器"
-                }
-                $images = @(& docker inspect $containerId --format '{{.Config.Image}}' 2>$null)
-                $inspectExitCode = $LASTEXITCODE
-                $firstImage = $images | Select-Object -First 1
-                $actualImage = if ($null -ne $firstImage) { "$firstImage".Trim() } else { '' }
-                $expectedImage = '{0}/{1}/xianyu-{2}:{3}' -f $Registry, $Namespace, $service, $Tag
-                if ($inspectExitCode -ne 0 -or -not $actualImage) {
-                    throw "无法读取服务 $service 的实际镜像"
-                }
-                if ($actualImage -ne $expectedImage) {
-                    throw "服务 $service 仍在运行旧镜像：实际=$actualImage，期望=$expectedImage"
-                }
-                $containerImageId = @(& docker inspect $containerId --format '{{.Image}}' 2>$null) | Select-Object -First 1
-                $containerImageId = if ($null -ne $containerImageId) { "$containerImageId".Trim() } else { '' }
-                $expectedImageId = Get-LocalImageId $expectedImage
-                if (-not $containerImageId -or -not $expectedImageId -or $containerImageId -ne $expectedImageId) {
-                    throw "服务 $service 未加载刚拉取的镜像：容器=$containerImageId，本机标签=$expectedImageId"
-                }
-                Write-Detail "runtime_image_verified service=$service image=$actualImage"
-                Write-Detail "runtime_container_image_id_verified service=$service image_id=$containerImageId"
-            } finally {
-                $ErrorActionPreference = $previousPreference
+            $composeArgs = @('compose', '--project-directory', $Root, '--env-file', $envFile, '-f', $compose, 'ps', '-q', $service)
+            $composeResult = Invoke-NativeProcess 'docker.exe' $composeArgs "检查 $service 容器" 60
+            $firstId = $composeResult.Output | Select-Object -First 1
+            $containerId = if ($null -ne $firstId) { "$firstId".Trim() } else { '' }
+            if ($composeResult.ExitCode -ne 0 -or -not $containerId) {
+                throw "未找到服务 $service 的运行容器"
             }
+            $configResult = Invoke-NativeProcess 'docker.exe' @('inspect', $containerId, '--format', '{{.Config.Image}}') "读取 $service 镜像" 60
+            $firstImage = $configResult.Output | Select-Object -First 1
+            $actualImage = if ($null -ne $firstImage) { "$firstImage".Trim() } else { '' }
+            $expectedImage = '{0}/{1}/xianyu-{2}:{3}' -f $Registry, $Namespace, $service, $Tag
+            if ($configResult.ExitCode -ne 0 -or -not $actualImage) {
+                throw "无法读取服务 $service 的实际镜像"
+            }
+            if ($actualImage -ne $expectedImage) {
+                throw "服务 $service 仍在运行旧镜像：实际=$actualImage，期望=$expectedImage"
+            }
+            $imageResult = Invoke-NativeProcess 'docker.exe' @('inspect', $containerId, '--format', '{{.Image}}') "读取 $service 镜像 ID" 60
+            $containerImageId = $imageResult.Output | Select-Object -First 1
+            $containerImageId = if ($null -ne $containerImageId) { "$containerImageId".Trim() } else { '' }
+            $expectedImageId = Get-LocalImageId $expectedImage
+            if ($imageResult.ExitCode -ne 0 -or -not $containerImageId -or -not $expectedImageId -or $containerImageId -ne $expectedImageId) {
+                throw "服务 $service 未加载刚拉取的镜像：容器=$containerImageId，本机标签=$expectedImageId"
+            }
+            Write-Detail "runtime_image_verified service=$service image=$actualImage"
+            Write-Detail "runtime_container_image_id_verified service=$service image_id=$containerImageId"
         }
     }
 
-    function Invoke-DockerCli([string[]]$Arguments, [string]$Label) {
+    function Invoke-DockerCli([string[]]$Arguments, [string]$Label, [int]$TimeoutSeconds = 900) {
         Write-Detail "docker_cli_start label=$Label args=$($Arguments -join ' ')"
-        $previousPreference = $ErrorActionPreference
-        $ErrorActionPreference = 'Continue'
-        try {
-            $output = & docker @Arguments 2>&1
-            $exitCode = $LASTEXITCODE
-        } finally {
-            $ErrorActionPreference = $previousPreference
-        }
-        foreach ($line in $output) { Write-Detail "docker_cli_output label=$Label text=$line" }
-        Write-Detail "docker_cli_end label=$Label exit_code=$exitCode"
-        if ($exitCode -ne 0) { throw "Docker 操作失败：$Label（退出码 $exitCode）" }
+        $result = Invoke-NativeProcess 'docker.exe' $Arguments $Label $TimeoutSeconds
+        foreach ($line in $result.Output) { Write-Detail "docker_cli_output label=$Label text=$line" }
+        Write-Detail "docker_cli_end label=$Label exit_code=$($result.ExitCode)"
+        if ($result.ExitCode -ne 0) { throw "Docker 操作失败：$Label（退出码 $($result.ExitCode)）" }
     }
 
     function Get-LocalImageId([string]$ImageRef, [int]$TimeoutSeconds = 5) {
@@ -399,12 +418,10 @@ $worker = {
     }
 
     function Get-LocalImageDigest([string]$ImageRef) {
-        $previousPreference = $ErrorActionPreference
-        $ErrorActionPreference = 'Continue'
         try {
-            $result = & docker image inspect $ImageRef --format '{{json .RepoDigests}}' 2>$null
-            if ($LASTEXITCODE -eq 0) {
-                $first = $result | Select-Object -First 1
+            $result = Invoke-NativeProcess 'docker.exe' @('image', 'inspect', $ImageRef, '--format', '{{json .RepoDigests}}') "读取镜像摘要" 15
+            if ($result.ExitCode -eq 0) {
+                $first = $result.Output | Select-Object -First 1
                 if ($null -ne $first) {
                     $digests = @($first.ToString() | ConvertFrom-Json)
                     foreach ($digest in $digests) {
@@ -414,7 +431,6 @@ $worker = {
                 }
             }
         } catch { }
-        finally { $ErrorActionPreference = $previousPreference }
         return ''
     }
 
@@ -479,20 +495,16 @@ $worker = {
 
     function Find-LocalImageRefById([string]$ExpectedId) {
         if (-not $ExpectedId) { return '' }
-        $previousPreference = $ErrorActionPreference
-        $ErrorActionPreference = 'Continue'
         try {
-            $rows = & docker image ls --no-trunc --format '{{.Repository}}:{{.Tag}}|{{.ID}}' 2>$null
-            if ($LASTEXITCODE -ne 0) { return '' }
-            foreach ($row in $rows) {
+            $result = Invoke-NativeProcess 'docker.exe' @('image', 'ls', '--no-trunc', '--format', '{{.Repository}}:{{.Tag}}|{{.ID}}') '查找本机镜像' 30
+            if ($result.ExitCode -ne 0) { return '' }
+            foreach ($row in $result.Output) {
                 $parts = "$row".Trim() -split '\|', 2
                 if ($parts.Count -eq 2 -and $parts[1].Trim() -eq $ExpectedId -and $parts[0].Trim() -notmatch '^<none>') {
                     return $parts[0].Trim()
                 }
             }
-        } finally {
-            $ErrorActionPreference = $previousPreference
-        }
+        } catch { }
         return ''
     }
 
@@ -893,7 +905,24 @@ if ($Headless) {
     # the signed check first. Calling the update worker directly with an empty
     # manifest leaves signature_verified=false and makes every signed release
     # fail before it can be applied.
-    function Invoke-HeadlessWorker([string]$Mode, [string]$Data = '') {
+    function Emit-HeadlessResult($Record) {
+        $status = "$($Record.Status)".Trim()
+        if (-not $status) { $status = "$($Record.Kind)".Trim() }
+        if (-not $status) { return }
+        $detail = "$($Record.Message)"
+        if (-not $detail -and $Record.Data) { $detail = "$($Record.Data)" }
+        $payload = [ordered]@{
+            v = 1
+            type = 'result'
+            operation = 'update'
+            status = $status
+            detail = $detail
+            code = "$($Record.Code)"
+        }
+        [Console]::Out.WriteLine('@@XIANYU_UI@@' + ($payload | ConvertTo-Json -Compress))
+    }
+
+    function Invoke-HeadlessWorker([string]$Mode, [string]$Data = '', [bool]$EmitResultEvents = $false) {
         $failed = $false
         $availableData = ''
         $records = @(& $worker $ProjectRoot $Mode $Data 6>&1)
@@ -906,6 +935,9 @@ if ($Headless) {
             if ($record.Kind -eq 'uievent') { [Console]::Out.WriteLine('@@XIANYU_UI@@' + [string]$record.Json); continue }
             if ($record.Kind -eq 'log') { [Console]::Out.WriteLine([string]$record.Message); continue }
             if ($record.Kind -eq 'available') { $availableData = [string]$record.Data }
+            if ($EmitResultEvents -and $record.Kind -in @('result', 'latest', 'completed', 'rolled_back', 'rollback_failed', 'restart_client')) {
+                Emit-HeadlessResult $record
+            }
             if ($record.Kind -eq 'failed') {
                 $failed = $true
                 [Console]::Out.WriteLine([string]$record.Message)
@@ -918,13 +950,17 @@ if ($Headless) {
         return [pscustomobject]@{ Failed = $failed; AvailableData = $availableData }
     }
 
-    $checkResult = Invoke-HeadlessWorker 'check'
+    # The check-only process must forward the available/latest result to the
+    # C# updater. The normal update process performs an internal pre-check;
+    # suppress that intermediate result so the visible window stays in the
+    # Running state until the actual update worker finishes.
+    $checkResult = Invoke-HeadlessWorker 'check' '' $CheckOnly
     if ($checkResult.Failed) { exit 1 }
     # -CheckOnly: the C# updater shows its own confirmation page, so do not
     # apply anything until it re-invokes us without the switch.
     if ($CheckOnly) { exit 0 }
     if ($checkResult.AvailableData) {
-        $updateResult = Invoke-HeadlessWorker 'update' $checkResult.AvailableData
+        $updateResult = Invoke-HeadlessWorker 'update' $checkResult.AvailableData $true
         if ($updateResult.Failed) { exit 1 }
     }
     exit 0
