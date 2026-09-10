@@ -13,8 +13,8 @@ from common.db.base import Base
 class RegistrationInvite(Base):
     """管理员生成的一次性注册邀请码。
 
-    数据库保存 SHA-256 摘要和脱敏预览值；为支持管理员后续复制，完整邀请码
-    以应用密钥加密后保存，接口只向管理员返回解密后的值。
+    原始邀请码不落库，数据库只保存 SHA-256 摘要和脱敏预览值。
+    完整邀请码仅在生成接口的响应中返回一次。
     """
 
     __tablename__ = "xr_registration_invites"
@@ -22,7 +22,6 @@ class RegistrationInvite(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     code_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)
     code_preview: Mapped[str] = mapped_column(String(32), nullable=False)
-    code_encrypted: Mapped[str | None] = mapped_column(Text)
     created_by: Mapped[int] = mapped_column(BigInteger, index=True, nullable=False)
     status: Mapped[str] = mapped_column(String(16), default="active", index=True, nullable=False)
     note: Mapped[str | None] = mapped_column(String(255))

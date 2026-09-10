@@ -148,7 +148,7 @@ export function RegistrationInviteModal({ onClose }: Props) {
               <div className="flex items-center justify-between gap-3 mb-3">
                 <div>
                   <h3 className="font-medium text-emerald-800 dark:text-emerald-200">本次生成的完整邀请码</h3>
-                  <p className="text-xs text-emerald-700/80 dark:text-emerald-300/80 mt-1">完整码会安全保存，关闭窗口后也可在记录列表中复制。</p>
+                  <p className="text-xs text-emerald-700/80 dark:text-emerald-300/80 mt-1">完整码只在这里显示；关闭窗口后列表只保留脱敏预览。</p>
                 </div>
                 <button type="button" onClick={() => handleCopy(generatedCodes.join('\n'), '全部邀请码已复制')} className="btn-ios-secondary">
                   <Copy className="w-4 h-4" />复制全部
@@ -182,20 +182,7 @@ export function RegistrationInviteModal({ onClose }: Props) {
                   <tr><td colSpan={6} className="text-center py-8 text-slate-500">暂无邀请码，请先生成。</td></tr>
                 ) : invites.map((item) => (
                   <tr key={item.id}>
-                    <td>
-                      <div className="flex items-center gap-2">
-                        <code className="font-mono text-sm">{item.code}</code>
-                        {item.code_available ? (
-                          <button type="button" onClick={() => void handleCopy(item.code)} className="p-1 text-slate-500 hover:text-blue-600 dark:text-slate-400 dark:hover:text-blue-400" title="复制邀请码" aria-label="复制邀请码">
-                            <Copy className="w-4 h-4" />
-                          </button>
-                        ) : (
-                          <span className="p-1 text-slate-300 dark:text-slate-600" title="该历史邀请码未保存完整码，无法复制" aria-label="该历史邀请码未保存完整码，无法复制">
-                            <Copy className="w-4 h-4" />
-                          </span>
-                        )}
-                      </div>
-                    </td>
+                    <td><code className="font-mono text-sm">{item.code}</code></td>
                     <td><span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-medium ${statusClasses[item.status]}`}>{statusLabels[item.status]}</span></td>
                     <td className="text-slate-500 dark:text-slate-400">{item.note || '-'}</td>
                     <td className="whitespace-nowrap text-sm text-slate-500 dark:text-slate-400">{formatDateTime(item.expires_at)}</td>

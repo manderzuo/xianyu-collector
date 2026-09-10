@@ -1,12 +1,11 @@
 import { post, get } from '@/utils/request'
 import { normalizeAuthFooterAdSettings, normalizeLoginBrandingSettings } from '@/api/settings'
-import type { AuthFooterAdSettings, LoginBrandingSettings, LoginRequest, LoginResponse, ApiResponse } from '@/types'
+import type { AuthFooterAdSettings, LoginBrandingSettings, LoginRequest, LoginResponse, ApiResponse, UserEntitlements } from '@/types'
 
 const AUTH_PREFIX = '/api/v1/auth'
 const SYSTEM_PREFIX = '/api/v1/system-settings'
 const CAPTCHA_PREFIX = '/api/v1/captcha'
 const GEETEST_PREFIX = '/api/v1/geetest'
-const CLOUD_AUTH_OPERATION_TIMEOUT = 180000
 
 // 缓存公共设置，避免重复请求
 let publicSettingsCache: Record<string, unknown> | null = null
@@ -44,15 +43,26 @@ export const login = async (data: LoginRequest): Promise<LoginResponse> => {
     access_token?: string
     token?: string
     refresh_token?: string
-  user?: { id?: number; username?: string; nickname?: string; role?: string; plan_code?: string; account_limit?: number | null; entitlements?: import('@/types').UserEntitlements }
+    user?: {
+      id?: number
+      username?: string
+      nickname?: string
+      role?: string
+      plan_code?: string
+      plan_expires_at?: string | null
+      auth_version?: number
+      entitlements?: UserEntitlements
+    }
     user_id?: number
     username?: string
     is_admin?: boolean
     account_limit?: number | null
     role?: string
     plan_code?: string
-    entitlements?: import('@/types').UserEntitlements
-  }>>(`${AUTH_PREFIX}/login`, data, { timeout: CLOUD_AUTH_OPERATION_TIMEOUT })
+    plan_expires_at?: string | null
+    auth_version?: number
+    entitlements?: UserEntitlements
+  }>>(`${AUTH_PREFIX}/login`, data)
   const payload = result.data || {}
   const token = payload.token || payload.access_token
   const user = payload.user
@@ -64,15 +74,28 @@ export const login = async (data: LoginRequest): Promise<LoginResponse> => {
     user_id: payload.user_id ?? user?.id,
     username: payload.username || user?.username,
     is_admin: payload.is_admin ?? user?.role === 'admin',
-    account_limit: payload.account_limit ?? user?.account_limit,
+    account_limit: payload.account_limit,
     role: (payload.role || user?.role)?.toUpperCase() as LoginResponse['role'],
     plan_code: payload.plan_code || user?.plan_code,
+    plan_expires_at: payload.plan_expires_at ?? user?.plan_expires_at,
+    auth_version: payload.auth_version ?? user?.auth_version,
     entitlements: payload.entitlements || user?.entitlements,
   }
 }
 
 // 验证 Token
-export const verifyToken = async (): Promise<{ authenticated: boolean; user_id?: number; username?: string; is_admin?: boolean; account_limit?: number | null; role?: string; plan_code?: string; auth_version?: number; entitlements?: import('@/types').UserEntitlements }> => {
+export const verifyToken = async (): Promise<{
+  authenticated: boolean
+  user_id?: number
+  username?: string
+  is_admin?: boolean
+  account_limit?: number | null
+  role?: string
+  plan_code?: string
+  plan_expires_at?: string | null
+  auth_version?: number
+  entitlements?: UserEntitlements
+}> => {
   const result = await get<ApiResponse<{
     valid?: boolean
     authenticated?: boolean
@@ -82,8 +105,9 @@ export const verifyToken = async (): Promise<{ authenticated: boolean; user_id?:
     account_limit?: number | null
     role?: string
     plan_code?: string
+    plan_expires_at?: string | null
     auth_version?: number
-    entitlements?: import('@/types').UserEntitlements
+    entitlements?: UserEntitlements
   }>>(`${AUTH_PREFIX}/verify`)
   const payload = result.data || {}
   return {
@@ -94,6 +118,7 @@ export const verifyToken = async (): Promise<{ authenticated: boolean; user_id?:
     account_limit: payload.account_limit,
     role: payload.role,
     plan_code: payload.plan_code,
+    plan_expires_at: payload.plan_expires_at,
     auth_version: payload.auth_version,
     entitlements: payload.entitlements,
   }
@@ -111,7 +136,14 @@ export const getRegistrationStatus = async (): Promise<{ enabled: boolean }> => 
   const settings = await getPublicSettings(true)
   // 处理多种可能的值类型：true, 'true', 1, '1'
   const value = settings.registration_enabled
-  if (value === undefined || value === null || value === '') return { enabled: true }
+  return { enabled: value === true || value === 'true' || value === 1 || value === '1' }
+}
+
+// 获取登录信息显示状态 - 从系统设置获取
+export const getLoginInfoStatus = async (): Promise<{ enabled: boolean }> => {
+  const settings = await getPublicSettings()
+  // 处理多种可能的值类型：true, 'true', 1, '1'
+  const value = settings.show_default_login_info
   return { enabled: value === true || value === 'true' || value === 1 || value === '1' }
 }
 
@@ -165,14 +197,14 @@ export const register = (data: {
   username: string
   invite_code: string
   password: string
-  session_id?: string
+  session_id: string
 }): Promise<ApiResponse> => {
   return post(`${AUTH_PREFIX}/register`, {
     username: data.username,
     invite_code: data.invite_code,
     password: data.password,
-    ...(data.session_id ? { session_id: data.session_id } : {}),
-  }, { timeout: CLOUD_AUTH_OPERATION_TIMEOUT })
+    session_id: data.session_id,
+  })
 }
 
 // ==================== 极验滑动验证码 ====================

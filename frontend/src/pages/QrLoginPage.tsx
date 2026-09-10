@@ -15,6 +15,7 @@ type QrSession = {
 
 const labels: Record<string, string> = {
   waiting: '等待扫码', scanned: '已扫码，等待确认', success: '登录成功',
+  processing: '正在验证登录态',
   verification_required: '需要手机人脸核验', expired: '二维码已过期',
   cancelled: '已取消', failed: '登录失败', not_found: '会话不存在',
 }
@@ -44,7 +45,7 @@ export default function QrLoginPage() {
   }
 
   useEffect(() => {
-    if (!session || !['waiting', 'scanned', 'verification_required'].includes(session.status)) return
+    if (!session || !['waiting', 'scanned', 'verification_required', 'processing'].includes(session.status)) return
     let stopped = false
     const poll = async () => {
       try {
@@ -70,7 +71,8 @@ export default function QrLoginPage() {
         <div className={`qr-status qr-status-${session?.status || 'empty'}`}><span />{status}</div>
         {session?.status === 'scanned' && <p className="muted">请在手机闲鱼中确认登录。</p>}
         {session?.status === 'verification_required' && <><p className="muted">该账号需要额外的人脸核验，请按手机提示完成。</p>{session.face_qr_url && <img className="qr-image face-qr-image" src={session.face_qr_url} alt="人脸核验二维码" />}{session.verification_url && <a href={session.verification_url} target="_blank" rel="noreferrer">打开核验页面</a>}</>}
-        {session?.status === 'success' && <div className="qr-success"><strong>账号已接入</strong><span>账号 ID：{session.account_id}</span><span>{session.is_new_account ? '已创建新账号' : '已更新原账号登录态'}</span>{session.runtime?.status && <span>连接服务：{session.runtime.status}</span>}</div>}
+        {session?.status === 'processing' && <p className="muted">登录信息已保存，正在验证 Token 并建立在线连接，请稍候。</p>}
+        {session?.status === 'success' && <div className="qr-success"><strong>账号已接入并在线</strong><span>账号 ID：{session.account_id}</span><span>{session.is_new_account ? '已创建新账号' : '已更新原账号登录态'}</span>{session.runtime?.status && <span>连接服务：{session.runtime.status}</span>}</div>}
         {session?.error && <p className="error-text">{session.error}</p>}
         <div className="qr-actions"><button className="primary" onClick={() => void generate()} disabled={busy}>{session ? '生成新的二维码' : '生成登录二维码'}</button>{active && <button className="secondary" onClick={() => void cancel()}>取消本次登录</button>}</div>
       </div>

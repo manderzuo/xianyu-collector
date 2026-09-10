@@ -66,6 +66,8 @@ export interface LoginResponse {
   account_limit?: number | null
   role?: UserRole
   plan_code?: string
+  plan_expires_at?: string | null
+  auth_version?: number
   entitlements?: UserEntitlements
 }
 
@@ -127,6 +129,12 @@ export interface Keyword {
   item_id?: string      // 绑定的商品ID，空表示通用关键词
   type?: 'text' | 'image' | 'item' | 'normal'  // 关键词类型
   image_url?: string    // 图片类型关键词的图片URL
+  priority?: number     // 同时命中时，数值越大越优先
+  match_mode?: 'contains' | 'prefix' | 'exact'
+  conversation_stage?: string | string[]
+  enabled?: boolean
+  needs_human?: boolean
+  approval_status?: string
   created_at?: string
   updated_at?: string
 }

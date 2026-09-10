@@ -27,8 +27,8 @@ export interface AdminUserApiItem {
   role?: UserRole
   status?: UserStatus
   is_admin: boolean
-  cloud_mode?: boolean
   account_limit?: number | null
+  cloud_mode?: boolean
   plan_code?: string
   plan_expires_at?: string | null
   cookie_count?: number
@@ -45,8 +45,6 @@ export interface CreateAdminUserPayload {
   role: UserRole
   status: UserStatus
   account_limit: number | null
-  plan_code?: string
-  plan_expires_at?: string | null
   // 到期日（北京时间，格式 'YYYY-MM-DDTHH:MM:SS'）。null 表示永不过期。
   expire_at?: string | null
 }
@@ -73,10 +71,7 @@ const mapAdminUser = (user: AdminUserApiItem): User => ({
   role: user.role,
   status: user.status,
   is_admin: user.is_admin,
-  cloud_mode: user.cloud_mode,
   account_limit: user.account_limit,
-  plan_code: user.plan_code,
-  plan_expires_at: user.plan_expires_at,
   balance: user.balance,
   expire_at: user.expire_at,
 })
@@ -119,15 +114,6 @@ export const deleteUser = (userId: number): Promise<ApiResponse> => {
   return del(`${ADMIN_PREFIX}/users/${userId}`)
 }
 
-// 审核注册申请
-export const approveUser = (userId: number): Promise<ApiResponse<{ user: AdminUserApiItem }>> => {
-  return post(`${ADMIN_PREFIX}/users/${userId}/approve`)
-}
-
-export const rejectUser = (userId: number): Promise<ApiResponse<{ user: AdminUserApiItem }>> => {
-  return post(`${ADMIN_PREFIX}/users/${userId}/reject`)
-}
-
 // 管理员手动调整用户余额（正数充值 / 负数扣减）
 export interface AdminRechargeResult {
   balance_before: string
@@ -148,10 +134,9 @@ export type RegistrationInviteStatus = 'active' | 'used' | 'revoked' | 'expired'
 
 export interface RegistrationInvite {
   id: number
-  // 新生成的邀请码可在列表中复制；无法恢复完整码的历史记录仍返回脱敏预览。
+  // 列表接口返回脱敏值；生成接口返回本次生成的完整 code。
   code: string
   code_preview?: string
-  code_available?: boolean
   status: RegistrationInviteStatus
   note?: string | null
   expires_at?: string | null

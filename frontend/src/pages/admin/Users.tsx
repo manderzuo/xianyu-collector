@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from 'react'
-import { Users as UsersIcon, RefreshCw, Plus, ChevronLeft, ChevronRight, Loader2, Pencil, Power, PowerOff, Wallet, Search, X, Ticket, CheckCircle2, XCircle } from 'lucide-react'
-import { getUsers, deleteUser, updateUser, approveUser, rejectUser } from '@/api/admin'
+import { useEffect, useState } from 'react'
+import { Users as UsersIcon, RefreshCw, Plus, ChevronLeft, ChevronRight, Loader2, Pencil, Power, PowerOff, Wallet, Search, X, Ticket } from 'lucide-react'
+import { getUsers, deleteUser, updateUser } from '@/api/admin'
 import { useUIStore } from '@/store/uiStore'
 import { useAuthStore } from '@/store/authStore'
 import { PageLoading } from '@/components/common/Loading'
@@ -19,7 +19,6 @@ const roleLabelMap: Record<string, string> = {
 
 const statusLabelMap: Record<string, string> = {
   ACTIVE: '正常',
-  PENDING: '待审核',
   INACTIVE: '停用',
   SUSPENDED: '封禁',
   DELETED: '已删除',
@@ -27,7 +26,6 @@ const statusLabelMap: Record<string, string> = {
 
 const statusClassMap: Record<string, string> = {
   ACTIVE: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300',
-  PENDING: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300',
   INACTIVE: 'bg-slate-100 text-slate-700 dark:bg-slate-700/50 dark:text-slate-300',
   SUSPENDED: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300',
   DELETED: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300',
@@ -63,21 +61,16 @@ export function Users() {
 
   const [statusConfirm, setStatusConfirm] = useState<{ open: boolean; user: User | null; action: 'enable' | 'disable' }>({ open: false, user: null, action: 'disable' })
   const [statusSubmitting, setStatusSubmitting] = useState(false)
-  const [approvalConfirm, setApprovalConfirm] = useState<{ open: boolean; user: User | null; action: 'approve' | 'reject' }>({ open: false, user: null, action: 'approve' })
-  const [approvalSubmitting, setApprovalSubmitting] = useState(false)
   const [showFormModal, setShowFormModal] = useState(false)
   const [editingUser, setEditingUser] = useState<User | null>(null)
   const [rechargingUser, setRechargingUser] = useState<User | null>(null)
   const [showInviteModal, setShowInviteModal] = useState(false)
-  const loadSequence = useRef(0)
 
   const loadUsers = async () => {
     if (!_hasHydrated || !isAuthenticated || !token) return
-    const sequence = ++loadSequence.current
     try {
       setLoading(true)
       const result = await getUsers({ page: currentPage, pageSize, username: appliedUsername })
-      if (sequence !== loadSequence.current) return
       if (!result.success) {
         setUsers([])
         setTotal(0)
@@ -87,10 +80,9 @@ export function Users() {
       setUsers(result.data || [])
       setTotal(result.total || 0)
     } catch (error) {
-      if (sequence !== loadSequence.current) return
       addToast({ type: 'error', message: getApiErrorMessage(error, '加载用户列表失败') })
     } finally {
-      if (sequence === loadSequence.current) setLoading(false)
+      setLoading(false)
     }
   }
 
@@ -160,24 +152,6 @@ export function Users() {
     }
   }
 
-  const handleApproval = async (user: User, action: 'approve' | 'reject') => {
-    setApprovalSubmitting(true)
-    try {
-      const result = action === 'approve' ? await approveUser(user.user_id) : await rejectUser(user.user_id)
-      if (!result.success) {
-        addToast({ type: 'error', message: result.message || (action === 'approve' ? '审核通过失败' : '拒绝申请失败') })
-        return
-      }
-      addToast({ type: 'success', message: result.message || (action === 'approve' ? '注册申请已通过' : '注册申请已拒绝') })
-      setApprovalConfirm({ open: false, user: null, action: 'approve' })
-      await loadUsers()
-    } catch (error) {
-      addToast({ type: 'error', message: getApiErrorMessage(error, action === 'approve' ? '审核通过失败' : '拒绝申请失败') })
-    } finally {
-      setApprovalSubmitting(false)
-    }
-  }
-
   const totalPages = Math.ceil(total / pageSize)
   const startIndex = (currentPage - 1) * pageSize + 1
   const endIndex = Math.min(currentPage * pageSize, total)
@@ -214,12 +188,6 @@ export function Users() {
           </button>
         </div>
       </div>
-
-      {users.some((user) => user.cloud_mode) && (
-        <div className="rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-700 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-200">
-          当前为云端统一认证模式。云端用户的套餐和到期时间可直接在本页编辑并同步到所有电脑；账号资料仍由统一认证服务统一维护。
-        </div>
-      )}
 
       <div className="vben-card flex flex-col" style={{ height: 'calc(100vh - 280px)', minHeight: '400px' }}>
         <div className="vben-card-header flex-shrink-0 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
@@ -265,7 +233,6 @@ export function Users() {
                 <th>邮箱</th>
                 <th>手机号</th>
                 <th>角色</th>
-                <th>套餐</th>
                 <th>可添加账号数</th>
                 <th>余额</th>
                 <th>到期日</th>
@@ -276,7 +243,7 @@ export function Users() {
             <tbody>
               {users.length === 0 ? (
                 <tr>
-                  <td colSpan={11} className="text-center py-8 text-slate-500 dark:text-slate-400">
+                  <td colSpan={10} className="text-center py-8 text-slate-500 dark:text-slate-400">
                     <div className="flex flex-col items-center gap-2">
                       <UsersIcon className="w-12 h-12 text-slate-300 dark:text-slate-600" />
                       <p>{appliedUsername ? `未找到用户名包含「${appliedUsername}」的用户` : '暂无用户数据'}</p>
@@ -293,11 +260,6 @@ export function Users() {
                     <td>
                       <span className={user.role === 'ADMIN' ? 'badge-warning' : 'badge-gray'}>
                         {roleLabelMap[user.role || (user.is_admin ? 'ADMIN' : 'MEMBER')] || '普通用户'}
-                      </span>
-                    </td>
-                    <td>
-                      <span className={user.plan_code === 'VIP' ? 'badge-warning' : 'badge-gray'}>
-                        {user.plan_code || 'NORMAL'}
                       </span>
                     </td>
                     <td className="text-slate-500 dark:text-slate-400">{user.account_limit ?? '-'}</td>
@@ -329,26 +291,7 @@ export function Users() {
                           <Wallet className="w-4 h-4" />
                           余额调整
                         </button>
-                        {user.status === 'PENDING' ? (
-                          <>
-                            <button
-                              onClick={() => setApprovalConfirm({ open: true, user, action: 'approve' })}
-                              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg hover:bg-emerald-50 dark:hover:bg-emerald-900/20 text-emerald-600 dark:text-emerald-400 transition-colors"
-                              title="通过注册申请"
-                            >
-                              <CheckCircle2 className="w-4 h-4" />
-                              通过
-                            </button>
-                            <button
-                              onClick={() => setApprovalConfirm({ open: true, user, action: 'reject' })}
-                              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg hover:bg-red-50 dark:hover:bg-red-900/20 text-red-500 transition-colors"
-                              title="拒绝注册申请"
-                            >
-                              <XCircle className="w-4 h-4" />
-                              拒绝
-                            </button>
-                          </>
-                        ) : user.status === 'INACTIVE' ? (
+                        {user.status === 'INACTIVE' ? (
                           <button
                             onClick={() => setStatusConfirm({ open: true, user, action: 'enable' })}
                             className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg hover:bg-emerald-50 dark:hover:bg-emerald-900/20 text-emerald-600 dark:text-emerald-400 transition-colors"
@@ -425,7 +368,7 @@ export function Users() {
       <div className="vben-card">
         <div className="vben-card-body">
           <p className="text-sm text-slate-500 dark:text-slate-400">
-            提示：新用户注册后会进入“待审核”状态，管理员通过后才能登录；管理员也可在此页面新增、编辑、停用和启用用户账号。
+            提示：管理员可在此页面新增、编辑、停用和启用用户账号，停用后用户将无法登录，但历史数据会保留。
           </p>
         </div>
       </div>
@@ -453,20 +396,6 @@ export function Users() {
         loading={statusSubmitting}
         onConfirm={() => statusConfirm.user && handleStatusChange(statusConfirm.user, statusConfirm.action)}
         onCancel={closeStatusConfirm}
-      />
-
-      <ConfirmModal
-        isOpen={approvalConfirm.open}
-        title={approvalConfirm.action === 'approve' ? '通过注册申请' : '拒绝注册申请'}
-        message={approvalConfirm.action === 'approve'
-          ? `确定通过用户「${approvalConfirm.user?.username || ''}」的注册申请吗？通过后该用户可以登录。`
-          : `确定拒绝用户「${approvalConfirm.user?.username || ''}」的注册申请吗？拒绝后该账号将无法登录。`}
-        confirmText={approvalConfirm.action === 'approve' ? '通过' : '拒绝'}
-        cancelText="取消"
-        type={approvalConfirm.action === 'approve' ? 'info' : 'danger'}
-        loading={approvalSubmitting}
-        onConfirm={() => approvalConfirm.user && handleApproval(approvalConfirm.user, approvalConfirm.action)}
-        onCancel={() => setApprovalConfirm({ open: false, user: null, action: 'approve' })}
       />
 
       {rechargingUser && (

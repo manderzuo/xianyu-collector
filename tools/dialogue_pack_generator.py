@@ -3,12 +3,13 @@
 
 这是一个独立的本地 GUI 工具，不依赖本项目的后端服务，也不会修改现有业务数据。
 它使用两个 OpenAI 兼容接口分别模拟买家和卖家，然后用卖家接口把对话整理成
-可审核的本地回复模板，并导出 JSON、JSONL 和关键词导入文件。
+可审核的本地回复模板，并导出 JSON、JSONL 和关键词导入文件。API Key 会以当前
+Windows 用户 DPAPI 加密方式保存在本机配置中，生成文件和日志不会包含 Key。
 
 启动：
     python tools/dialogue_pack_generator.py
 
-仅使用 Python 标准库；API Key 只保存在内存中，不写入生成文件。
+仅使用 Python 标准库。
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ from __future__ import annotations
 import json
 import base64
 import ctypes
+import hashlib
 from ctypes import wintypes
 import os
 import queue
@@ -23,6 +25,7 @@ import sys
 import re
 import threading
 import time
+import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -38,6 +41,7 @@ DEFAULT_BASE_URL = "https://api.openai.com/v1"
 CONFIG_FILE_NAME = "config.json"
 MAX_SESSIONS_PER_SCENARIO = 1000
 MAX_TURNS_PER_SESSION = 30
+MAX_API_RETRIES_ON_TRUNCATION = 2
 ALLOWED_VARIABLES = {
     "buyer_name",
     "item_title",
@@ -190,6 +194,48 @@ def _unprotect_secret(value: str) -> str:
 class ApiError(RuntimeError):
     """OpenAI 兼容接口调用失败。"""
 
+    def __init__(self, message: str, *, truncated: bool = False):
+        super().__init__(message)
+        self.truncated = truncated
+
+
+class OutputRunLock:
+    """同一输出目录只允许一个生成任务，避免多个 GUI 覆盖同一个断点文件。"""
+
+    def __init__(self, output_dir: Path):
+        self.path = output_dir / "dialogue_pack.run.lock"
+        self.handle: int | None = None
+
+    def __enter__(self) -> "OutputRunLock":
+        payload = f"pid={os.getpid()}\nstarted_at={now_iso()}\n"
+        for attempt in range(2):
+            try:
+                self.handle = os.open(str(self.path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                os.write(self.handle, payload.encode("utf-8"))
+                return self
+            except FileExistsError:
+                if attempt:
+                    raise ApiError(f"输出目录已有生成任务在运行：{self.path}")
+                try:
+                    content = self.path.read_text(encoding="utf-8")
+                    pid_match = re.search(r"pid=(\d+)", content)
+                    old_pid = int(pid_match.group(1)) if pid_match else 0
+                    if old_pid and old_pid != os.getpid():
+                        os.kill(old_pid, 0)
+                    raise ApiError(f"输出目录已有生成任务在运行（PID {old_pid or '未知'}）")
+                except ProcessLookupError:
+                    # 进程已退出但锁文件遗留，可以安全清掉后重试一次。
+                    self.path.unlink(missing_ok=True)
+                except PermissionError:
+                    raise ApiError(f"输出目录已有生成任务在运行：{self.path}")
+        raise ApiError(f"无法取得输出目录锁：{self.path}")
+
+    def __exit__(self, exc_type: Any, exc_value: Any, traceback: Any) -> None:
+        if self.handle is not None:
+            os.close(self.handle)
+            self.handle = None
+        self.path.unlink(missing_ok=True)
+
 
 @dataclass(frozen=True)
 class ApiConfig:
@@ -214,6 +260,8 @@ class JobConfig:
     buyer_max_output_tokens: int = 80
     seller_max_output_tokens: int = 120
     organizer_max_output_tokens: int = 600
+    resume_enabled: bool = True
+    resume_file: Path | None = None
 
 
 def now_iso() -> str:
@@ -227,6 +275,27 @@ def clean_base_url(value: str) -> str:
     if not re.match(r"^https?://", value, flags=re.I):
         raise ValueError("API 地址必须以 http:// 或 https:// 开头")
     return value
+
+
+def response_is_truncated(payload: Any) -> bool:
+    """识别 Responses/Chat Completions 因输出上限而结束的响应。"""
+    if not isinstance(payload, dict):
+        return False
+    incomplete = payload.get("incomplete_details")
+    reason = str(incomplete.get("reason") if isinstance(incomplete, dict) else "").lower()
+    status = str(payload.get("status") or "").lower()
+    if reason in {"max_output_tokens", "length", "token_limit", "max_tokens"}:
+        return True
+    if status == "incomplete" and (not incomplete or reason in {"", "max_output_tokens", "length"}):
+        return True
+    choices = payload.get("choices")
+    if isinstance(choices, list):
+        for choice in choices:
+            if isinstance(choice, dict) and str(choice.get("finish_reason") or "").lower() in {"length", "max_tokens"}:
+                return True
+    error = payload.get("error")
+    error_text = json.dumps(error, ensure_ascii=False).lower() if error else ""
+    return any(marker in error_text for marker in ("max_output_tokens", "max_tokens", "token limit", "length"))
 
 
 def extract_content(payload: Any) -> str:
@@ -249,7 +318,7 @@ def extract_content(payload: Any) -> str:
             reasoning = payload.get("reasoning")
             if reasoning:
                 suffix += f"；推理摘要：{str(reasoning)[:300]}"
-            raise ApiError(f"Responses 未生成可发送文本：{error_text[:800]}{suffix}")
+            raise ApiError(f"Responses 未生成可发送文本：{error_text[:800]}{suffix}", truncated=response_is_truncated(payload))
         # 一些兼容网关会把标准 Responses 包装在 data/result/response 中。
         for wrapper in ("data", "result", "response"):
             nested = payload.get(wrapper)
@@ -260,6 +329,10 @@ def extract_content(payload: Any) -> str:
                         return value
                 except ApiError:
                     pass
+        # Chat Completions 可能同时返回部分 content 和 finish_reason=length。
+        # 部分网关会把它伪装成成功响应，必须丢弃这次半截文本并自动重试。
+        if response_is_truncated(payload):
+            raise ApiError("接口输出达到 Token 上限，已请求扩大上限重试", truncated=True)
     if isinstance(payload, dict) and isinstance(payload.get("output_text"), str):
         value = payload["output_text"].strip()
         if value:
@@ -301,7 +374,7 @@ def extract_content(payload: Any) -> str:
             if isinstance(item, dict) and isinstance(item.get("text"), str):
                 parts.append(item["text"])
         return "".join(parts).strip()
-    raise ApiError("接口返回空回复")
+        raise ApiError("接口返回空回复", truncated=response_is_truncated(payload))
 
 
 class OpenAICompatibleClient:
@@ -321,15 +394,15 @@ class OpenAICompatibleClient:
     def chat(self, messages: list[dict[str, str]], temperature: float | None = 0.7) -> str:
         base_url = clean_base_url(self.config.base_url)
         model = self.config.model.strip()
-        # OpenCode 官方将 Muse Spark 1.3 Contributor 放在 Responses 接口，
-        # 而其他常见 Zen 模型通常使用 Chat Completions。允许用户直接填完整端点。
-        if base_url.endswith("/responses") or model.startswith("muse-spark-1.3-contributor"):
+        # OpenCode Zen 的 Muse Spark 系列使用 Responses 接口；其他常见模型通常
+        # 使用 Chat Completions。允许用户直接填完整端点，也自动识别 Muse 1.2/1.3。
+        if base_url.endswith("/responses") or model.startswith("muse-spark-"):
             url = base_url if base_url.endswith("/responses") else base_url + "/responses"
             body = {"model": model, "input": messages}
             # Muse Spark 默认可能使用 high 推理强度，短客服回复会在达到
             # max_output_tokens 前耗尽预算而没有 output。生成模板时使用 minimal，
             # 保留足够预算给最终可发送文本。
-            if model.startswith("muse-spark-1.3-contributor"):
+            if model.startswith("muse-spark-"):
                 body["reasoning"] = {"effort": "minimal"}
             output_limit_key = "max_output_tokens"
         else:
@@ -338,50 +411,63 @@ class OpenAICompatibleClient:
             output_limit_key = "max_tokens"
         if temperature is not None:
             body["temperature"] = temperature
-        if self.max_output_tokens is not None:
-            # Responses 使用 max_output_tokens，Chat Completions 使用 max_tokens。
-            body[output_limit_key] = int(self.max_output_tokens)
-        request = urllib.request.Request(
-            url,
-            data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
-            headers={
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-                # 部分 API 网关的 Cloudflare Browser Integrity Check 会拦截
-                # Python-urllib 默认 UA；这里声明普通浏览器请求特征。
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36",
-                "Authorization": f"Bearer {self.config.api_key.strip()}",
-            },
-            method="POST",
-        )
-        try:
-            with self.opener.open(request, timeout=self.timeout) as response:
-                raw = response.read().decode("utf-8", errors="replace")
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")[:800]
-            if exc.code == 403 and "1010" in detail:
-                raise ApiError(
-                    "HTTP 403 / Cloudflare 1010：服务商按客户端特征拒绝了请求，通常不是 API Key 错误。"
-                    "请确认填写的是 API 根地址（例如 https://域名/v1），不是网页控制台地址；"
-                    "若仍失败，需要 API 服务商放行当前来源或提供专用 API 域名。"
-                ) from exc
-            if exc.code == 401:
-                raise ApiError("HTTP 401：API Key 无效、已过期，或当前 Key 没有该模型权限") from exc
-            if exc.code == 404:
-                raise ApiError("HTTP 404：API 地址或路径不存在，请填写兼容接口根地址，例如 https://域名/v1") from exc
-            if exc.code == 500:
-                raise ApiError(
-                    f"HTTP 500：请求已到达 API 服务，但上游内部处理失败。常见原因是模型名称、接口路径或请求参数不兼容；原始信息：{detail}"
-                ) from exc
-            raise ApiError(f"HTTP {exc.code}: {detail}") from exc
-        except urllib.error.URLError as exc:
-            raise ApiError(f"无法连接 API：{exc.reason}") from exc
-        except TimeoutError as exc:
-            raise ApiError("API 请求超时") from exc
-        try:
-            return extract_content(json.loads(raw))
-        except json.JSONDecodeError as exc:
-            raise ApiError(f"接口返回不是有效 JSON：{raw[:300]}") from exc
+        output_limit = int(self.max_output_tokens) if self.max_output_tokens is not None else None
+        for attempt in range(MAX_API_RETRIES_ON_TRUNCATION + 1):
+            request_body = dict(body)
+            if output_limit is not None:
+                # Responses 使用 max_output_tokens，Chat Completions 使用 max_tokens。
+                request_body[output_limit_key] = output_limit
+            request = urllib.request.Request(
+                url,
+                data=json.dumps(request_body, ensure_ascii=False).encode("utf-8"),
+                headers={
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                    # 部分 API 网关的 Cloudflare Browser Integrity Check 会拦截
+                    # Python-urllib 默认 UA；这里声明普通浏览器请求特征。
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36",
+                    "Authorization": f"Bearer {self.config.api_key.strip()}",
+                },
+                method="POST",
+            )
+            try:
+                with self.opener.open(request, timeout=self.timeout) as response:
+                    raw = response.read().decode("utf-8", errors="replace")
+            except urllib.error.HTTPError as exc:
+                detail = exc.read().decode("utf-8", errors="replace")[:800]
+                if exc.code == 403 and "1010" in detail:
+                    raise ApiError(
+                        "HTTP 403 / Cloudflare 1010：服务商按客户端特征拒绝了请求，通常不是 API Key 错误。"
+                        "请确认填写的是 API 根地址（例如 https://域名/v1），不是网页控制台地址；"
+                        "若仍失败，需要 API 服务商放行当前来源或提供专用 API 域名。"
+                    ) from exc
+                if exc.code == 401:
+                    raise ApiError("HTTP 401：API Key 无效、已过期，或当前 Key 没有该模型权限") from exc
+                if exc.code == 404:
+                    raise ApiError("HTTP 404：API 地址或路径不存在，请填写兼容接口根地址，例如 https://域名/v1") from exc
+                if exc.code == 500:
+                    raise ApiError(
+                        f"HTTP 500：请求已到达 API 服务，但上游内部处理失败。常见原因是模型名称、接口路径或请求参数不兼容；原始信息：{detail}"
+                    ) from exc
+                raise ApiError(f"HTTP {exc.code}: {detail}") from exc
+            except urllib.error.URLError as exc:
+                raise ApiError(f"无法连接 API：{exc.reason}") from exc
+            except TimeoutError as exc:
+                raise ApiError("API 请求超时") from exc
+            try:
+                payload = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                raise ApiError(f"接口返回不是有效 JSON：{raw[:300]}") from exc
+            try:
+                return extract_content(payload)
+            except ApiError as exc:
+                if not exc.truncated or output_limit is None or attempt >= MAX_API_RETRIES_ON_TRUNCATION:
+                    raise
+                next_limit = min(max(output_limit * 2, output_limit + 512), 16384)
+                if next_limit <= output_limit:
+                    raise
+                output_limit = next_limit
+        raise ApiError("API 请求未返回可发送文本")
 
 
 def facts_block(config: JobConfig) -> str:
@@ -482,7 +568,8 @@ def normalize_templates(raw: dict[str, Any] | None, scenario: str) -> list[dict[
             "scene": str(candidate.get("scene") or scenario).strip()[:100],
             "intent": str(candidate.get("intent") or scenario).strip()[:100],
             "keywords": keywords[:20],
-            "reply": reply[:1000],
+            # 不在本地二次截断；API 已通过“达到上限自动重试”处理真正的截断。
+            "reply": reply,
             "variables": list(dict.fromkeys(variables)),
             "needs_human": bool(candidate.get("needs_human", False)),
             "priority": priority,
@@ -507,7 +594,7 @@ def fallback_template(scenario: str, transcript: list[dict[str, str]]) -> dict[s
         "scene": scenario,
         "intent": scenario,
         "keywords": keywords[:12],
-        "reply": seller_messages[-1][:1000],
+        "reply": seller_messages[-1],
         "variables": [],
         "needs_human": False,
         "priority": 50,
@@ -547,6 +634,39 @@ def keywords_import(templates: list[dict[str, Any]], product_id: str) -> list[di
     ]
 
 
+def session_key(scenario: str, session_index: int) -> str:
+    return f"{scenario}\x1f{session_index}"
+
+
+def int_or_default(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def input_fingerprint(config: JobConfig, scenario: str) -> str:
+    """只对会影响生成内容的输入做指纹，不包含 API Key。"""
+    payload = {
+        "format": "xianyu-dialogue-generator-input-v2",
+        "product_id": config.product_id,
+        "product_title": config.product_title,
+        "facts": config.facts,
+        "scenario": scenario,
+        "max_turns": config.max_turns,
+        "use_organizer": config.use_organizer,
+    }
+    return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def log_preview(value: str, limit: int = 36) -> str:
+    """日志只显示短预览，并明确标出完整文本长度；导出文件不使用此函数。"""
+    compact = re.sub(r"\s+", " ", str(value or "")).strip()
+    if len(compact) <= limit:
+        return compact
+    return f"{compact[:limit]}…（预览 {limit}/{len(compact)} 字）"
+
+
 class Generator:
     def __init__(self, config: JobConfig, log: Callable[[str], None], stop_event: threading.Event):
         self.config = config
@@ -556,24 +676,47 @@ class Generator:
         self.seller = OpenAICompatibleClient(config.seller, max_output_tokens=config.seller_max_output_tokens)
         self.organizer = OpenAICompatibleClient(config.seller, max_output_tokens=config.organizer_max_output_tokens)
 
-    def simulate(self, scenario: str, session_index: int) -> list[dict[str, str]]:
-        transcript: list[dict[str, str]] = []
+    def simulate(
+        self,
+        scenario: str,
+        session_index: int,
+        initial_transcript: list[dict[str, str]] | None = None,
+        checkpoint: Callable[[list[dict[str, str]]], None] | None = None,
+    ) -> list[dict[str, str]]:
+        transcript: list[dict[str, str]] = [
+            {"role": str(item.get("role")), "content": str(item.get("content") or "")}
+            for item in (initial_transcript or [])
+            if str(item.get("content") or "").strip() and str(item.get("role")) in {"buyer", "seller"}
+        ]
         buyer_system = buyer_prompt(self.config, scenario, session_index)
         seller_system = seller_prompt(self.config, scenario)
-        next_buyer_instruction = "请先提出本场景下最自然的第一个问题。"
-        for turn in range(self.config.max_turns):
+        next_buyer_instruction = (
+            "请先提出本场景下最自然的第一个问题。" if not transcript
+            else "请根据卖家上一条回复自然追问一个相关问题；如果问题已经解决，回复“谢谢，先这样”并结束。"
+        )
+        turn = len(transcript) // 2
+        while turn < self.config.max_turns:
             if self.stop_event.is_set():
                 break
-            buyer_messages = [
-                {"role": "system", "content": buyer_system},
-                *api_transcript(transcript[-12:]),
-                {"role": "user", "content": next_buyer_instruction},
-            ]
-            buyer_text = self.buyer.chat(buyer_messages, temperature=0.9)
-            buyer_text = re.sub(r"^(买家|客户)[:：]\s*", "", buyer_text).strip()
-            if not buyer_text:
-                raise ApiError("买家 AI 返回空消息")
-            transcript.append({"role": "buyer", "content": buyer_text[:500]})
+            buyer_text = ""
+            seller_text = ""
+            # 如果程序在买家消息之后中断，恢复时从卖家回复开始，避免重复消耗一次买家调用。
+            if len(transcript) % 2 == 0:
+                buyer_messages = [
+                    {"role": "system", "content": buyer_system},
+                    *api_transcript(transcript[-12:]),
+                    {"role": "user", "content": next_buyer_instruction},
+                ]
+                buyer_text = self.buyer.chat(buyer_messages, temperature=0.9)
+                buyer_text = re.sub(r"^(买家|客户)[:：]\s*", "", buyer_text).strip()
+                if not buyer_text:
+                    raise ApiError("买家 AI 返回空消息")
+                # 不做 [:500] 之类的硬截断，保留模型返回的完整消息。
+                transcript.append({"role": "buyer", "content": buyer_text})
+                if checkpoint:
+                    checkpoint(transcript)
+            if self.stop_event.is_set():
+                break
             seller_messages = [
                 {"role": "system", "content": seller_system},
                 *api_transcript(transcript[-12:]),
@@ -582,70 +725,184 @@ class Generator:
             seller_text = self.seller.chat(seller_messages, temperature=0.45)
             seller_text = re.sub(r"^(卖家|客服)[:：]\s*", "", seller_text).strip()
             if not seller_text:
-                raise ApiError("卖家 AI 返回空消息")
-            transcript.append({"role": "seller", "content": seller_text[:1000]})
-            self.log(f"    回合 {turn + 1}: 买家 {buyer_text[:36]} / 卖家 {seller_text[:36]}")
+                raise ApiError("卖家 AI 返回空回复")
+            transcript.append({"role": "seller", "content": seller_text})
+            if checkpoint:
+                checkpoint(transcript)
+            self.log(
+                f"    回合 {turn + 1}: 买家 {log_preview(buyer_text or transcript[-2]['content'])}"
+                f" / 卖家 {log_preview(seller_text)}"
+            )
             next_buyer_instruction = (
                 "请根据卖家上一条回复自然追问一个相关问题；如果问题已经解决，回复“谢谢，先这样”并结束。"
             )
-            if any(marker in buyer_text for marker in ("谢谢", "先这样", "明白了", "好的不用了")):
+            if any(marker in transcript[-2]["content"] for marker in ("谢谢", "先这样", "明白了", "好的不用了")):
                 break
+            turn += 1
         return transcript
 
     def run(self) -> dict[str, Any]:
+        self.config.output_dir.mkdir(parents=True, exist_ok=True)
+        with OutputRunLock(self.config.output_dir):
+            return self._run_locked()
+
+    def _run_locked(self) -> dict[str, Any]:
         total = len(self.config.scenarios) * self.config.sessions_per_scenario
         sessions: list[dict[str, Any]] = []
         templates: list[dict[str, Any]] = []
-        completed = 0
         self.config.output_dir.mkdir(parents=True, exist_ok=True)
+        source_package: dict[str, Any] | None = None
+        source_path = self.config.resume_file or (self.config.output_dir / "dialogue_pack.partial.json")
+        if self.config.resume_enabled and source_path.exists():
+            try:
+                loaded = json.loads(source_path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict) and isinstance(loaded.get("sessions"), list):
+                    source_package = loaded
+                    self.log(f"发现断点文件：{source_path}")
+            except Exception as exc:
+                self.log(f"断点文件读取失败，将从头生成：{str(exc)[:300]}")
+
+        # 旧版本没有 input_fingerprint。只在商品事实、回合设置和整理设置都相同的情况下兼容复用，
+        # 一旦用户修改商品事实，就自动淘汰旧会话，避免把旧商品内容混进新包。
+        source_generation = source_package.get("generation", {}) if source_package else {}
+        source_product = source_package.get("product", {}) if source_package else {}
+        source_scenarios = source_generation.get("scenarios")
+        scenarios_compatible = not isinstance(source_scenarios, list) or source_scenarios == self.config.scenarios
+        legacy_compatible = bool(source_package) and (
+            source_product.get("id", "") == self.config.product_id
+            and source_product.get("title", "") == self.config.product_title
+            and source_product.get("facts", "") == self.config.facts
+            and int_or_default(source_generation.get("max_turns"), self.config.max_turns) == self.config.max_turns
+            and bool(source_generation.get("uses_organizer_ai", self.config.use_organizer)) == self.config.use_organizer
+            and scenarios_compatible
+        )
+        source_by_key: dict[str, dict[str, Any]] = {}
+        if source_package:
+            for item in source_package.get("sessions") or []:
+                if not isinstance(item, dict):
+                    continue
+                key = session_key(str(item.get("scenario") or ""), int_or_default(item.get("session_index"), 0))
+                if key.split("\x1f", 1)[0] in self.config.scenarios:
+                    source_by_key[key] = item
+
+        reusable_keys: set[str] = set()
+        for scenario in self.config.scenarios:
+            fingerprint = input_fingerprint(self.config, scenario)
+            for session_index in range(1, self.config.sessions_per_scenario + 1):
+                key = session_key(scenario, session_index)
+                previous = source_by_key.get(key)
+                if previous and (previous.get("input_fingerprint") == fingerprint or (not previous.get("input_fingerprint") and legacy_compatible)):
+                    reusable_keys.add(key)
+        if source_package and reusable_keys:
+            self.log(f"可复用断点会话 {len(reusable_keys)} 个；已完成会话将跳过，未完成/失败会话将继续。")
+
+        if source_package:
+            for item in source_package.get("templates") or []:
+                if not isinstance(item, dict):
+                    continue
+                template_key = str(item.get("source_session_key") or "")
+                if (template_key and template_key in reusable_keys) or (not template_key and legacy_compatible):
+                    templates.append(item)
+
+        def upsert(record: dict[str, Any]) -> None:
+            key = session_key(str(record.get("scenario") or ""), int_or_default(record.get("session_index"), 0))
+            for index, current in enumerate(sessions):
+                if session_key(str(current.get("scenario") or ""), int_or_default(current.get("session_index"), 0)) == key:
+                    sessions[index] = record
+                    return
+            sessions.append(record)
+
+        def completed_count() -> int:
+            return sum(1 for item in sessions if item.get("status") == "completed")
+
         for scenario in self.config.scenarios:
             for session_index in range(1, self.config.sessions_per_scenario + 1):
                 if self.stop_event.is_set():
                     break
+                key = session_key(scenario, session_index)
+                fingerprint = input_fingerprint(self.config, scenario)
+                previous = source_by_key.get(key) if key in reusable_keys else None
+                if previous and previous.get("status") == "completed":
+                    upsert(previous)
+                    self.log(f"跳过已完成会话：{scenario}（变体 {session_index}/{self.config.sessions_per_scenario}）")
+                    continue
+                transcript: list[dict[str, str]] = list(previous.get("turns") or []) if previous else []
+                phase = str(previous.get("phase") or "simulate") if previous else "simulate"
+                record: dict[str, Any] = {
+                    "scenario": scenario,
+                    "session_index": session_index,
+                    "turns": transcript,
+                    "status": "in_progress",
+                    "phase": phase,
+                    "input_fingerprint": fingerprint,
+                    "created_at": str(previous.get("created_at") or now_iso()) if previous else now_iso(),
+                    "updated_at": now_iso(),
+                }
+                upsert(record)
+                self.save(sessions, templates, total, completed_count())
                 self.log(f"开始场景：{scenario}（变体 {session_index}/{self.config.sessions_per_scenario}）")
                 try:
-                    transcript = self.simulate(scenario, session_index)
+                    if phase != "organize":
+                        phase = "simulate"
+                        record["phase"] = phase
+
+                        def checkpoint(current: list[dict[str, str]]) -> None:
+                            record["turns"] = list(current)
+                            record["updated_at"] = now_iso()
+                            self.save(sessions, templates, total, completed_count())
+
+                        transcript = self.simulate(scenario, session_index, transcript, checkpoint)
+                    if self.stop_event.is_set():
+                        record["turns"] = transcript
+                        record["status"] = "in_progress"
+                        record["phase"] = phase
+                        self.save(sessions, templates, total, completed_count())
+                        break
                     organized: list[dict[str, Any]] = []
                     if self.config.use_organizer and not self.stop_event.is_set():
+                        phase = "organize"
+                        record["phase"] = phase
+                        record["turns"] = transcript
+                        self.save(sessions, templates, total, completed_count())
                         raw = self.organizer.chat(
                             [{"role": "system", "content": organizer_prompt(self.config, scenario, transcript)}],
                             temperature=0.2,
                         )
                         organized = normalize_templates(parse_json_object(raw), scenario)
                     organized = organized or ([fallback_template(scenario, transcript)] if fallback_template(scenario, transcript) else [])
+                    for template in organized:
+                        template["source_session_key"] = key
                     templates.extend(organized)
-                    sessions.append({
-                        "scenario": scenario,
-                        "session_index": session_index,
+                    record.update({
                         "turns": transcript,
                         "status": "completed",
-                        "created_at": now_iso(),
+                        "phase": "done",
+                        "updated_at": now_iso(),
                     })
-                    completed += 1
-                    self.save(sessions, templates, total, completed)
-                    self.log(f"完成 {completed}/{total}，新增模板 {len(organized)} 条")
+                    upsert(record)
+                    self.save(sessions, templates, total, completed_count())
+                    self.log(f"完成 {completed_count()}/{total}，新增模板 {len(organized)} 条")
                 except Exception as exc:  # 单个场景失败不影响其余场景
-                    sessions.append({
-                        "scenario": scenario,
-                        "session_index": session_index,
-                        "turns": [],
-                        "status": "failed",
+                    record.update({
+                        "turns": transcript,
+                        "status": "in_progress" if self.stop_event.is_set() else "failed",
+                        "phase": phase,
                         "error": str(exc)[:1000],
-                        "created_at": now_iso(),
+                        "updated_at": now_iso(),
                     })
-                    self.save(sessions, templates, total, completed)
-                    self.log(f"本场景失败，已保留失败记录：{str(exc)[:300]}")
+                    upsert(record)
+                    self.save(sessions, templates, total, completed_count())
+                    self.log(f"本场景{('已暂停' if self.stop_event.is_set() else '失败')}，已保留断点：{str(exc)[:300]}")
             if self.stop_event.is_set():
                 break
-        final = self.save(sessions, templates, total, completed)
-        final["status"] = "stopped" if self.stop_event.is_set() else "completed"
+        final = self.save(sessions, templates, total, completed_count(), "stopped" if self.stop_event.is_set() else "completed")
         self.write_files(final)
         return final
 
-    def save(self, sessions: list[dict[str, Any]], templates: list[dict[str, Any]], total: int, completed: int) -> dict[str, Any]:
+    def save(self, sessions: list[dict[str, Any]], templates: list[dict[str, Any]], total: int, completed: int, status: str = "running") -> dict[str, Any]:
         package = {
             "format": "xianyu-local-dialogue-pack/v1",
-            "status": "running",
+            "status": status,
             "created_at": now_iso(),
             "product": {
                 "id": self.config.product_id,
@@ -656,14 +913,16 @@ class Generator:
                 "total_sessions": total,
                 "completed_sessions": completed,
                 "scenario_count": len(self.config.scenarios),
+                "scenarios": self.config.scenarios,
                 "sessions_per_scenario": self.config.sessions_per_scenario,
                 "max_turns": self.config.max_turns,
                 "uses_organizer_ai": self.config.use_organizer,
                 "max_output_tokens": {
                     "buyer": self.config.buyer_max_output_tokens,
                     "seller": self.config.seller_max_output_tokens,
-                    "organizer": self.config.organizer_max_output_tokens,
+                "organizer": self.config.organizer_max_output_tokens,
                 },
+                "input_fingerprint_version": "per-session-v2",
             },
             "templates": deduplicate_templates(templates),
             "sessions": sessions,
@@ -671,7 +930,20 @@ class Generator:
             "warning": "这是 AI 合成内容，启用前必须依据真实商品事实人工审核。",
         }
         path = self.config.output_dir / "dialogue_pack.partial.json"
-        path.write_text(json.dumps(package, ensure_ascii=False, indent=2), encoding="utf-8")
+        # 原子替换，避免程序被强制关闭时 partial JSON 只写了一半。
+        temporary = tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=self.config.output_dir, delete=False, suffix=".tmp")
+        temporary_path = Path(temporary.name)
+        try:
+            json.dump(package, temporary, ensure_ascii=False, indent=2)
+            temporary.flush()
+            os.fsync(temporary.fileno())
+            temporary.close()
+            os.replace(temporary_path, path)
+        finally:
+            if not temporary.closed:
+                temporary.close()
+            if temporary_path.exists():
+                temporary_path.unlink(missing_ok=True)
         return package
 
     def write_files(self, package: dict[str, Any]) -> None:
@@ -758,19 +1030,25 @@ class App:
         self.turns = self._field(run_frame, "每场最大回合数", "4", 0, 2)
         self.output_dir = self._field(run_frame, "输出目录", str(Path.cwd() / "dialogue_packs"), 1, 0)
         ttk.Button(run_frame, text="选择目录", command=self.choose_output).grid(row=1, column=3, sticky="e")
-        self.buyer_output_tokens = self._field(run_frame, "买家单次输出 Token", "1024", 2, 0)
-        self.seller_output_tokens = self._field(run_frame, "卖家单次回复 Token", "1536", 2, 2)
-        self.organizer_output_tokens = self._field(run_frame, "整理单次输出 Token", "2048", 3, 0)
-        ttk.Label(run_frame, text="Muse 推荐 1024/1536/2048；限制的是单次输出，不是总额度").grid(row=3, column=2, columnspan=2, sticky="w", padx=(6, 0), pady=4)
-        ttk.Label(run_frame, text="场景（一行一个）").grid(row=4, column=0, columnspan=4, sticky="w", pady=(8, 3))
+        self.resume_enabled = BooleanVar(value=True)
+        Checkbutton(run_frame, text="启用断点续传（自动读取输出目录下的 partial 文件）", variable=self.resume_enabled).grid(row=2, column=0, columnspan=2, sticky="w", pady=4)
+        ttk.Label(run_frame, text="指定已有包（可空）").grid(row=2, column=2, sticky="w", padx=(6, 0), pady=4)
+        self.resume_file = ttk.Entry(run_frame)
+        self.resume_file.grid(row=2, column=3, sticky="ew", pady=4)
+        ttk.Button(run_frame, text="选择文件", command=self.choose_resume_file).grid(row=3, column=3, sticky="e", pady=(0, 4))
+        self.buyer_output_tokens = self._field(run_frame, "买家单次输出 Token", "1024", 4, 0)
+        self.seller_output_tokens = self._field(run_frame, "卖家单次回复 Token", "1536", 4, 2)
+        self.organizer_output_tokens = self._field(run_frame, "整理单次输出 Token", "2048", 5, 0)
+        ttk.Label(run_frame, text="达到上限会自动扩大并重试；Muse 推荐 1024/1536/2048").grid(row=5, column=2, columnspan=2, sticky="w", padx=(6, 0), pady=4)
+        ttk.Label(run_frame, text="场景（一行一个）").grid(row=6, column=0, columnspan=4, sticky="w", pady=(8, 3))
         self.scenarios = Text(run_frame, height=8, wrap="word")
-        self.scenarios.grid(row=5, column=0, columnspan=4, sticky="ew")
+        self.scenarios.grid(row=7, column=0, columnspan=4, sticky="ew")
         self.scenarios.insert("1.0", DEFAULT_SCENARIOS)
-        Checkbutton(run_frame, text="生成后调用卖家 API 整理模板（建议开启）", variable=self.organizer_enabled).grid(row=6, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        Checkbutton(run_frame, text="生成后调用卖家 API 整理模板（建议开启）", variable=self.organizer_enabled).grid(row=8, column=0, columnspan=2, sticky="w", pady=(6, 0))
         self.start_button = ttk.Button(run_frame, text="开始后台生成", command=self.start)
-        self.start_button.grid(row=6, column=3, sticky="e", pady=(6, 0))
+        self.start_button.grid(row=8, column=3, sticky="e", pady=(6, 0))
         self.stop_button = ttk.Button(run_frame, text="停止并保留已完成结果", command=self.stop, state=DISABLED)
-        self.stop_button.grid(row=6, column=2, sticky="e", padx=8, pady=(6, 0))
+        self.stop_button.grid(row=8, column=2, sticky="e", padx=8, pady=(6, 0))
         for column in (1, 3):
             run_frame.columnconfigure(column, weight=1)
 
@@ -800,6 +1078,8 @@ class App:
             "seller_output_tokens": self.seller_output_tokens.get(),
             "organizer_output_tokens": self.organizer_output_tokens.get(),
             "output_dir": self.output_dir.get(),
+            "resume_enabled": bool(self.resume_enabled.get()),
+            "resume_file": self.resume_file.get(),
             "scenarios": self.scenarios.get("1.0", END),
             "organizer_enabled": bool(self.organizer_enabled.get()),
         }
@@ -835,6 +1115,7 @@ class App:
                 "seller_output_tokens": self.seller_output_tokens,
                 "organizer_output_tokens": self.organizer_output_tokens,
                 "output_dir": self.output_dir,
+                "resume_file": self.resume_file,
             }
             for key, entry in fields.items():
                 if key in data and data[key] is not None:
@@ -851,6 +1132,7 @@ class App:
                     entry.insert("1.0", str(data[key]))
             self.shared_api.set(bool(data.get("shared_api", True)))
             self.organizer_enabled.set(bool(data.get("organizer_enabled", True)))
+            self.resume_enabled.set(bool(data.get("resume_enabled", True)))
             self._toggle_shared()
             self.write_log("已加载上次保存的本机配置（API Key 已通过 Windows DPAPI 解密到内存）。")
         except Exception as exc:
@@ -893,6 +1175,15 @@ class App:
             self.output_dir.delete(0, END)
             self.output_dir.insert(0, selected)
 
+    def choose_resume_file(self) -> None:
+        selected = filedialog.askopenfilename(
+            title="选择已有对话包或断点文件",
+            filetypes=[("JSON 文件", "*.json"), ("所有文件", "*.*")],
+        )
+        if selected:
+            self.resume_file.delete(0, END)
+            self.resume_file.insert(0, selected)
+
     def write_log(self, message: str) -> None:
         self.log_text.configure(state=NORMAL)
         self.log_text.insert(END, f"[{time.strftime('%H:%M:%S')}] {message}\n")
@@ -929,9 +1220,9 @@ class App:
             raise ValueError("变体数、回合数和输出 Token 上限必须是整数") from exc
         # Muse 的 Responses max_output_tokens 包含推理预算；过低会返回
         # status=incomplete 且 output=[]。自动提高的是上限，不是固定消耗量。
-        if buyer.model.startswith("muse-spark-1.3-contributor"):
+        if buyer.model.startswith("muse-spark-"):
             buyer_output_tokens = max(buyer_output_tokens, 1024)
-        if seller.model.startswith("muse-spark-1.3-contributor"):
+        if seller.model.startswith("muse-spark-"):
             seller_output_tokens = max(seller_output_tokens, 1536)
             organizer_output_tokens = max(organizer_output_tokens, 2048)
         return JobConfig(
@@ -948,6 +1239,8 @@ class App:
             buyer_max_output_tokens=buyer_output_tokens,
             seller_max_output_tokens=seller_output_tokens,
             organizer_max_output_tokens=organizer_output_tokens,
+            resume_enabled=self.resume_enabled.get(),
+            resume_file=(Path(self.resume_file.get().strip()).expanduser().resolve() if self.resume_file.get().strip() else None),
         )
 
     def test_api(self) -> None:
@@ -991,7 +1284,7 @@ class App:
             f"后台任务已启动：{total_sessions} 个会话，预计最多约 {estimated_calls} 次 API 调用。"
             "关闭窗口会中止当前任务，但已保存的 partial 文件仍会保留。"
         )
-        if config.buyer.model.startswith("muse-spark-1.3-contributor") or config.seller.model.startswith("muse-spark-1.3-contributor"):
+        if config.buyer.model.startswith("muse-spark-") or config.seller.model.startswith("muse-spark-"):
             self.write_log("已启用 Muse 兼容策略：reasoning=minimal，并自动保留足够 Token 给最终文本。")
         def work() -> None:
             try:

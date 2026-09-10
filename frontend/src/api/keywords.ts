@@ -24,6 +24,12 @@ export const saveKeywords = (cookieId: string, keywords: Keyword[]): Promise<Api
       keyword: k.keyword,
       reply: k.reply || '',
       item_id: k.item_id || '',
+      priority: k.priority ?? 0,
+      match_mode: k.match_mode || 'contains',
+      conversation_stage: k.conversation_stage || '',
+      enabled: k.enabled !== false,
+      needs_human: k.needs_human === true,
+      approval_status: k.approval_status || 'approved',
     }))
   return post(`${KEYWORD_PREFIX}/${cookieId}`, { keywords: textKeywords })
 }
@@ -43,6 +49,12 @@ export const addKeyword = async (cookieId: string, data: Partial<Keyword>): Prom
     keyword: data.keyword || '',
     reply: data.reply || '',
     item_id: data.item_id || '',
+    priority: data.priority ?? 0,
+    match_mode: data.match_mode || 'contains',
+    conversation_stage: data.conversation_stage || '',
+    enabled: data.enabled !== false,
+    needs_human: data.needs_human === true,
+    approval_status: data.approval_status || 'approved',
     type: 'text',
   } as Keyword)
   return saveKeywords(cookieId, keywords)
@@ -65,6 +77,12 @@ export const updateKeyword = async (
     keyword: data.keyword || '',
     reply: data.reply || '',
     item_id: data.item_id || '',
+    priority: data.priority ?? 0,
+    match_mode: data.match_mode || 'contains',
+    conversation_stage: data.conversation_stage || '',
+    enabled: data.enabled !== false,
+    needs_human: data.needs_human === true,
+    approval_status: data.approval_status || 'approved',
   })
 }
 
@@ -95,6 +113,12 @@ export const batchAddKeywords = async (cookieId: string, keywords: Partial<Keywo
     keyword: k.keyword || '',
     reply: k.reply || '',
     item_id: k.item_id || '',
+    priority: k.priority ?? 0,
+    match_mode: k.match_mode || 'contains',
+    conversation_stage: k.conversation_stage || '',
+    enabled: k.enabled !== false,
+    needs_human: k.needs_human === true,
+    approval_status: k.approval_status || 'approved',
     type: 'text' as const,
   }))]
   return saveKeywords(cookieId, newKeywords)

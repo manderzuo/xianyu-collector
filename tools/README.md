@@ -10,7 +10,7 @@ python tools/dialogue_pack_generator.py
 
 工具使用两个 OpenAI 兼容 API：一个模拟买家，一个模拟卖家。勾选“买家和卖家共用同一套 API”时只需填写卖家配置。每个场景最多可生成 1000 个变体，每场最多 30 回合；界面启动时会估算 API 调用量。生成后会在输出目录写入：
 
-GUI 中可以分别限制买家、卖家和模板整理阶段的单次输出 Token。建议从买家 40～80、卖家 80～120、整理 300～600 开始；这只限制单次输出，不能替代对变体数和回合数的总量控制。
+GUI 中可以分别限制买家、卖家和模板整理阶段的单次输出 Token。建议从买家 40～80、卖家 80～120、整理 300～600 开始；这只限制单次输出，不能替代对变体数和回合数的总量控制。若 API 返回因 `max_tokens`/`max_output_tokens` 截断，工具会自动把本次上限扩大后重试，最多重试 2 次；成功返回的消息不会再被本地按字符硬切。
 
 API 地址、模型、代理和任务参数会保存到当前 Windows 用户的 `%LOCALAPPDATA%\XianyuDialoguePackGenerator\config.json`。API Key 使用 Windows DPAPI 按当前用户加密；不会写入仓库、对话包或运行日志。点击“清除已保存配置”可以删除本机配置。
 
@@ -18,6 +18,21 @@ API 地址、模型、代理和任务参数会保存到当前 Windows 用户的 
 - `dialogue_pack_时间.json`：完整对话包，包含商品事实、原始多轮对话、生成统计和模板。
 - `templates_时间.jsonl`：一行一个本地模板，适合后续导入模板库。
 - `keywords_import_时间.json`：按现有关键词规则整理的候选导入文件，启用前必须人工审核。
+
+运行日志中的“买家 … / 卖家 …”只显示短预览，超出时会标注“预览 36/总长度 字”；这不能代表导出内容被截断，完整文本以 JSON/JSONL 文件为准。
+
+## 断点续传与续写
+
+GUI 默认勾选“启用断点续传”。开始任务时会自动读取输出目录下的 `dialogue_pack.partial.json`；也可以在“指定已有包”中选择以前生成的 `partial` 或完整 `dialogue_pack_时间.json`。
+
+- 已完成且输入内容未变化的会话会直接跳过，不重复消耗 API。
+- 进行中或失败的会话会从最后一次保存的回合继续；如果中断在买家消息之后，恢复时会直接生成对应的卖家回复，不重复买家调用。
+- 增加变体数时，原有有效会话会保留，只生成新增部分；如果修改最大回合数，相关会话会按新回合设置重新生成，避免输出结构不一致。
+- 修改商品 ID、商品名称、事实、场景、最大回合数或是否整理模板后，会通过输入指纹识别变化，只重生成受影响的会话，防止旧商品信息混入。
+- 每个回合均使用临时文件加原子替换保存，强制关闭或异常退出不会留下半截 JSON。再次点击“开始后台生成”即可继续。
+- 同一个输出目录同时只能运行一个生成任务；程序会创建 `dialogue_pack.run.lock`，防止多个 GUI 实例互相覆盖断点文件。
+
+旧版本没有输入指纹的包也支持兼容续传，但只有商品事实、回合数和模板整理设置都一致时才会复用；无法确认一致时会自动重新生成，保证内容安全。
 
 ## 建议填写方式
 
@@ -31,84 +46,24 @@ API 地址、模型、代理和任务参数会保存到当前 Windows 用户的 
 售后：卡密无效先核验订单，确认问题后换卡；未知情况转人工
 ```
 
-API 地址填写兼容 OpenAI Chat Completions 的服务根地址，例如 `https://api.openai.com/v1`。工具会向 `/chat/completions` 发请求。API Key 不会写入导出文件。
+API 地址填写兼容 OpenAI 的服务根地址，例如 `https://api.openai.com/v1`。普通模型会向 `/chat/completions` 发请求；`muse-spark-*` 会自动向 `/responses` 发请求。API Key 不会写入导出文件。
 
 生成结果是合成内容，不是事实来源。导入现有系统前应先检查价格、库存、有效期、退款承诺和变量是否正确。
 
-## 离线安装包
+## 离线蒸馏
 
-先使用 `build-windows-installer.ps1` 生成便携安装目录，再将本机已经验证过的
-业务镜像和基础镜像放入安装包：
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\build-windows-installer.ps1 `
-  -OutputDirectory .\xianyu-one-click-installer `
-  -Force -IncludeDockerImages
-```
-
-该模式把镜像导出到 `resources\images`，安装时由 `install.bat` 自动校验并导入。
-业务镜像使用根文件系统导出，以兼容 Docker Desktop 的 containerd 镜像存储；
-MySQL 和 Redis 使用标准 Docker 镜像归档。导出校验失败会中止打包，不会生成可疑的
-小型空归档。
-
-## 服务器迁移
-
-服务器迁移脚本位于 `deploy/server-migration`。导出和导入前请先做腾讯云快照，
-并保留旧服务器到新服务器验收完成：
-
-```bash
-sudo bash ./deploy/server-migration/server-migration-export.sh \
-  --app-root /path/to/xianyu \
-  --output /tmp/xianyu-migrations
-
-sudo bash ./deploy/server-migration/server-migration-import.sh \
-  --app-root /path/to/xianyu \
-  --bundle /tmp/xianyu-migrations/xianyu-migration-....tar.gz.enc
-
-sudo bash ./deploy/server-migration/server-healthcheck.sh \
-  --app-root /path/to/xianyu
-```
-
-迁移包包含加密的数据库、业务文件、云端认证数据和部署文件；默认不会修改 DNS，
-也不会在目标目录已有内容时强制覆盖。
-
-## 更新签名密钥
-
-正式发布前只生成一次密钥，并把私钥安全保存到 GitHub 仓库的
-`UPDATE_SIGNING_PRIVATE_KEY` Actions secret；私钥不要提交到仓库或复制到客户电脑：
+不需要再次调用 API，可直接对已有生成包执行：
 
 ```powershell
-python .\tools\generate-update-signing-key.py `
-  --output-dir "$env:USERPROFILE\xianyu-release-signing-key"
+python tools/dialogue_pack_distiller.py --input dialogue_packs/dialogue_pack_20260905_125944.json
 ```
 
-将输出目录中的 `update-signing-public.xml` 复制为
-`deploy\update-signing-public-key.xml` 后再构建客户安装包。客户端只携带公钥，
-发布工作流使用私钥生成 `latest.json.sig`，客户端用 RSA-SHA256 校验清单后才会更新。
-如果 GitHub secret 未配置，发布工作流会在上传前失败，不会切换线上清单。
+蒸馏器会把内容按 34 个原始场景分组，每个场景默认保留最多 10 条高分、多样化回复；会过滤未完成会话、事实占位、元提示泄漏和需要人工接管的内容，并排除会命中多个不同回复的关键词。原始包不会被修改。
 
-## Docker 重置
+输出到 `dialogue_packs/distilled/`：
 
-`windows-reset-xianyu-docker.ps1` 默认只清理指定闲鱼项目的容器、网络、卷和服务镜像：
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass `
-  -File .\tools\windows-reset-xianyu-docker.ps1 `
-  -AppRoot D:\path\to\xianyu-package\app
-```
-
-如需清理整台电脑上的全部 Docker 数据，必须显式使用 `-AllDockerData -Force`；这会影响其他项目，
-包括容器、镜像、卷、用户网络和构建缓存。使用 `-Preview` 可以先查看动作而不执行删除。
-
-## 发版前统一验收
-
-每次发版前可以检查源码和最终离线包：
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass `
-  -File .\tools\validate-commercial-delivery.ps1 `
-  -PackageRoot C:\path\to\xianyu-package
-```
-
-该检查不会启动或停止业务容器，会验证 PowerShell/Python/Bash、Compose、工作流 YAML、
-BAT 编码、公钥、镜像归档数量、GUI 文件数量和 README 乱码。
+- `distilled_pack.json`：生产候选模板，仍需审核。
+- `distilled_keywords_import.json`：只包含无冲突关键词的候选导入数据。
+- `distilled_review.json`：失败会话、人工审核、占位内容、旧模板和无唯一关键词内容。
+- `distillation_report.json`：来源、数量、冲突和质量统计。
+- `distilled_templates.jsonl`：逐行模板文件。

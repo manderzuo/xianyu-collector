@@ -32,6 +32,12 @@ logger = logging.getLogger("xr.cookie_renewal")
 
 SESSION_MARKERS = (
     "FAIL_SYS_SESSION_EXPIRED",
+    # 闲鱼对新设备或高风险环境会返回 USER_VALIDATE。对账号运行时而言，
+    # 这不是可通过重复取 Token 解决的网络错误，而是需要重新验证登录态。
+    "FAIL_SYS_USER_VALIDATE",
+    "FAIL_SYS_ILLEGAL_ACCESS",
+    "WUA_IS_MACHINE",
+    "FAIL_BIZ_WUA_IS_MACHINE",
     # 闲鱼 IM Token 过期时返回这两个业务码（EXOIRED 是平台实际拼写）。
     # 对运行时而言同样代表当前登录态需要续期，否则会一直重试取 Token。
     "FAIL_SYS_TOKEN_EXOIRED",

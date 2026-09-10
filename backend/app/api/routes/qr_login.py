@@ -13,13 +13,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.dependencies import get_current_user
 from backend.app.core.response import ok
-from backend.app.services.entitlements import FEATURE_ACCOUNT, ensure_quota, finalize_quota, reserve_quota
 from common.config import settings
 from common.db.session import get_session
 from common.models import Account, AccountCookie, QrLoginSession
 from common.services.account_identity import extract_account_nickname, is_generated_account_name
-from common.services.cookie_renewal import cookie_renewal_service
-from common.services.goofish_mtop import parse_cookie_string
 from backend.app.services.qr_login import qr_login_manager
 
 router = APIRouter(prefix="/api/v1/qr-login", tags=["真实扫码登录"])
@@ -78,21 +75,90 @@ async def _get_owned_session(session_id: str, owner_id: int, db: AsyncSession) -
 
 
 async def _notify_account_runtime(account: Account, cookie_value: str, user_id: int, is_new: bool) -> dict:
-    """通知连接服务加载新登录态；服务不可用时保留明确的运行状态。"""
+    """通知连接服务加载新登录态，并等待首次 Token/连接验证结果。"""
     action = "start" if is_new else "restart"
     try:
-        async with httpx.AsyncClient(timeout=12) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(connect=5, read=12, write=10, pool=12)) as client:
             response = await client.post(
-                f"{settings.websocket_service_url}/internal/accounts/{account.id}/{action}",
+                f"{settings.websocket_service_url.rstrip('/')}/internal/accounts/{account.id}/{action}",
                 json={"cookie_value": cookie_value, "user_id": user_id},
-                headers={"X-Internal-Token": settings.jwt_secret},
+            )
+        payload = response.json()
+        if not response.is_success or not payload.get("success"):
+            return {"status": "failed", "action": action, "detail": payload.get("message", "连接服务拒绝请求")}
+        return {
+            "status": "pending",
+            "action": action,
+            "detail": payload.get("data") or {},
+            "message": "登录态已保存，正在验证闲鱼 Token 和长连接",
+        }
+    except (httpx.HTTPError, ValueError) as exc:
+        return {"status": "unavailable", "action": action, "detail": str(exc)}
+
+
+async def _get_runtime_status(account_id: int) -> dict:
+    """查询真实运行时状态；任务启动不等于账号已在线。"""
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(connect=5, read=8, write=5, pool=8)) as client:
+            response = await client.get(
+                f"{settings.websocket_service_url.rstrip('/')}/internal/accounts/{account_id}/status"
             )
         payload = response.json()
         if response.is_success and payload.get("success"):
-            return {"status": "accepted", "action": action, "detail": payload.get("data")}
-        return {"status": "failed", "action": action, "detail": payload.get("message", "连接服务拒绝请求")}
+            return {"status": "ok", "detail": payload.get("data") or {}}
+        return {"status": "failed", "detail": payload.get("message", "连接服务状态查询失败")}
     except (httpx.HTTPError, ValueError) as exc:
-        return {"status": "unavailable", "action": action, "detail": str(exc)}
+        return {"status": "unavailable", "detail": str(exc)}
+
+
+def _runtime_error_message(runtime: dict) -> str:
+    detail = runtime.get("detail") if isinstance(runtime, dict) else ""
+    if isinstance(detail, dict):
+        error = str(detail.get("last_error") or "").strip()
+    else:
+        error = str(detail or "").strip()
+    upper = error.upper()
+    if "USER_VALIDATE" in upper or "ILLEGAL_ACCESS" in upper:
+        return (
+            "闲鱼要求完成设备安全验证，扫码登录未完成。"
+            "请先在闲鱼/淘宝客户端或浏览器完成验证后重新扫码，"
+            "或在系统设置中配置远程 Token。"
+        )
+    return error[:500] or "后台连接服务未能完成登录验证"
+
+
+async def _complete_runtime_login(item: QrLoginSession, db: AsyncSession) -> dict | None:
+    """把已保存 Cookie 的扫码会话收口为 success/failed/processing。"""
+    if item.account_id is None:
+        return None
+    runtime = await _get_runtime_status(int(item.account_id))
+    if runtime.get("status") != "ok":
+        return {"status": "processing", "runtime": runtime, "message": "正在等待连接服务完成登录验证"}
+    detail = runtime.get("detail") or {}
+    connection_state = str(detail.get("connection_state") or "")
+    if connection_state == "connected" and detail.get("is_connected"):
+        item.status = "success"
+        item.error = None
+        await db.commit()
+        return {"status": "success", "runtime": runtime, "message": "扫码登录成功，账号已在线"}
+    last_error = str(detail.get("last_error") or "")
+    error_upper = last_error.upper()
+    risk_or_manual = (
+        "USER_VALIDATE" in error_upper
+        or "ILLEGAL_ACCESS" in error_upper
+        or "设备安全验证" in last_error
+        or "Cookie为空" in last_error
+    )
+    if connection_state in {"expired", "failed", "closed"} or risk_or_manual:
+        item.status = "failed"
+        item.error = _runtime_error_message(runtime)
+        account = await db.get(Account, int(item.account_id))
+        if account is not None:
+            account.status = "expired"
+            account.cookie_expire_at = _now()
+        await db.commit()
+        return {"status": "failed", "runtime": runtime, "message": item.error}
+    return {"status": "processing", "runtime": runtime, "message": "登录态已保存，正在验证 Token 和长连接"}
 
 
 @router.post("/generate")
@@ -102,9 +168,6 @@ async def generate_qr_code(
     db: AsyncSession = Depends(get_session),
 ):
     """向闲鱼登录服务申请二维码，并启动后台状态轮询。"""
-    # 配额必须在请求闲鱼之前校验，避免普通用户已用完次数仍拿到二维码，
-    # 扫码后才在创建账号阶段失败并长期停留在“等待确认”。
-    await ensure_quota(db, user, FEATURE_ACCOUNT)
     qr_login_manager.cleanup()
     result = await qr_login_manager.generate_qr_code((payload or QRGenerateRequest()).proxy)
     if not result.get("success"):
@@ -137,8 +200,25 @@ async def get_qr_status(
     """查询扫码状态；成功后自动创建/更新账号并保存 Cookie。"""
     item = await _get_owned_session(session_id, _uid(user), db)
     async with _lock_for(session_id):
-        if item.account_id is not None and item.status == "success":
-            return ok({**_serialize_session(item, include_qr=False), "account_info": {"account_id": item.account_id, "is_new_account": bool(item.is_new_account)}}, "扫码登录成功")
+        if item.account_id is not None and item.status in {"success", "failed"}:
+            message = "扫码登录成功，账号已在线" if item.status == "success" else (item.error or "扫码登录失败")
+            return ok(
+                {**_serialize_session(item, include_qr=False), "account_info": {"account_id": item.account_id, "is_new_account": bool(item.is_new_account)}},
+                message,
+            )
+        if item.account_id is not None and item.status == "processing":
+            result = await _complete_runtime_login(item, db)
+            if result is not None:
+                await db.refresh(item)
+                message = str(result.get("message") or "正在验证登录态")
+                return ok(
+                    {
+                        **_serialize_session(item, include_qr=False),
+                        "account_info": {"account_id": item.account_id, "is_new_account": bool(item.is_new_account)},
+                        "runtime": result.get("runtime"),
+                    },
+                    message,
+                )
 
         state = qr_login_manager.status(session_id)
         item.status = str(state.get("status", "not_found"))
@@ -157,19 +237,6 @@ async def get_qr_status(
                 cookie_value = cookies["cookies"]
                 unb = cookies.get("unb") or None
                 nickname = str(cookies.get("nickname") or "").strip() or extract_account_nickname(cookie_value)
-                # 二维码确认只代表 Passport 已登录。继续执行 hasLogin、
-                # silentHasLogin 和 setLoginSettings，补齐长登录 Cookie 后再
-                # 入库和启动 IM，避免新扫码账号马上出现 USER_VALIDATE 离线。
-                finalization = await cookie_renewal_service.renew(
-                    cookie_value,
-                    f"qr:{unb or session_id[:8]}",
-                    allow_browser=False,
-                )
-                if finalization.new_cookie:
-                    cookie_value = finalization.new_cookie
-                refreshed_cookies = parse_cookie_string(cookie_value)
-                unb = unb or refreshed_cookies.get("unb") or refreshed_cookies.get("munb") or None
-                nickname = nickname or extract_account_nickname(cookie_value)
                 login_expire_at = _now() + timedelta(days=30)
                 existing = None
                 if unb:
@@ -183,15 +250,7 @@ async def get_qr_status(
                         item.unb = unb
                 if item.status == "success":
                     is_new = existing is None
-                    reservation = None
                     if existing is None:
-                        reservation = await reserve_quota(
-                            db,
-                            user,
-                            FEATURE_ACCOUNT,
-                            resource_key=f"qr:{session_id}",
-                            idempotency_key=f"account:qr:{session_id}",
-                        )
                         account = Account(
                             user_id=_uid(user),
                             account_name=nickname or f"闲鱼账号-{unb or session_id[:8]}",
@@ -213,21 +272,32 @@ async def get_qr_status(
                     item.cookie_value = cookie_value
                     item.account_id = account.id
                     item.is_new_account = is_new
-                    item.status = "success"
-                    finalize_quota(reservation)
+                    # Cookie 落库只代表扫码确认完成；必须等 Token 和 IM 长连接
+                    # 验证通过后，才能把扫码会话标记为真正成功。
+                    item.status = "processing"
                     await db.commit()
                     runtime = await _notify_account_runtime(account, cookie_value, _uid(user), is_new)
-                    return ok({
-                        **_serialize_session(item, include_qr=False),
-                        "account_info": {"account_id": account.id, "is_new_account": is_new},
-                        "runtime": runtime,
-                        "cookie_finalization": {
-                            "success": finalization.success,
-                            "method": finalization.method,
-                            "message": finalization.message,
-                            "updated_cookie_names": finalization.updated_cookie_names,
-                        },
-                    }, "扫码登录成功")
+                    if runtime.get("status") in {"failed", "unavailable"}:
+                        item.status = "failed"
+                        item.error = _runtime_error_message(runtime)
+                        account.status = "expired"
+                        account.cookie_expire_at = _now()
+                        await db.commit()
+                        return ok(
+                            {**_serialize_session(item, include_qr=False), "account_info": {"account_id": account.id, "is_new_account": is_new}, "runtime": runtime},
+                            item.error,
+                        )
+                    result = await _complete_runtime_login(item, db)
+                    await db.refresh(item)
+                    if result and result.get("status") == "success":
+                        return ok(
+                            {**_serialize_session(item, include_qr=False), "account_info": {"account_id": account.id, "is_new_account": is_new}, "runtime": result.get("runtime")},
+                            str(result.get("message") or "扫码登录成功，账号已在线"),
+                        )
+                    return ok(
+                        {**_serialize_session(item, include_qr=False), "account_info": {"account_id": account.id, "is_new_account": is_new}, "runtime": (result or {}).get("runtime", runtime)},
+                        str((result or {}).get("message") or "登录态已保存，正在验证 Token 和长连接"),
+                    )
 
         await db.commit()
         await db.refresh(item)
@@ -236,6 +306,8 @@ async def get_qr_status(
             message = "需要完成手机人脸核验"
         elif item.status == "scanned":
             message = "已扫码，请在手机上确认登录"
+        elif item.status == "processing":
+            message = "登录态已保存，正在验证 Token 和长连接"
         elif item.status == "expired":
             message = "二维码已过期，请重新生成"
         elif item.status == "failed":

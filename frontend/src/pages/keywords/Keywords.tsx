@@ -54,6 +54,9 @@ export function Keywords() {
   const [keywordText, setKeywordText] = useState('')
   const [replyText, setReplyText] = useState('')
   const [itemIdText, setItemIdText] = useState('')  // 绑定的商品ID（编辑时使用）
+  const [priority, setPriority] = useState(0)
+  const [matchMode, setMatchMode] = useState<Keyword['match_mode']>('contains')
+  const [conversationStage, setConversationStage] = useState('')
   const [selectedItemIds, setSelectedItemIds] = useState<string[]>([])  // 多选商品ID（新增时使用）
   const [itemSearchText, setItemSearchText] = useState('')  // 商品搜索
   const [saving, setSaving] = useState(false)
@@ -221,6 +224,9 @@ export function Keywords() {
     setKeywordText('')
     setReplyText('')
     setItemIdText('')
+    setPriority(0)
+    setMatchMode('contains')
+    setConversationStage('')
     setSelectedItemIds([])
     setItemSearchText('')
     setIsModalOpen(true)
@@ -244,6 +250,9 @@ export function Keywords() {
     setKeywordText(keyword.keyword)
     setReplyText(keyword.reply)
     setItemIdText(keyword.item_id || '')
+    setPriority(keyword.priority ?? 0)
+    setMatchMode(keyword.match_mode || 'contains')
+    setConversationStage(typeof keyword.conversation_stage === 'string' ? keyword.conversation_stage : '')
     setIsModalOpen(true)
   }
 
@@ -294,6 +303,9 @@ export function Keywords() {
             keyword: normalizedKeywordText,
             reply: replyText.trim(),
             item_id: itemIdText.trim(),
+            priority,
+            match_mode: matchMode,
+            conversation_stage: conversationStage,
           }
         )
         if (result.success === false) {
@@ -320,6 +332,9 @@ export function Keywords() {
           keyword: normalizedKeywordText,
           reply: replyText.trim(),
           item_id: itemId,
+          priority,
+          match_mode: matchMode,
+          conversation_stage: conversationStage,
           type: 'text' as const,
         } as Keyword))
         const result = await saveKeywords(submitAccountId, [...existingKeywords, ...newKeywords])
@@ -1052,6 +1067,48 @@ export function Keywords() {
                     </>
                   )}
                 </div>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div>
+                    <label className="input-label">匹配方式</label>
+                    <select
+                      value={matchMode || 'contains'}
+                      onChange={(e) => setMatchMode(e.target.value as Keyword['match_mode'])}
+                      className="input-ios"
+                    >
+                      <option value="contains">包含匹配（模糊）</option>
+                      <option value="prefix">开头匹配</option>
+                      <option value="exact">完全匹配</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="input-label">优先级</label>
+                    <input
+                      type="number"
+                      min={-999}
+                      max={999}
+                      value={priority}
+                      onChange={(e) => setPriority(Number.isFinite(Number(e.target.value)) ? Number(e.target.value) : 0)}
+                      className="input-ios"
+                    />
+                  </div>
+                  <div>
+                    <label className="input-label">会话阶段（可选）</label>
+                    <select
+                      value={conversationStage}
+                      onChange={(e) => setConversationStage(e.target.value)}
+                      className="input-ios"
+                    >
+                      <option value="">全部阶段</option>
+                      <option value="pre_sale">售前咨询</option>
+                      <option value="paid_pending_delivery">已付款待发货</option>
+                      <option value="delivered_pending_receipt">已发货待收货</option>
+                      <option value="after_sale">售后/退款</option>
+                    </select>
+                  </div>
+                </div>
+                <p className="text-xs text-slate-500 dark:text-slate-400 -mt-2">
+                  同时命中时：商品专属规则优先，其次按优先级、匹配方式和关键词长度选择；旧规则默认保持包含匹配。
+                </p>
                 <div>
                   <label className="input-label">回复内容</label>
                   <textarea

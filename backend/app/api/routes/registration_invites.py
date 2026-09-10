@@ -14,7 +14,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.dependencies import get_current_user
 from backend.app.core.response import ok
-from backend.app.services.registration_invite_code import decrypt_invite_code, encrypt_invite_code
 from common.db.session import get_session
 from common.models import RegistrationInvite
 from common.services.registration_invites import (
@@ -22,7 +21,6 @@ from common.services.registration_invites import (
     hash_invite_code,
     preview_invite_code,
 )
-from common.services.cloud_auth import CloudAuthError, cloud_auth_request, cloud_auth_url
 
 router = APIRouter(prefix="/api/v1/admin/invites", tags=["管理员邀请码"])
 CODE_ALPHABET = string.ascii_uppercase + string.digits
@@ -60,12 +58,10 @@ def _effective_status(item: RegistrationInvite, now: datetime | None = None) -> 
 
 
 def _serialize(item: RegistrationInvite, now: datetime | None = None) -> dict[str, Any]:
-    full_code = decrypt_invite_code(item.code_encrypted)
     return {
         "id": item.id,
-        "code": full_code or item.code_preview,
+        "code": item.code_preview,
         "code_preview": item.code_preview,
-        "code_available": bool(full_code),
         "status": _effective_status(item, now),
         "note": item.note,
         "expires_at": item.expires_at.isoformat() if item.expires_at else None,
@@ -79,31 +75,6 @@ def _serialize(item: RegistrationInvite, now: datetime | None = None) -> dict[st
 def _new_raw_code() -> str:
     # 16 位随机字母数字，足够避免可猜测和碰撞；页面展示为 4-4-4-4。
     return "".join(secrets.choice(CODE_ALPHABET) for _ in range(16))
-
-
-async def _sync_cloud_invites(user: dict[str, Any], items: list[dict[str, Any]]) -> None:
-    if not cloud_auth_url() or not user.get("cloud_session_token") or not items:
-        return
-    try:
-        await cloud_auth_request(
-            "sync_invites",
-            {
-                "items": [
-                    {
-                        "code": item.get("code"),
-                        "status": item.get("status", "active"),
-                        "expires_at": item.get("expires_at"),
-                    }
-                    for item in items
-                    if item.get("code")
-                ]
-            },
-            str(user.get("cloud_session_token")),
-        )
-    except CloudAuthError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
-    except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @router.get("")
@@ -138,10 +109,8 @@ async def list_invites(
         await db.execute(statement.order_by(RegistrationInvite.id.desc()).offset(offset).limit(limit))
     ).scalars().all()
     total = int((await db.execute(count_statement)).scalar_one() or 0)
-    serialized = [_serialize(item) for item in rows]
-    await _sync_cloud_invites(user, serialized)
     return ok({
-        "items": serialized,
+        "items": [_serialize(item) for item in rows],
         "total": total,
         "offset": offset,
         "limit": limit,
@@ -174,7 +143,6 @@ async def create_invites(
         item = RegistrationInvite(
             code_hash=hash_invite_code(raw_code),
             code_preview=preview_invite_code(raw_code),
-            code_encrypted=encrypt_invite_code(raw_code),
             created_by=operator_id,
             status="active",
             note=note,
@@ -189,18 +157,6 @@ async def create_invites(
     except IntegrityError as exc:
         await db.rollback()
         raise HTTPException(status_code=500, detail="邀请码生成失败，请重试") from exc
-
-    await _sync_cloud_invites(
-        user,
-        [
-            {
-                "code": entry["code"],
-                "status": "active",
-                "expires_at": expires_at.isoformat() if expires_at else None,
-            }
-            for entry in created
-        ],
-    )
 
     return ok({
         "items": [
@@ -229,5 +185,4 @@ async def revoke_invite(
     item.status = "revoked"
     await db.commit()
     await db.refresh(item)
-    await _sync_cloud_invites(user, [_serialize(item)])
     return ok({"item": _serialize(item)}, "邀请码已撤销")

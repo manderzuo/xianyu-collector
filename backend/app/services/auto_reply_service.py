@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import string
 import time
 from pathlib import Path
 from uuid import uuid4
@@ -84,6 +85,23 @@ class AutoReplyMatch:
     rule_type: str
     response_type: str = "text"
     image_url: str = ""
+    priority: int = 0
+    keyword_length: int = 0
+    match_mode: str = "contains"
+    conversation_stage: str = ""
+
+
+_STAGE_ALIASES = {
+    "pre_sale": {"pre_sale", "presale", "售前", "售前咨询", "未下单", "咨询"},
+    "paid_pending_delivery": {"paid_pending_delivery", "paid", "已付款", "已付款待发货", "待发货", "付款待发货"},
+    "delivered_pending_receipt": {"delivered_pending_receipt", "delivered", "已发货", "已发货待收货", "待收货"},
+    "after_sale": {"after_sale", "售后", "退款", "退货", "纠纷"},
+}
+# 旧版公开的 send_user_* 变量即使没有昵称也会替换为空字符串；
+# 新增的业务事实变量则必须有值，避免把不完整的商品信息发给买家。
+_REQUIRED_TEMPLATE_FIELDS = {
+    "buyer_name", "buyer_nick", "buyer_id", "item_title", "item_price", "stock", "item_id",
+}
 
 
 def split_keyword_lines(value: Any) -> list[str]:
@@ -116,19 +134,111 @@ def _is_auto_delivery_message(text: str) -> bool:
     return any(part in text for part in AUTO_DELIVERY_PARTS)
 
 
-def _format_reply(reply: str, message: dict[str, Any], item_id: str) -> str:
-    """兼容旧版回复变量；变量不完整时保留原始回复，不吞掉整条规则。"""
+def _message_value(message: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = message.get(key)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return ""
+
+
+def _format_reply(reply: str, message: dict[str, Any], item_id: str) -> str | None:
+    """替换回复变量；变量缺失时拒绝发送，避免把模板占位符发给买家。"""
+    if not reply:
+        return ""
     values = {
-        "send_user_name": str(message.get("senderName") or ""),
-        "send_user_id": str(message.get("senderId") or ""),
-        "send_message": str(message.get("text") or ""),
+        "send_user_name": _message_value(message, "senderName", "sender_name", "buyer_name", "buyer_nick"),
+        "send_user_id": _message_value(message, "senderId", "sender_id", "buyer_id"),
+        "send_message": _message_value(message, "text", "message", "content"),
+        "buyer_name": _message_value(message, "buyer_name", "buyerName", "senderName", "sender_name", "buyer_nick"),
+        "buyer_nick": _message_value(message, "buyer_nick", "buyerName", "senderName", "sender_name", "buyer_name"),
+        "buyer_id": _message_value(message, "buyer_id", "buyerId", "senderId", "sender_id"),
+        "item_title": _message_value(message, "item_title", "itemTitle", "title", "goodsTitle"),
+        "item_price": _message_value(message, "item_price", "itemPrice", "price"),
+        "stock": _message_value(message, "stock", "inventory", "quantity"),
         "item_id": item_id,
     }
+    fields = {
+        field_name
+        for _, field_name, _, _ in string.Formatter().parse(reply)
+        if field_name
+    }
+    unknown = sorted(field for field in fields if field not in values)
+    missing = sorted(field for field in fields if field in _REQUIRED_TEMPLATE_FIELDS and not values[field])
+    if unknown or missing:
+        logger.warning(
+            "自动回复模板未发送：未识别变量=%s，缺失变量=%s",
+            ",".join(unknown) or "无",
+            ",".join(missing) or "无",
+        )
+        return None
     try:
         return reply.format(**values).strip()
     except (KeyError, IndexError, ValueError):
-        logger.warning("自动回复变量替换失败，已使用原始回复内容")
-        return reply.strip()
+        logger.warning("自动回复变量替换失败，已跳过该规则")
+        return None
+
+
+def _as_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _as_bool(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on", "enabled", "是", "启用"}:
+        return True
+    if text in {"0", "false", "no", "off", "disabled", "否", "停用", ""}:
+        return False
+    return default
+
+
+def _is_disabled_rule(payload: dict[str, Any]) -> bool:
+    """兼容不同导入格式的启用/审核字段。旧规则没有这些字段，默认可用。"""
+    for key in ("enabled", "is_enabled"):
+        if key in payload and payload.get(key) is False:
+            return True
+        if key in payload and str(payload.get(key)).strip().lower() in {"0", "false", "off", "disabled"}:
+            return True
+    if _as_bool(payload.get("needs_human")):
+        return True
+    status = str(payload.get("approval_status") or payload.get("review_status") or "").strip().lower()
+    return status in {"draft", "review", "review_required", "pending", "disabled", "rejected"}
+
+
+def _canonical_stage(value: Any) -> str:
+    text = _normalized(value)
+    if not text:
+        return ""
+    for canonical, aliases in _STAGE_ALIASES.items():
+        if text == _normalized(canonical) or text in {_normalized(alias) for alias in aliases}:
+            return canonical
+    return text
+
+
+def _message_stage(message: dict[str, Any]) -> str:
+    return _canonical_stage(_message_value(
+        message,
+        "conversation_stage",
+        "conversationStage",
+        "order_stage",
+        "orderStage",
+        "stage",
+    ))
+
+
+def _rule_stages(payload: dict[str, Any]) -> set[str]:
+    value = payload.get("conversation_stage", payload.get("conversationStage", payload.get("stage", payload.get("stages"))))
+    if value is None or value == "":
+        return set()
+    values = value if isinstance(value, (list, tuple, set)) else re.split(r"[,，|]", str(value))
+    return {_canonical_stage(item) for item in values if _canonical_stage(item)}
 
 
 def _message_item_id(message: dict[str, Any]) -> str:
@@ -194,7 +304,11 @@ async def _should_skip_reply(account: Account, text: str) -> bool:
 
 
 async def match_keyword_reply(account: Account, message: dict[str, Any]) -> AutoReplyMatch | None:
-    """按“商品关键词优先、通用关键词其次”的顺序匹配一条文本规则。"""
+    """按商品范围、优先级、匹配精度和关键词长度选择最合适的规则。
+
+    旧规则没有 priority/stage 等字段，因此仍按原来的通用关键词逻辑工作；
+    新规则可通过这些字段避免短关键词抢先命中，或限制在指定会话阶段生效。
+    """
     text = str(message.get("text") or "").strip()
     if not text or str(message.get("type") or "text").lower() == "image":
         return None
@@ -208,40 +322,90 @@ async def match_keyword_reply(account: Account, message: dict[str, Any]) -> Auto
 
     # 与旧版一致：有商品 ID 时先检查商品专属规则；没有商品 ID 的规则
     # 仍然作为通用规则处理。图片规则通过同一条 IM scope 发送图片消息。
-    candidates: list[tuple[FeatureRecord, bool]] = []
+    message_stage = _message_stage(message)
+    normalized_text = _normalized(text)
+    candidates: list[tuple[FeatureRecord, bool, str, int, int, int, str]] = []
     for row in rules:
         payload = row.payload or {}
+        if _is_disabled_rule(payload):
+            continue
         rule_item_id = str(payload.get("item_id") or "").strip()
+        rule_stages = _rule_stages(payload)
+        if rule_stages and (not message_stage or message_stage not in rule_stages):
+            continue
         if rule_item_id:
             if item_id and rule_item_id == item_id:
-                candidates.append((row, True))
-        else:
-            candidates.append((row, False))
-
-    candidates.sort(key=lambda pair: (not pair[1], pair[0].id))
-    normalized_text = _normalized(text)
-    for row, is_item_rule in candidates:
-        payload = row.payload or {}
-        for keyword in split_keyword_lines(payload.get("keyword")):
-            if _normalized(keyword) not in normalized_text:
+                is_item_rule = True
+            else:
                 continue
-            response_type = str(payload.get("type") or "text").lower()
-            if response_type == "image":
-                image_url = str(payload.get("image_url") or payload.get("imageUrl") or "").strip()
-                if not image_url:
-                    logger.warning("关键词规则 %s 图片地址为空，跳过回复", row.id)
-                    continue
-                description = _format_reply(str(payload.get("description") or ""), message, item_id)
-                return AutoReplyMatch(reply=description, keyword=keyword, rule_id=int(row.id), item_id=str(payload.get("item_id") or ""), rule_type="keyword_item" if is_item_rule else "keyword_common", response_type="image", image_url=image_url)
-            raw_reply = str(payload.get("reply") or "")
-            reply = _format_reply(raw_reply, message, item_id)
+        else:
+            is_item_rule = False
+        priority = _as_int(payload.get("priority"), 0)
+        configured_match_mode = str(payload.get("match_mode") or payload.get("matchMode") or "contains").strip().lower()
+        for keyword in split_keyword_lines(payload.get("keyword")):
+            normalized_keyword = _normalized(keyword)
+            if not normalized_keyword:
+                continue
+            match_mode = configured_match_mode if configured_match_mode in {"exact", "prefix", "contains"} else "contains"
+            if match_mode == "exact":
+                matched = normalized_text == normalized_keyword
+            elif match_mode == "prefix":
+                matched = normalized_text.startswith(normalized_keyword)
+            else:
+                match_mode = "contains"
+                matched = normalized_keyword in normalized_text
+            if matched:
+                candidates.append((row, is_item_rule, keyword, len(normalized_keyword), priority, int(row.id), match_mode))
+
+    # 商品规则 > 显式优先级 > 精确/前缀 > 长关键词 > 旧规则 ID。
+    # 这仍然保留“contains”模糊匹配，但让“售后”不会抢在“售后退款”之前。
+    candidates.sort(key=lambda pair: (
+        not pair[1],
+        -pair[4],
+        {"exact": 0, "prefix": 1, "contains": 2}.get(pair[6], 2),
+        -pair[3],
+        pair[5],
+    ))
+    for row, is_item_rule, keyword, keyword_length, priority, _, match_mode in candidates:
+        payload = row.payload or {}
+        response_type = str(payload.get("type") or "text").lower()
+        rule_type = "keyword_item" if is_item_rule else "keyword_common"
+        if response_type == "image":
+            image_url = str(payload.get("image_url") or payload.get("imageUrl") or "").strip()
+            if not image_url:
+                logger.warning("关键词规则 %s 图片地址为空，跳过回复", row.id)
+                continue
+            description = _format_reply(str(payload.get("description") or ""), message, item_id)
+            if description is None:
+                continue
             return AutoReplyMatch(
-                reply=reply,
+                reply=description,
                 keyword=keyword,
                 rule_id=int(row.id),
                 item_id=str(payload.get("item_id") or ""),
-                rule_type="keyword_item" if is_item_rule else "keyword_common",
+                rule_type=rule_type,
+                response_type="image",
+                image_url=image_url,
+                priority=priority,
+                keyword_length=keyword_length,
+                match_mode=match_mode,
+                conversation_stage=message_stage,
             )
+        raw_reply = str(payload.get("reply") or "")
+        reply = _format_reply(raw_reply, message, item_id)
+        if reply is None:
+            continue
+        return AutoReplyMatch(
+            reply=reply,
+            keyword=keyword,
+            rule_id=int(row.id),
+            item_id=str(payload.get("item_id") or ""),
+            rule_type=rule_type,
+            priority=priority,
+            keyword_length=keyword_length,
+            match_mode=match_mode,
+            conversation_stage=message_stage,
+        )
     return None
 
 
@@ -473,6 +637,10 @@ async def _record_auto_reply_log(
         "error_message": error_message or None,
         "send_status": send_status,
         "send_fail_reason": error_message or None,
+        "match_priority": match.priority,
+        "match_keyword_length": match.keyword_length,
+        "match_mode": match.match_mode,
+        "conversation_stage": match.conversation_stage or None,
     }
     if match.rule_type == "ai":
         async with async_session_maker() as db:

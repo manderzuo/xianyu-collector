@@ -7,9 +7,6 @@
 from common.db.base import Base
 from common.models.users import User
 from common.models.registration_invites import RegistrationInvite
-from common.models.entitlements import (
-    Plan, PlanEntitlement, UserEntitlementOverride, QuotaReservation, EntitlementAuditLog,
-)
 from common.models.accounts import Account
 from common.models.messages import Message
 from common.models.products import Product
@@ -18,7 +15,6 @@ from common.models.card_delivery import CardDeliveryRecord
 from common.models.risk_logs import RiskLog
 from common.models.notifications import Notification
 from common.models.account_cookies import AccountCookie
-from common.models.cloud_sessions import CloudAccountSession
 from common.models.rules import KeywordRule, DefaultReply
 from common.models.catalog import Material, PublishLog, PublishAddress, CrawlItem
 from common.models.monitor import MonitorTask, MonitorItem
@@ -41,14 +37,13 @@ __all__ = [
     "Base",
     "User",
     "RegistrationInvite",
-    "Plan", "PlanEntitlement", "UserEntitlementOverride", "QuotaReservation", "EntitlementAuditLog",
     "Account",
     "Message",
     "Product",
     "Order", "CardDeliveryRecord",
     "RiskLog",
     "Notification",
-    "AccountCookie", "CloudAccountSession", "KeywordRule", "DefaultReply", "Material", "PublishLog",
+    "AccountCookie", "KeywordRule", "DefaultReply", "Material", "PublishLog",
     "PublishAddress", "CrawlItem", "MonitorTask", "MonitorItem", "ScheduledTask",
     "Upload", "Announcement", "Advertisement", "Feedback", "SystemSetting", "ExternalConnection",
     "GoofishCrawlJob", "GoofishCrawlResult",
