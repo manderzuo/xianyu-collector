@@ -193,7 +193,14 @@ async def _request_token(cookie_value: str, user_id: int | None) -> tuple[str, s
         local_error = exc
         logger.warning("账号 %s 网页接口获取 Token 失败：%s", platform_user_id, str(exc)[:300])
     if mode != "remote":
-        raise RuntimeError(f"网页接口获取 Token 失败：{str(local_error)[:300]}")
+        detail = str(local_error)[:300]
+        if "USER_VALIDATE" in detail.upper() or "ILLEGAL_ACCESS" in detail.upper():
+            raise RuntimeError(
+                "闲鱼要求完成设备安全验证（FAIL_SYS_USER_VALIDATE），"
+                "请先在闲鱼/淘宝客户端或浏览器完成验证后重新扫码，"
+                "或在系统设置中配置远程 Token"
+            )
+        raise RuntimeError(f"网页接口获取 Token 失败：{detail}")
     remote = await request_remote_xianyu_token(
         remote_url,
         remote_secret,
@@ -204,6 +211,12 @@ async def _request_token(cookie_value: str, user_id: int | None) -> tuple[str, s
         detail = f"远程接口获取 Token 失败：{remote.message}"
         if local_error:
             detail = f"{detail}；网页接口：{str(local_error)[:300]}"
+        if "USER_VALIDATE" in detail.upper() or "ILLEGAL_ACCESS" in detail.upper():
+            detail = (
+                "闲鱼要求完成设备安全验证（FAIL_SYS_USER_VALIDATE），"
+                "请先在闲鱼/淘宝客户端或浏览器完成验证后重新扫码，"
+                "或检查远程 Token 配置"
+            )
         raise RuntimeError(detail)
     return remote.token, remote.device_id or device_id, "remote", cookie_value
 
