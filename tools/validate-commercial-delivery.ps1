@@ -15,8 +15,12 @@ function Require-Path([string]$Path, [string]$Label) {
 function Check-PowerShell([string]$Path) {
     $parseTokens = $null
     $parseErrors = $null
-    [System.Management.Automation.Language.Parser]::ParseFile($Path, [ref]$parseTokens, [ref]$parseErrors) | Out-Null
-    if ($parseErrors.Count -gt 0) { $failures.Add("PowerShell parse failed: $Path") }
+    $source = [IO.File]::ReadAllText($Path)
+    [System.Management.Automation.Language.Parser]::ParseInput($source, [ref]$parseTokens, [ref]$parseErrors) | Out-Null
+    $parseErrorItems = @($parseErrors)
+    if ($parseErrorItems.Count -gt 0) {
+        $failures.Add("PowerShell parse failed: $Path ($($parseErrorItems[0].Message))")
+    }
 }
 
 function Check-BatAscii([string]$Path) {
@@ -28,8 +32,8 @@ Write-Host '[xianyu] Checking commercial delivery source.' -ForegroundColor Cyan
 foreach ($path in @(
     'docker-compose.yml', 'VERSION.txt', 'deploy\update-xianyu-gui.ps1',
     'deploy\update-signing-public-key.xml', 'tools\build-windows-installer.ps1',
-    'tools\build-offline-image-bundle.ps1', 'tools\import-offline-image-bundle.ps1',
-    'tools\windows-installer-apply-client-update.ps1', 'tools\windows-installer-cleanup-rdp.ps1', 'tools\windows-installer-repair-offline-install.ps1', 'tools\windows-reset-xianyu-docker.ps1',
+    'tools\build-offline-image-bundle.ps1', 'tools\build-offline-registry-bundle.ps1', 'tools\add-offline-infrastructure-bundle.ps1', 'tools\import-offline-image-bundle.ps1',
+    'tools\windows-installer-apply-client-update.ps1', 'tools\windows-installer-cleanup-rdp.ps1', 'tools\windows-installer-repair-offline-install.ps1', 'tools\windows-installer-repair-offline-runtime.ps1', 'tools\windows-reset-xianyu-docker.ps1',
     '.github\workflows\build-and-publish.yml', '.github\workflows\deploy-cloud-auth.yml'
 )) { Require-Path (Join-Path $ProjectRoot $path) $path }
 
@@ -76,17 +80,35 @@ if ($PackageRoot) {
     $package = (Resolve-Path -LiteralPath $PackageRoot).Path.TrimEnd('\')
     Write-Host "[xianyu] Checking package: $package" -ForegroundColor Cyan
     foreach ($path in @(
-        'package-manifest.json', 'README.txt', 'resources\images\offline-manifest.json',
+        'package-manifest.json', 'README.txt', 'resources\images\offline-manifest.json', 'resources\import-offline-image-bundle.ps1', 'resources\repair-offline-runtime.ps1', 'resources\add-offline-infrastructure-bundle.ps1', 'inject-offline-images.bat',
         'app\deploy\update-signing-public-key.xml', 'scripts\apply-client-update.ps1',
         'resources\reset-xianyu-docker.ps1', 'resources\cleanup-rdp.ps1', 'xianyu-installer.exe', 'xianyu-launcher.exe',
         'xianyu-updater.exe', 'xianyu-stopper.exe', 'xianyu-diagnostics.exe'
     )) { Require-Path (Join-Path $package $path) "package\$path" }
-    $imageCount = @(Get-ChildItem -LiteralPath (Join-Path $package 'resources\images') -Filter '*.tar.gz' -File -ErrorAction SilentlyContinue).Count
-    if ($imageCount -ne 6) { $failures.Add("Package must contain 6 image archives; found $imageCount") }
+    $packageManifest = Get-Content -LiteralPath (Join-Path $package 'package-manifest.json') -Raw | ConvertFrom-Json
+    $expectedImageCount = if ([bool]$packageManifest.offline_application_images_only) { 4 } else { 6 }
+    $imageRoot = Join-Path $package 'resources\images'
+    $imageCount = @(Get-ChildItem -LiteralPath $imageRoot -Filter '*.tar.gz' -File -ErrorAction SilentlyContinue).Count
+    if ($imageCount -ne $expectedImageCount) { $failures.Add("Package must contain $expectedImageCount image archives; found $imageCount") }
+    $offlineManifest = Get-Content -LiteralPath (Join-Path $imageRoot 'offline-manifest.json') -Raw | ConvertFrom-Json
+    foreach ($entry in @($offlineManifest.images)) {
+        $archiveName = [string]$entry.archive
+        if ([string]::IsNullOrWhiteSpace($archiveName) -or $archiveName -match '[\\/:]' -or $archiveName -in @('.', '..')) {
+            $failures.Add("Offline manifest contains an unsafe archive name: $archiveName")
+            continue
+        }
+        $archivePath = Join-Path $imageRoot $archiveName
+        if (-not (Test-Path -LiteralPath $archivePath -PathType Leaf)) {
+            $failures.Add("Offline manifest archive is missing: $archiveName")
+            continue
+        }
+        $actualHash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($actualHash -ne ([string]$entry.sha256).Trim().ToLowerInvariant()) { $failures.Add("Offline archive hash mismatch: $archiveName") }
+    }
     $guiCount = @(Get-ChildItem -LiteralPath $package -Filter '*.exe' -File -ErrorAction SilentlyContinue).Count
     if ($guiCount -ne 10) { $failures.Add("Package must contain 10 GUI executables; found $guiCount") }
     if (Test-Path -LiteralPath (Join-Path $package 'README.txt')) {
-        $readme = Get-Content -LiteralPath (Join-Path $package 'README.txt') -Raw
+        $readme = [IO.File]::ReadAllText((Join-Path $package 'README.txt'), [Text.Encoding]::UTF8)
         if ($readme -match '[\u95c2\u7e60\u7487\u7f01\u951f]') { $failures.Add('Package README contains mojibake.') }
     }
 }

@@ -113,10 +113,20 @@ if (Test-Path -LiteralPath $DbCredentialSync) {
 }
 
 Write-XianyuLog -LogPath $LogPath -Message 'docker_compose_up_start'
+$deployMode = ((Get-Content -LiteralPath $EnvFile -ErrorAction Stop |
+        Where-Object { $_ -match '^\s*XR_DEPLOY_MODE\s*=' } |
+        Select-Object -First 1) -replace '^\s*XR_DEPLOY_MODE\s*=\s*', '').Trim().ToLowerInvariant()
+$composeUpArguments = @('up', '-d', '--no-build')
+if ($deployMode -eq 'offline') {
+    # A portable package must never turn a missing local image into an
+    # implicit network pull during a normal start.
+    $composeUpArguments += @('--pull', 'never')
+    Write-XianyuLog -LogPath $LogPath -Message 'offline_start_pull_policy=never'
+}
 $previousPreference = $ErrorActionPreference
 $ErrorActionPreference = 'Continue'
 try {
-    $dockerOutput = & docker compose --project-directory $AppRoot --env-file $EnvFile -f $ComposeFile up -d --no-build 2>&1
+    $dockerOutput = & docker compose --project-directory $AppRoot --env-file $EnvFile -f $ComposeFile @composeUpArguments 2>&1
     $dockerExitCode = $LASTEXITCODE
 } finally {
     $ErrorActionPreference = $previousPreference

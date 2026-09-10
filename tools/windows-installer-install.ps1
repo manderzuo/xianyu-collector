@@ -272,7 +272,7 @@ $envMap = Get-EnvMap $EnvFile
 $deployMode = "$($envMap['XR_DEPLOY_MODE'])".Trim().ToLowerInvariant()
 if ($deployMode -eq 'offline') {
     Write-Host '[xianyu] Starting services from locally imported images.' -ForegroundColor Cyan
-    docker compose --project-directory $AppRoot --env-file $EnvFile -f $ComposeFile up -d --no-build
+    docker compose --project-directory $AppRoot --env-file $EnvFile -f $ComposeFile up -d --no-build --pull never
     if ($LASTEXITCODE -ne 0) { Fail 'Docker Compose could not start the offline image set.' }
 } elseif ($deployMode -eq 'remote') {
     if ([string]::IsNullOrWhiteSpace("$($envMap['XR_IMAGE_REGISTRY'])") -or [string]::IsNullOrWhiteSpace("$($envMap['XR_IMAGE_NAMESPACE'])") -or [string]::IsNullOrWhiteSpace("$($envMap['XR_IMAGE_TAG'])")) {

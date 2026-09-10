@@ -2,14 +2,15 @@ param(
     [string]$OutputDirectory = '',
     [switch]$Force,
     [switch]$IncludeDockerImages,
-    [string]$ImageSourceRegistry = 'ghcr.io',
-    [string]$ImageSourceNamespace = 'manderzuo/xianyu-collector',
+    [string]$ImageSourceRegistry = 'www.gemstory.cn',
+    [string]$ImageSourceNamespace = 'xianyu',
     [string]$ImageSourceTag = '',
     [string]$OfflineTempDirectory = '',
     [string]$BundledWslMsiPath = '',
     [string]$VersionOverride = '',
     [string]$BuildIdOverride = '',
-    [switch]$DeferRuntimeImageUpdate
+    [switch]$DeferRuntimeImageUpdate,
+    [switch]$ApplicationImagesOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -94,12 +95,16 @@ Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows-installer-wsl.ps1') -De
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows-installer-cleanup-rdp.ps1') -Destination (Join-Path $ResourcesRoot 'cleanup-rdp.ps1') -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'import-offline-image-bundle.ps1') -Destination (Join-Path $ResourcesRoot 'import-offline-image-bundle.ps1') -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows-installer-repair-offline-install.ps1') -Destination (Join-Path $ResourcesRoot 'repair-offline-install.ps1') -Force
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows-installer-repair-legacy-update.ps1') -Destination (Join-Path $ResourcesRoot 'repair-legacy-update.ps1') -Force
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows-installer-repair-offline-runtime.ps1') -Destination (Join-Path $ResourcesRoot 'repair-offline-runtime.ps1') -Force
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'add-offline-infrastructure-bundle.ps1') -Destination (Join-Path $ResourcesRoot 'add-offline-infrastructure-bundle.ps1') -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows-reset-xianyu-docker.ps1') -Destination (Join-Path $ResourcesRoot 'reset-xianyu-docker.ps1') -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows-installer-install.bat') -Destination (Join-Path $OutputDirectory 'install.bat') -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows-installer-start.bat') -Destination (Join-Path $OutputDirectory 'start.bat') -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows-installer-stop.bat') -Destination (Join-Path $OutputDirectory 'stop.bat') -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows-installer-diagnostics.bat') -Destination (Join-Path $OutputDirectory 'diagnostics.bat') -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows-installer-update.bat') -Destination (Join-Path $OutputDirectory 'update.bat') -Force
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows-installer-inject-offline-images.bat') -Destination (Join-Path $OutputDirectory 'inject-offline-images.bat') -Force
 $bundledWslMsi = ''
 $bundledWslMsiSha256 = ''
 $bundledWslMsiBytes = 0
@@ -208,6 +213,7 @@ $manifest = [ordered]@{
     data_location = 'Docker named volumes managed by the generated compose project'
     offline_images = [bool]$IncludeDockerImages
     offline_image_manifest = if ($IncludeDockerImages) { 'resources/images/offline-manifest.json' } else { $null }
+    offline_application_images_only = [bool]$ApplicationImagesOnly
     runtime_images_deferred = [bool]$DeferRuntimeImageUpdate
     bundled_wsl_msi = if ($bundledWslMsi) { $bundledWslMsi } else { $null }
     bundled_wsl_msi_sha256 = if ($bundledWslMsiSha256) { $bundledWslMsiSha256 } else { $null }
@@ -221,8 +227,12 @@ $manifest = [ordered]@{
 $manifest | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $OutputDirectory 'package-manifest.json') -Encoding UTF8
 
 if ($IncludeDockerImages) {
-    $offlineBuilder = Join-Path $PSScriptRoot 'build-offline-image-bundle.ps1'
-    if (-not (Test-Path -LiteralPath $offlineBuilder)) { throw "Offline image builder not found: $offlineBuilder" }
+    # Build application archives from the registry manifest so Docker's
+    # containerd snapshotter cannot produce a metadata-only docker save.
+    # Registry blobs retain their original layer digests and remain reusable
+    # by future incremental pulls.
+    $offlineBuilder = Join-Path $PSScriptRoot 'build-offline-registry-bundle.ps1'
+    if (-not (Test-Path -LiteralPath $offlineBuilder)) { throw "Offline registry image builder not found: $offlineBuilder" }
     $offlineArguments = @{
         PackageRoot = $OutputDirectory
         Version = $version
@@ -235,6 +245,12 @@ if ($IncludeDockerImages) {
     }
     & $offlineBuilder @offlineArguments
     if ($LASTEXITCODE -ne 0) { throw "Offline image bundle creation failed with exit code $LASTEXITCODE." }
+    if (-not $ApplicationImagesOnly) {
+        $infrastructureBuilder = Join-Path $PSScriptRoot 'add-offline-infrastructure-bundle.ps1'
+        if (-not (Test-Path -LiteralPath $infrastructureBuilder)) { throw "Offline infrastructure image builder not found: $infrastructureBuilder" }
+        & $infrastructureBuilder -PackageRoot $OutputDirectory -Version $version
+        if ($LASTEXITCODE -ne 0) { throw "Offline infrastructure bundle creation failed with exit code $LASTEXITCODE." }
+    }
 }
 
 $launcherDisplayName = (-join ([char[]](0x95f2, 0x9c7c, 0x7ba1, 0x7406, 0x7cfb, 0x7edf))) + '.exe'
@@ -264,7 +280,7 @@ Docker Desktop is not included in this package. Install Docker Desktop separatel
 You may also place your installer at resources\DockerDesktopInstaller.exe before copying the package.
 If Docker Desktop is missing, the GUI reports that it must be installed before continuing. The target computer needs administrator permission for Docker Desktop installation.
 
-An offline package may include all application, MySQL and Redis images. When resources\images\offline-manifest.json is present, install.bat imports those images locally and does not download Docker images.
+This package can include all four application images plus MySQL and Redis in resources\images. When resources\images\offline-manifest.json is present, install.bat imports all listed images locally and does not download Docker images. inject-offline-images.bat can re-import the same archives on another Docker Desktop installation; it never performs a network pull.
 When resources\wsl\wsl-update-x64.msi is present, the installer silently installs the bundled Microsoft WSL package before Docker Desktop starts; this avoids Docker's own WSL update dialog on a new computer.
 Without an offline image bundle, first startup builds the four application images and downloads base images. This can take several minutes.
 After installation, __LAUNCHER__ starts the existing containers without deleting data.

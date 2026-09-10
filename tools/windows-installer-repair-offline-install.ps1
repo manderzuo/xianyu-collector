@@ -311,7 +311,7 @@ try {
     $configResult = Invoke-Docker $composeArgs 'validate_compose'
     if ($configResult.ExitCode -ne 0) { Fail "Docker Compose configuration is invalid: $($configResult.Output)" }
 
-    $upArgs = @('compose', '--project-directory', $appRoot, '--env-file', $envFile, '-f', $composeFile, 'up', '-d', '--no-build')
+    $upArgs = @('compose', '--project-directory', $appRoot, '--env-file', $envFile, '-f', $composeFile, 'up', '-d', '--no-build', '--pull', 'never')
     $upResult = Invoke-Docker $upArgs 'start_offline_services'
     if ($upResult.ExitCode -ne 0) { Fail "Docker Compose could not start the offline services: $($upResult.Output)" }
 

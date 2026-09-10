@@ -60,7 +60,14 @@ if (Test-Path -LiteralPath $ProtocolRegistrar) {
     try { & $ProtocolRegistrar -ProjectRoot $ProjectRoot } catch { Write-Host "[xianyu] Update protocol registration skipped: $($_.Exception.Message)" -ForegroundColor Yellow }
 }
 
-docker compose --project-directory $ProjectRoot --env-file $EnvFile -f $ComposeFile up -d
+$deployMode = ((Get-Content -LiteralPath $EnvFile -ErrorAction Stop |
+        Where-Object { $_ -match '^\s*XR_DEPLOY_MODE\s*=' } |
+        Select-Object -First 1) -replace '^\s*XR_DEPLOY_MODE\s*=\s*', '').Trim().ToLowerInvariant()
+$composeUpArguments = @('up', '-d')
+if ($deployMode -eq 'offline') {
+    $composeUpArguments += @('--pull', 'never')
+}
+docker compose --project-directory $ProjectRoot --env-file $EnvFile -f $ComposeFile @composeUpArguments
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 if (Test-Path -LiteralPath $FrontendRefreshMarker) {

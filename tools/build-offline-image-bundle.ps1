@@ -42,6 +42,37 @@ function Invoke-Docker([string[]]$Arguments, [string]$Label) {
     if ($LASTEXITCODE -ne 0) { Fail "$Label failed with exit code $LASTEXITCODE" }
 }
 
+function Get-RepositoryDigest([string]$ImageRef) {
+    $previousPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $raw = & docker image inspect $ImageRef 2>$null
+        if ($LASTEXITCODE -ne 0 -or -not $raw) { return '' }
+        $image = $raw | ConvertFrom-Json | Select-Object -First 1
+        foreach ($repoDigest in @($image.RepoDigests)) {
+            $text = "$repoDigest".Trim()
+            if ($text -match '@(sha256:[0-9a-fA-F]{64})$') {
+                return $Matches[1].ToLowerInvariant()
+            }
+        }
+    } catch { }
+    finally { $ErrorActionPreference = $previousPreference }
+    return ''
+}
+
+function Get-RootFsLayerIds([string]$ImageRef) {
+    $previousPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $raw = & docker image inspect $ImageRef 2>$null
+        if ($LASTEXITCODE -ne 0 -or -not $raw) { return @() }
+        $image = $raw | ConvertFrom-Json | Select-Object -First 1
+        return @($image.RootFS.Layers | ForEach-Object { "$($_)".Trim().ToLowerInvariant() })
+    } catch { }
+    finally { $ErrorActionPreference = $previousPreference }
+    return @()
+}
+
 $resolvedPackage = (Resolve-Path -LiteralPath $PackageRoot).Path.TrimEnd('\')
 $appRoot = Join-Path $resolvedPackage 'app'
 $versionFile = Join-Path $appRoot 'VERSION.txt'
@@ -85,16 +116,23 @@ $tempBase = if ($usesPackageTemp) {
 }
 $staging = Join-Path $tempBase ('xianyu-image-bundle-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $staging -Force | Out-Null
+$stagedImageRoot = Join-Path $staging 'output'
+New-Item -ItemType Directory -Path $stagedImageRoot -Force | Out-Null
 try {
     foreach ($spec in $imageSpecs) {
         & docker image inspect $spec.Source *> $null
         if ($LASTEXITCODE -ne 0) { Fail "Source image is not available locally: $($spec.Source)" }
         $sourceImageId = (& docker image inspect $spec.Source --format '{{.Id}}' | Select-Object -First 1).ToString().Trim()
         if ($sourceImageId -notmatch '^sha256:[0-9a-f]{64}$') { Fail "Could not resolve source image ID for $($spec.Name)" }
+        $sourceImageDigest = Get-RepositoryDigest $spec.Source
+        if ($spec.Source -notmatch '^local/' -and -not $sourceImageDigest) {
+            Fail "Could not resolve registry digest for $($spec.Name). Build the bundle from a directly pulled registry image, not a flattened local image."
+        }
+        $rootFsLayerIds = @(Get-RootFsLayerIds $spec.Source)
 
         $tarPath = Join-Path $staging "$($spec.Name).tar"
         $archiveName = "$($spec.Name).tar.gz"
-        $archivePath = Join-Path $imageRoot $archiveName
+        $archivePath = Join-Path $stagedImageRoot $archiveName
         if ($spec.Source -ne $spec.Target) {
             Invoke-Docker @('tag', $spec.Source, $spec.Target) "Tagging $($spec.Name) for offline use"
         }
@@ -113,6 +151,8 @@ try {
             image = $spec.Target
             source_image = $spec.Source
             source_image_id = $sourceImageId
+            source_image_digest = $sourceImageDigest
+            rootfs_layer_ids = @($rootFsLayerIds)
             format = $spec.Format
             preserves_registry_layers = $true
             runtime_changes = @($spec.Changes)
@@ -134,11 +174,36 @@ try {
         image_namespace = 'xianyu'
         image_tag = $Version
         preserves_registry_layers = $true
+        application_images_only = [bool]$SkipInfrastructure
         infrastructure_included = -not $SkipInfrastructure
         images = @($entries)
     }
-    $manifestPath = Join-Path $imageRoot 'offline-manifest.json'
+    $manifestPath = Join-Path $stagedImageRoot 'offline-manifest.json'
     $manifest | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $manifestPath -Encoding UTF8
+    $currentArchives = @($entries | ForEach-Object { [string]$_.archive })
+    $commitBackup = Join-Path $staging 'commit-backup'
+    New-Item -ItemType Directory -Path $commitBackup -Force | Out-Null
+    $commitFiles = @($currentArchives + 'offline-manifest.json')
+    $committed = New-Object System.Collections.Generic.List[object]
+    try {
+        foreach ($name in $commitFiles) {
+            $destination = Join-Path $imageRoot $name
+            $backup = Join-Path $commitBackup $name
+            if (Test-Path -LiteralPath $destination) { Move-Item -LiteralPath $destination -Destination $backup -Force }
+            [void]$committed.Add([pscustomobject]@{ Destination = $destination; Backup = $backup })
+            Move-Item -LiteralPath (Join-Path $stagedImageRoot $name) -Destination $destination -Force
+        }
+        Get-ChildItem -LiteralPath $imageRoot -Filter '*.tar.gz' -File -Force -ErrorAction SilentlyContinue |
+            Where-Object { $currentArchives -notcontains $_.Name } |
+            ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force }
+    } catch {
+        foreach ($item in @($committed | Sort-Object -Property Destination -Descending)) {
+            if (Test-Path -LiteralPath $item.Destination) { Remove-Item -LiteralPath $item.Destination -Force -ErrorAction SilentlyContinue }
+            if (Test-Path -LiteralPath $item.Backup) { Move-Item -LiteralPath $item.Backup -Destination $item.Destination -Force -ErrorAction SilentlyContinue }
+        }
+        throw
+    }
+    Write-Host '[xianyu] Old offline image archives removed; only the current release is retained.' -ForegroundColor DarkCyan
     Write-Host "[xianyu] Offline image bundle created: $imageRoot" -ForegroundColor Green
 } finally {
     if (Test-Path -LiteralPath $staging) { Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue }

@@ -45,6 +45,24 @@ function Invoke-DockerImport([string]$TarPath, [string]$Image, [object[]]$Change
     if ($LASTEXITCODE -ne 0) { Fail "docker import failed for $Name with exit code $LASTEXITCODE" }
 }
 
+function Wait-ForImage([string]$Image, [string]$Name) {
+    # Docker Desktop may finish unpacking a large OCI archive before its tag
+    # becomes visible to a following inspect call. Treat that short interval
+    # as a transient state instead of failing a valid offline installation.
+    $previousPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        for ($attempt = 1; $attempt -le 30; $attempt++) {
+            & docker image inspect $Image 1>$null 2>$null
+            if ($LASTEXITCODE -eq 0) { return }
+            Start-Sleep -Milliseconds 500
+        }
+    } finally {
+        $ErrorActionPreference = $previousPreference
+    }
+    Fail "Expected image is missing after import: $Image ($Name)"
+}
+
 $resolvedPackage = (Resolve-Path -LiteralPath $PackageRoot).Path.TrimEnd('\')
 $imageRoot = Join-Path $resolvedPackage 'resources\images'
 $manifestPath = Join-Path $imageRoot 'offline-manifest.json'
@@ -89,14 +107,36 @@ try {
         } else {
             Invoke-DockerLoad -TarPath $tarPath -Name "$($entry.name) ($($entry.image))"
         }
-        & docker image inspect ([string]$entry.image) *> $null
-        if ($LASTEXITCODE -ne 0) { Fail "Expected image is missing after import: $($entry.image)" }
         $expectedImageId = "$($entry.source_image_id)".Trim()
+        $imageReferenceVisible = $false
+        $previousPreference = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            & docker image inspect ([string]$entry.image) 1>$null 2>$null
+            $imageReferenceVisible = ($LASTEXITCODE -eq 0)
+        } finally {
+            $ErrorActionPreference = $previousPreference
+        }
+        if (-not $imageReferenceVisible -and "$($entry.format)" -ne 'rootfs' -and $expectedImageId) {
+            # Some Docker Desktop/containerd versions report the loaded image
+            # in `docker image ls` before the archive's annotated tag is
+            # addressable by `docker image inspect`. Re-attach the expected
+            # immutable image ID to the target tag before declaring failure.
+            Write-Host "[xianyu] Re-attaching imported image ID for $($entry.name)" -ForegroundColor DarkCyan
+            & docker tag $expectedImageId ([string]$entry.image)
+            if ($LASTEXITCODE -ne 0) { Fail "Could not attach imported image ID for $($entry.name)." }
+        }
+        Wait-ForImage ([string]$entry.image) ([string]$entry.name)
         if ($expectedImageId) {
             $actualImageId = (& docker image inspect ([string]$entry.image) --format '{{.Id}}' | Select-Object -First 1).ToString().Trim()
             if ($actualImageId -ne $expectedImageId) {
                 Fail "Image identity changed during import for $($entry.name); incremental updates would not be reusable"
             }
+        }
+        $sourceImage = "$($entry.source_image)".Trim()
+        if ($sourceImage -and $sourceImage -ne ([string]$entry.image).Trim() -and $sourceImage -notmatch '@') {
+            & docker tag ([string]$entry.image) $sourceImage
+            if ($LASTEXITCODE -ne 0) { Fail "Could not create registry-compatible tag for $($entry.name): $sourceImage" }
         }
         Remove-Item -LiteralPath $tarPath -Force
     }
