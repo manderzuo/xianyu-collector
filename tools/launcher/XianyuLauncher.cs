@@ -1359,6 +1359,7 @@ internal sealed class UpdaterWindow : LauncherWindow
     private string updateReason = "";
     private string notes = "";
     private bool pendingRestartClient;
+    private readonly Timer latestAutoCloseTimer = new Timer();
 
     internal UpdaterWindow() : base(LauncherText.Updater, true)
     {
@@ -1368,6 +1369,13 @@ internal sealed class UpdaterWindow : LauncherWindow
         localBuild = AppOps.ReadFirstLine(Path.Combine(appRoot, "BUILD_ID.txt"));
         BackColor = Ui.LightBackground;
         contentHost.BackColor = Ui.LightBackground;
+        latestAutoCloseTimer.Interval = 1800;
+        latestAutoCloseTimer.Tick += (s, e) =>
+        {
+            latestAutoCloseTimer.Stop();
+            if (!IsDisposed) Close();
+        };
+        Disposed += (s, e) => latestAutoCloseTimer.Dispose();
 
         var body = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 6, BackColor = Ui.LightBackground, Padding = Ui.Pad(32, 12, 32, 16) };
         body.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -1737,7 +1745,10 @@ internal sealed class UpdaterWindow : LauncherWindow
                     laterButton.Visible = false;
                     progressBar.Value = 100;
                     progressCaption.Text = "无需更新";
+                    progressCount.Text = "检查完成";
                     foreach (var pair in stageRows) pair.Value.SetState(StageStatus.Skipped, "无需执行", "");
+                    latestAutoCloseTimer.Stop();
+                    latestAutoCloseTimer.Start();
                     break;
                 case "completed":
                     ShowBanner(StageStatus.Success, "更新完成，当前版本 v" + latestVersion, "");

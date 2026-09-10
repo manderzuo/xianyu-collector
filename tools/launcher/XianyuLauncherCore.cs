@@ -903,10 +903,24 @@ internal sealed class ProgressBoard : Control
             int v = value;
             if (v < 0) v = -1;
             if (v > 100) v = 100;
-            if (v == value) return;
+            if (v == this.value) return;
             this.value = v;
+            if (this.value < 0)
+            {
+                if (!marquee.Enabled) marquee.Start();
+            }
+            else if (marquee.Enabled)
+            {
+                marquee.Stop();
+            }
             Invalidate();
         }
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) marquee.Dispose();
+        base.Dispose(disposing);
     }
 
     protected override void OnPaint(PaintEventArgs e)

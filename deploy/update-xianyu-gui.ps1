@@ -728,6 +728,15 @@ $worker = {
         $runtimeSyncNeeded = Test-Path -LiteralPath $runtimeSyncMarker -PathType Leaf
         Send-Stage 'prepare' 'running' '正在校验本机文件与版本状态...'
         $offlineRuntimeMatch = Test-OfflineRuntimeState $manifest $latestVersion $tag
+        # A client-first update leaves this marker so the next launcher run can
+        # finish the runtime handoff.  If the trusted local runtime state already
+        # matches the release, the handoff is complete and the marker must not
+        # keep advertising the same version forever.
+        if ($runtimeSyncNeeded -and $offlineRuntimeMatch) {
+            Remove-Item -LiteralPath $runtimeSyncMarker -Force -ErrorAction SilentlyContinue
+            $runtimeSyncNeeded = Test-Path -LiteralPath $runtimeSyncMarker -PathType Leaf
+            Write-Detail "runtime_sync_marker_reconciled removed=$(-not $runtimeSyncNeeded) reason=offline_runtime_match"
+        }
         Write-Detail "manifest_response version=$latestVersion build=$latestBuild registry=$registry namespace=$namespace tag=$tag"
         if (-not $latestVersion -or -not $registry -or -not $namespace -or -not $tag) { throw '更新清单字段不完整' }
         if (($runtimeImagesRequired -or $runtimeSyncNeeded) -and -not $offlineRuntimeMatch) {
@@ -743,6 +752,20 @@ $worker = {
         $versionResult = Compare-Version $latestVersion $currentVersion
         $clientIntegrity = Test-ClientIntegrity $manifest
         $versionAvailable = $versionResult -gt 0 -or ($versionResult -eq 0 -and $latestBuild -and $latestBuild -ne $currentBuild)
+        if ($runtimeSyncNeeded -and -not $versionAvailable) {
+            try {
+                # Client-first updates may have already applied and verified all
+                # runtime images before leaving the launcher package pending.
+                # Reconcile that legacy stale marker only when all four running
+                # containers still resolve to the current release image IDs.
+                Test-RuntimeContainers $registry $namespace $tag
+                Remove-Item -LiteralPath $runtimeSyncMarker -Force -ErrorAction Stop
+                $runtimeSyncNeeded = $false
+                Write-Detail 'runtime_sync_marker_reconciled removed=True reason=running_containers_match'
+            } catch {
+                Write-Detail "runtime_sync_marker_reconcile_deferred error=$($_.Exception.Message)"
+            }
+        }
         $available = $versionAvailable -or $clientIntegrity.RepairNeeded -or $runtimeSyncNeeded
         Write-Detail "version_compare current=$currentVersion/$currentBuild latest=$latestVersion/$latestBuild version_available=$versionAvailable client_repair_needed=$($clientIntegrity.RepairNeeded) launcher_mismatch=$($clientIntegrity.LauncherMismatch) frontend_mismatch=$($clientIntegrity.FrontendMismatch) available=$available"
         $updateReason = 'none'
@@ -835,6 +858,10 @@ $worker = {
         $response = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:$port" -TimeoutSec 15
         Write-Detail "frontend_check status=$($response.StatusCode) port=$port"
         if ($response.StatusCode -lt 200 -or $response.StatusCode -ge 500) { throw "前端健康检查失败，HTTP $($response.StatusCode)" }
+        if ($runtimeSyncNeeded -and $runtimeSyncRequired) {
+            Remove-Item -LiteralPath $runtimeSyncMarker -Force -ErrorAction SilentlyContinue
+            Write-Detail 'runtime_sync_marker_removed'
+        }
         Send-Stage 'health' 'success' '容器与前端服务检查通过'
         $needsClientPackage = $versionAvailable -or $clientIntegrity.RepairNeeded
         if ($needsClientPackage) {
@@ -849,10 +876,6 @@ $worker = {
             Write-Detail "update_completed runtime_version=$latestVersion client_version_pending=true"
             Send-Message 'completed' "更新包已下载，请关闭并重新启动启动器以应用新版界面" 100
         } else {
-            if ($runtimeSyncNeeded -and $runtimeSyncRequired) {
-                Remove-Item -LiteralPath $runtimeSyncMarker -Force -ErrorAction SilentlyContinue
-                Write-Detail 'runtime_sync_marker_removed'
-            }
             Set-Content -LiteralPath $versionFile -Value $latestVersion -Encoding UTF8
             Set-Content -LiteralPath $buildFile -Value $latestBuild -Encoding UTF8
             Write-Detail "update_completed version=$latestVersion build=$latestBuild"
