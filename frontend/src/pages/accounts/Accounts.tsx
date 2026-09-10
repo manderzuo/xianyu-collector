@@ -1323,8 +1323,14 @@ export function Accounts() {
         addToast({ type: 'warning', message: result.message || '内置AI自动回复设置失败' })
         return
       }
-      setAccounts(prev => prev.map(item => ({ ...item, builtinAiReplyEnabled: newEnabled })))
-      addToast({ type: 'success', message: `内置AI自动回复已${newEnabled ? '开启' : '关闭'}，所有闲鱼账号共享` })
+      const savedEnabled = result.data?.builtin_ai_reply_enabled
+      if (savedEnabled !== newEnabled) {
+        addToast({ type: 'error', message: '内置AI自动回复状态未能保存，请稍后重试' })
+        await loadAccounts()
+        return
+      }
+      setAccounts(prev => prev.map(item => ({ ...item, builtinAiReplyEnabled: savedEnabled })))
+      addToast({ type: 'success', message: `内置AI自动回复已${savedEnabled ? '开启' : '关闭'}，所有闲鱼账号共享` })
       await loadAccounts()
     } catch (error) {
       addToast({ type: 'error', message: getApiErrorMessage(error, '内置AI自动回复设置失败') })

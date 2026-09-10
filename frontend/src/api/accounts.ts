@@ -495,7 +495,7 @@ export const getAIReplySettings = async (): Promise<AIReplySettings> => {
 }
 
 // 更新平台账号共享的 VIP 内置话术开关
-export const updateBuiltinAIReply = (enabled: boolean): Promise<ApiResponse> => {
+export const updateBuiltinAIReply = (enabled: boolean): Promise<ApiResponse<{ builtin_ai_reply_enabled: boolean }>> => {
   return put(`${AI_SETTINGS_PREFIX}/builtin`, { enabled })
 }
 

@@ -140,6 +140,25 @@ def _copy_platform_ai_settings(payload: dict[str, Any] | None) -> dict[str, Any]
     return settings
 
 
+def _merge_platform_ai_settings(
+    current: dict[str, Any] | None,
+    values: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Merge a partial platform AI update without dropping shared switches."""
+    merged = _copy_platform_ai_settings(current)
+    incoming = values or {}
+    for key in ("ai_enabled", "builtin_ai_reply_enabled"):
+        if key in incoming:
+            merged[key] = bool(incoming[key])
+    nested = incoming.get("ai_settings")
+    if isinstance(nested, dict):
+        merged["ai_settings"] = {
+            **dict(merged.get("ai_settings") or {}),
+            **nested,
+        }
+    return _copy_platform_ai_settings(merged)
+
+
 async def load_account_settings(
     db: AsyncSession,
     owner_id: int,
@@ -280,13 +299,7 @@ async def save_platform_ai_settings(
             note="平台账号共享 AI 配置",
         )
         db.add(row)
-    merged = dict(current)
-    if "ai_enabled" in values:
-        merged["ai_enabled"] = bool(values["ai_enabled"])
-    nested = values.get("ai_settings")
-    if isinstance(nested, dict):
-        merged["ai_settings"] = {**dict(current.get("ai_settings") or {}), **nested}
-    row.payload = _copy_platform_ai_settings(merged)
+    row.payload = _merge_platform_ai_settings(current, values)
     await db.commit()
     await db.refresh(row)
     return _copy_platform_ai_settings(row.payload)

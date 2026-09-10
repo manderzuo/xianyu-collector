@@ -98,7 +98,8 @@ async def put_builtin_settings(
     current = await load_platform_ai_settings(db, _uid(user))
     enabled = bool(values.get("enabled", values.get("builtin_ai_reply_enabled", current.get("builtin_ai_reply_enabled"))))
     saved = await save_platform_ai_settings(db, _uid(user), {"builtin_ai_reply_enabled": enabled})
-    return ok({"builtin_ai_reply_enabled": bool(saved.get("builtin_ai_reply_enabled"))}, f"内置AI自动回复已{'开启' if enabled else '关闭'}")
+    saved_enabled = bool(saved.get("builtin_ai_reply_enabled"))
+    return ok({"builtin_ai_reply_enabled": saved_enabled}, f"内置AI自动回复已{'开启' if saved_enabled else '关闭'}")
 
 
 @router.post("")
