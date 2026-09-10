@@ -1,6 +1,10 @@
 param(
     [string]$PackageRoot = (Split-Path -Parent $PSScriptRoot),
     [int]$WaitForProcessId = 0,
+    # Keep the old launcher handoff name as a compatibility alias. Older
+    # launchers already shipped with -RelaunchPath, while the script uses the
+    # clearer -RestartExecutable name internally.
+    [Alias('RelaunchPath')]
     [string]$RestartExecutable = ''
 )
 

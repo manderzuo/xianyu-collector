@@ -2714,7 +2714,10 @@ internal static class Program
             var psi = new ProcessStartInfo
             {
                 FileName = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "WindowsPowerShell", "v1.0", "powershell.exe"),
-                Arguments = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File " + ScriptRunner.Quote(applier) + " -PackageRoot " + ScriptRunner.Quote(packageRoot) + " -RelaunchPath " + ScriptRunner.Quote(launcherPath),
+                // Match the applier's canonical parameter name. The script
+                // also accepts RelaunchPath so already-installed launchers
+                // can finish a pending package during the migration.
+                Arguments = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File " + ScriptRunner.Quote(applier) + " -PackageRoot " + ScriptRunner.Quote(packageRoot) + " -RestartExecutable " + ScriptRunner.Quote(launcherPath),
                 UseShellExecute = false,
                 CreateNoWindow = true
             };

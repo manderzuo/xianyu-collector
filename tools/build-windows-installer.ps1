@@ -49,7 +49,7 @@ $ResourcesRoot = Join-Path $OutputDirectory 'resources'
 New-Item -ItemType Directory -Path $AppRoot, $ScriptsRoot, $ResourcesRoot -Force | Out-Null
 
 $excludedDirectoryNames = @(
-    '.git', '.pytest_cache', '__pycache__', '.mypy_cache', '.ruff_cache', '.venv', 'venv', 'node_modules', 'dist', 'build',
+    '.git', '.github', 'artifacts', '.tmp-lucide', '.pytest_cache', '__pycache__', '.mypy_cache', '.ruff_cache', '.venv', 'venv', 'node_modules', 'dist', 'build',
     'static', 'backups', 'browser_data', 'logs', 'release', 'xianyu-one-click-installer'
 )
 $excludedFileNames = @('.env', '.env.local')
