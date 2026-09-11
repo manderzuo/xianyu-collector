@@ -276,7 +276,10 @@ async def update_user(
         values = payload or {}
         allowed = {"plan", "plan_code", "plan_expires_at", "expire_at"}
         if not values or any(key not in allowed for key in values):
-            raise HTTPException(status_code=409, detail="云端模式的账号资料和套餐权限请在统一认证服务中修改")
+            raise HTTPException(
+                status_code=409,
+                detail="云端统一认证账号的资料由云端服务维护，本机不能修改；套餐与 VIP 开通请使用“套餐权限”页面",
+            )
         token = str(user.get("cloud_session_token") or "").strip()
         if not token:
             raise HTTPException(status_code=401, detail="云端管理员会话已失效，请退出后重新登录")

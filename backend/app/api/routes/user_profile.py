@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.core.dependencies import get_current_user
 from backend.app.core.response import error
 from backend.app.core.security import hash_password, verify_password
+from backend.app.services.entitlements import entitlement_payload
 from common.db.session import get_session
 from common.models import FeatureRecord, SystemSetting, User
 
@@ -68,6 +69,16 @@ async def _credential(kind: str, user_id: int, db: AsyncSession, *, reset: bool 
 async def get_current_user_profile(user=Depends(get_current_user), db: AsyncSession = Depends(get_session)):
     record = await _user(user, db)
     # 该接口保持旧版直出 UserPublic 的返回形状，个人设置页面直接读取 expire_at 等字段。
+    # 套餐字段（plan_code / plan_expires_at / entitlements）用于个人设置页展示当前套餐详情，
+    # 授权本身仍由“套餐权限”页面维护，此处只读。
+    plan_expires_at = record.plan_expires_at or record.expire_at
+    entitlements = await entitlement_payload(db, {
+        "sub": str(record.id),
+        "role": record.role,
+        "plan_code": record.plan_code,
+        "plan_expires_at": plan_expires_at.isoformat() if plan_expires_at else None,
+        "auth_version": record.auth_version,
+    })
     return {
         "id": record.id,
         "username": record.username,
@@ -79,6 +90,9 @@ async def get_current_user_profile(user=Depends(get_current_user), db: AsyncSess
         "account_limit": record.account_limit,
         "balance": f"{Decimal(record.balance or 0):.2f}",
         "expire_at": record.expire_at.isoformat() if record.expire_at else None,
+        "plan_code": record.plan_code or "NORMAL",
+        "plan_expires_at": plan_expires_at.isoformat() if plan_expires_at else None,
+        "entitlements": entitlements,
     }
 
 

@@ -26,6 +26,7 @@ from common.models import Account, AccountCookie, FeatureRecord, SystemSetting, 
 from common.services.account_identity import extract_account_nickname
 from common.services.account_renewal import renew_account_session
 from common.services.goofish_mtop import parse_cookie_string
+from common.services.system_settings import registration_enabled
 from common.version import app_version
 from backend.app.services.account_settings import save_account_settings
 from backend.app.services.entitlements import FEATURE_ACCOUNT, ensure_quota, finalize_quota, reserve_quota
@@ -549,7 +550,9 @@ async def public_settings(db: AsyncSession = Depends(get_session)):
     }
     rows = (await db.execute(select(SystemSetting).where(SystemSetting.setting_key.in_(public_keys)))).scalars().all()
     values = {row.setting_key: row.setting_value for row in rows}
-    values.setdefault("registration_enabled", "true")
+    # 注册开关以规范化的 "true"/"false" 输出：前端只识别 true/'true'，
+    # 若数据库里存的是 yes/on 会让页面隐藏注册入口，而后端却允许注册。
+    values["registration_enabled"] = "true" if await registration_enabled(db) else "false"
     values.setdefault("login.system_name", settings.brand_name)
     values.setdefault("brand_name", settings.brand_name)
     values.setdefault("brand_domain", settings.brand_domain)

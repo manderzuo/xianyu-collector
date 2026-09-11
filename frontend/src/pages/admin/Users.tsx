@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
-import { Users as UsersIcon, RefreshCw, Plus, ChevronLeft, ChevronRight, Loader2, Pencil, Power, PowerOff, Wallet, Search, X, Ticket } from 'lucide-react'
-import { getUsers, deleteUser, updateUser } from '@/api/admin'
+import { useNavigate } from 'react-router-dom'
+import { Users as UsersIcon, RefreshCw, Plus, ChevronLeft, ChevronRight, Loader2, Pencil, Power, PowerOff, Wallet, Search, X, Ticket, ShieldCheck, UserCheck, UserX } from 'lucide-react'
+import { getUsers, deleteUser, updateUser, approveUser, rejectUser } from '@/api/admin'
 import { useUIStore } from '@/store/uiStore'
 import { useAuthStore } from '@/store/authStore'
 import { PageLoading } from '@/components/common/Loading'
@@ -19,6 +20,7 @@ const roleLabelMap: Record<string, string> = {
 
 const statusLabelMap: Record<string, string> = {
   ACTIVE: '正常',
+  PENDING: '待审批',
   INACTIVE: '停用',
   SUSPENDED: '封禁',
   DELETED: '已删除',
@@ -26,6 +28,8 @@ const statusLabelMap: Record<string, string> = {
 
 const statusClassMap: Record<string, string> = {
   ACTIVE: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300',
+  // 待审批必须与“正常”明显区分：云端注册申请在管理员通过之前不能显示为已批准。
+  PENDING: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300',
   INACTIVE: 'bg-slate-100 text-slate-700 dark:bg-slate-700/50 dark:text-slate-300',
   SUSPENDED: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300',
   DELETED: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300',
@@ -48,6 +52,7 @@ const isExpired = (value?: string | null): boolean => {
 export function Users() {
   const { addToast } = useUIStore()
   const { isAuthenticated, token, _hasHydrated, user: currentUser, updateUser: updateAuthUser } = useAuthStore()
+  const navigate = useNavigate()
   const [loading, setLoading] = useState(true)
   const [users, setUsers] = useState<User[]>([])
 
@@ -61,6 +66,8 @@ export function Users() {
 
   const [statusConfirm, setStatusConfirm] = useState<{ open: boolean; user: User | null; action: 'enable' | 'disable' }>({ open: false, user: null, action: 'disable' })
   const [statusSubmitting, setStatusSubmitting] = useState(false)
+  const [approveConfirm, setApproveConfirm] = useState<{ open: boolean; user: User | null; action: 'approve' | 'reject' }>({ open: false, user: null, action: 'approve' })
+  const [approveSubmitting, setApproveSubmitting] = useState(false)
   const [showFormModal, setShowFormModal] = useState(false)
   const [editingUser, setEditingUser] = useState<User | null>(null)
   const [rechargingUser, setRechargingUser] = useState<User | null>(null)
@@ -152,10 +159,35 @@ export function Users() {
     }
   }
 
+  const closeApproveConfirm = () => {
+    setApproveConfirm({ open: false, user: null, action: 'approve' })
+  }
+
+  // 审批云端注册申请：通过后该账号才能登录（本地待审核用户同样走这套接口）
+  const handleApproveChange = async (user: User, action: 'approve' | 'reject') => {
+    setApproveSubmitting(true)
+    try {
+      const result = action === 'approve' ? await approveUser(user.user_id) : await rejectUser(user.user_id)
+      if (!result.success) {
+        addToast({ type: 'error', message: result.message || (action === 'approve' ? '审批通过失败' : '拒绝申请失败') })
+        return
+      }
+      addToast({ type: 'success', message: result.message || (action === 'approve' ? '注册申请已通过' : '注册申请已拒绝') })
+      closeApproveConfirm()
+      await loadUsers()
+    } catch (error) {
+      addToast({ type: 'error', message: getApiErrorMessage(error, action === 'approve' ? '审批通过失败' : '拒绝申请失败') })
+    } finally {
+      setApproveSubmitting(false)
+    }
+  }
+
   const totalPages = Math.ceil(total / pageSize)
   const startIndex = (currentPage - 1) * pageSize + 1
   const endIndex = Math.min(currentPage * pageSize, total)
   const isEnableAction = statusConfirm.action === 'enable'
+  const isApproveAction = approveConfirm.action === 'approve'
+  const pendingCount = users.filter((user) => user.status === 'PENDING').length
 
   // 仅首屏（未应用搜索条件）整屏展示加载态；应用搜索后保留搜索框，避免输入框中途消失
   if (loading && users.length === 0 && !appliedUsername) {
@@ -224,6 +256,12 @@ export function Users() {
             <span className="badge-primary whitespace-nowrap">{total} 个用户</span>
           </div>
         </div>
+
+        {pendingCount > 0 && (
+          <div className="mx-4 mb-3 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-700 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-200">
+            本页有 {pendingCount} 个待审批账号。通过注册申请前，对方客户端登录会一直提示账号未获批准。
+          </div>
+        )}
         <div className="flex-1 overflow-auto">
           <table className="table-ios">
             <thead className="sticky top-0 bg-white dark:bg-slate-800 z-10">
@@ -235,7 +273,7 @@ export function Users() {
                 <th>角色</th>
                 <th>可添加账号数</th>
                 <th>余额</th>
-                <th>到期日</th>
+                <th>套餐</th>
                 <th>状态</th>
                 <th>操作</th>
               </tr>
@@ -264,9 +302,13 @@ export function Users() {
                     </td>
                     <td className="text-slate-500 dark:text-slate-400">{user.account_limit ?? '-'}</td>
                     <td className="font-medium text-slate-700 dark:text-slate-300 tabular-nums">¥{user.balance ?? '0.00'}</td>
-                    <td className={`whitespace-nowrap text-sm ${isExpired(user.expire_at) ? 'text-red-500 font-medium' : 'text-slate-500 dark:text-slate-400'}`}>
-                      {formatExpireAt(user.expire_at)}
-                      {isExpired(user.expire_at) && <span className="ml-1">(已到期)</span>}
+                    {/* 套餐在此仅只读展示：VIP 开通与套餐变更统一在“套餐权限”页面完成。 */}
+                    <td className="whitespace-nowrap text-sm">
+                      <span className="badge-primary">{user.plan_code || 'NORMAL'}</span>
+                      <div className={`mt-1 text-xs ${isExpired(user.plan_expires_at) ? 'text-red-500 font-medium' : 'text-slate-500 dark:text-slate-400'}`}>
+                        {formatExpireAt(user.plan_expires_at)}
+                        {isExpired(user.plan_expires_at) && <span className="ml-1">(已到期)</span>}
+                      </div>
                     </td>
                     <td>
                       <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium ${statusClassMap[user.status || 'ACTIVE'] || statusClassMap.ACTIVE}`}>
@@ -275,22 +317,56 @@ export function Users() {
                     </td>
                     <td>
                       <div className="flex flex-wrap gap-2">
+                        {/* 待审批账号优先展示审批操作，通过后才可登录。 */}
+                        {user.status === 'PENDING' && (
+                          <>
+                            <button
+                              onClick={() => setApproveConfirm({ open: true, user, action: 'approve' })}
+                              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-emerald-50 text-emerald-600 hover:bg-emerald-100 dark:bg-emerald-900/20 dark:text-emerald-400 transition-colors"
+                              title="通过注册申请"
+                            >
+                              <UserCheck className="w-4 h-4" />
+                              通过
+                            </button>
+                            <button
+                              onClick={() => setApproveConfirm({ open: true, user, action: 'reject' })}
+                              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg hover:bg-red-50 dark:hover:bg-red-900/20 text-red-500 transition-colors"
+                              title="拒绝注册申请"
+                            >
+                              <UserX className="w-4 h-4" />
+                              拒绝
+                            </button>
+                          </>
+                        )}
                         <button
                           onClick={() => handleOpenEdit(user)}
                           className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg hover:bg-blue-50 dark:hover:bg-blue-900/20 text-blue-600 dark:text-blue-400 transition-colors"
-                          title="编辑"
+                          title="编辑账号资料"
                         >
                           <Pencil className="w-4 h-4" />
                           编辑
                         </button>
-                        <button
-                          onClick={() => setRechargingUser(user)}
-                          className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg hover:bg-amber-50 dark:hover:bg-amber-900/20 text-amber-600 dark:text-amber-400 transition-colors"
-                          title="余额调整"
-                        >
-                          <Wallet className="w-4 h-4" />
-                          余额调整
-                        </button>
+                        {/* VIP 开通、套餐变更与功能授权全部在“套餐权限”页面完成。 */}
+                        {!user.is_admin && (
+                          <button
+                            onClick={() => navigate(`/admin/entitlements?tab=users&user_id=${user.user_id}`)}
+                            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg hover:bg-indigo-50 dark:hover:bg-indigo-900/20 text-indigo-600 dark:text-indigo-400 transition-colors"
+                            title="在套餐权限中开通 VIP 或调整功能授权"
+                          >
+                            <ShieldCheck className="w-4 h-4" />
+                            套餐权限
+                          </button>
+                        )}
+                        {!user.cloud_mode && (
+                          <button
+                            onClick={() => setRechargingUser(user)}
+                            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg hover:bg-amber-50 dark:hover:bg-amber-900/20 text-amber-600 dark:text-amber-400 transition-colors"
+                            title="余额调整"
+                          >
+                            <Wallet className="w-4 h-4" />
+                            余额调整
+                          </button>
+                        )}
                         {user.status === 'INACTIVE' ? (
                           <button
                             onClick={() => setStatusConfirm({ open: true, user, action: 'enable' })}
@@ -300,7 +376,7 @@ export function Users() {
                             <Power className="w-4 h-4" />
                             启用
                           </button>
-                        ) : (
+                        ) : user.status === 'PENDING' ? null : (
                           <button
                             onClick={() => setStatusConfirm({ open: true, user, action: 'disable' })}
                             disabled={user.status === 'DELETED'}
@@ -368,7 +444,9 @@ export function Users() {
       <div className="vben-card">
         <div className="vben-card-body">
           <p className="text-sm text-slate-500 dark:text-slate-400">
-            提示：管理员可在此页面新增、编辑、停用和启用用户账号，停用后用户将无法登录，但历史数据会保留。
+            提示：本页负责账号资料、审批与启停；<span className="font-medium text-slate-600 dark:text-slate-300">用户信息、角色、状态、密码</span>可在此编辑，
+            <span className="font-medium text-slate-600 dark:text-slate-300">VIP 开通、套餐变更与功能授权</span>请在「套餐权限」页面处理。
+            待审批账号显示为“待审批”，通过后对方才能登录。
           </p>
         </div>
       </div>
@@ -381,8 +459,27 @@ export function Users() {
             setEditingUser(null)
           }}
           onSaved={handleSaved}
+          onOpenEntitlements={(target) => {
+            setShowFormModal(false)
+            setEditingUser(null)
+            navigate(`/admin/entitlements?tab=users&user_id=${target.user_id}`)
+          }}
         />
       )}
+
+      <ConfirmModal
+        isOpen={approveConfirm.open}
+        title={isApproveAction ? '通过注册申请' : '拒绝注册申请'}
+        message={isApproveAction
+          ? `确定要通过用户「${approveConfirm.user?.username || ''}」的注册申请吗？通过后该账号即可在客户端登录。`
+          : `确定要拒绝用户「${approveConfirm.user?.username || ''}」的注册申请吗？拒绝后该账号无法登录。`}
+        confirmText={isApproveAction ? '通过' : '拒绝'}
+        cancelText="取消"
+        type={isApproveAction ? 'info' : 'danger'}
+        loading={approveSubmitting}
+        onConfirm={() => approveConfirm.user && handleApproveChange(approveConfirm.user, approveConfirm.action)}
+        onCancel={closeApproveConfirm}
+      />
 
       <ConfirmModal
         isOpen={statusConfirm.open}

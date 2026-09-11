@@ -57,6 +57,7 @@ export interface UpdateAdminUserPayload {
   role?: UserRole
   status?: UserStatus
   account_limit?: number | null
+  // 套餐字段仅保留兼容性：套餐与 VIP 开通已统一由“套餐权限”页面维护。
   plan_code?: string
   plan_expires_at?: string | null
   // 到期日（北京时间，格式 'YYYY-MM-DDTHH:MM:SS'）。显式传 null 表示清空到期日。
@@ -71,7 +72,11 @@ const mapAdminUser = (user: AdminUserApiItem): User => ({
   role: user.role,
   status: user.status,
   is_admin: user.is_admin,
+  // 套餐与云端标识：套餐权限中心需要展示并区分云端账号，用户管理页只读展示。
+  cloud_mode: user.cloud_mode,
   account_limit: user.account_limit,
+  plan_code: user.plan_code,
+  plan_expires_at: user.plan_expires_at,
   balance: user.balance,
   expire_at: user.expire_at,
 })
@@ -112,6 +117,16 @@ export const updateUser = (userId: number, payload: UpdateAdminUserPayload): Pro
 // 停用用户
 export const deleteUser = (userId: number): Promise<ApiResponse> => {
   return del(`${ADMIN_PREFIX}/users/${userId}`)
+}
+
+// 通过注册申请（本地待审核用户或云端统一认证待审批账号）
+export const approveUser = (userId: number): Promise<ApiResponse<{ user?: AdminUserApiItem; approved?: boolean }>> => {
+  return post(`${ADMIN_PREFIX}/users/${userId}/approve`)
+}
+
+// 拒绝注册申请
+export const rejectUser = (userId: number): Promise<ApiResponse<{ user?: AdminUserApiItem; rejected?: boolean }>> => {
+  return post(`${ADMIN_PREFIX}/users/${userId}/reject`)
 }
 
 // 管理员手动调整用户余额（正数充值 / 负数扣减）

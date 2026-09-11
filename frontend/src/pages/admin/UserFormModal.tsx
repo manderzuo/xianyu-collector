@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { Loader2, X } from 'lucide-react'
+import { Cloud, Loader2, ShieldCheck, X } from 'lucide-react'
 import { addUser, updateUser, type AdminUserApiItem, type CreateAdminUserPayload, type UpdateAdminUserPayload } from '@/api/admin'
 import { useUIStore } from '@/store/uiStore'
 import { getApiErrorMessage } from '@/utils/request'
@@ -9,6 +9,8 @@ interface Props {
   initial: User | null
   onClose: () => void
   onSaved: (user: User, mode: 'create' | 'update') => void
+  /** 跳转到“套餐权限”页面处理该用户的 VIP/功能授权。 */
+  onOpenEntitlements?: (user: User) => void
 }
 
 interface UserFormState {
@@ -20,15 +22,13 @@ interface UserFormState {
   role: UserRole
   status: UserStatus
   account_limit: string
-  plan_code: string
-  expire_at: string
 }
 
 // 后端到期日为北京时间 naive 字符串（如 '2026-06-25T14:30:00'），
-// datetime-local 输入框需要 'YYYY-MM-DDTHH:MM:SS' 格式，直接截取前 19 位即可。
-const toDatetimeLocalValue = (value?: string | null): string => {
-  if (!value) return ''
-  return value.slice(0, 19)
+// 这里只做只读展示，套餐与到期时间统一由“套餐权限”页面维护。
+const formatPlanExpiresAt = (value?: string | null): string => {
+  if (!value) return '永不过期'
+  return value.replace('T', ' ').slice(0, 19)
 }
 
 const createInitialState = (initial: User | null): UserFormState => ({
@@ -40,8 +40,6 @@ const createInitialState = (initial: User | null): UserFormState => ({
   role: initial?.role ?? (initial?.is_admin ? 'ADMIN' : 'MEMBER'),
   status: initial?.status ?? 'ACTIVE',
   account_limit: initial?.account_limit != null ? String(initial.account_limit) : '',
-  plan_code: initial?.plan_code ?? 'NORMAL',
-  expire_at: toDatetimeLocalValue(initial?.expire_at),
 })
 
 const roleOptions: Array<{ value: UserRole; label: string }> = [
@@ -65,16 +63,18 @@ const toUser = (item: AdminUserApiItem): User => ({
   expire_at: item.expire_at,
 })
 
-export function UserFormModal({ initial, onClose, onSaved }: Props) {
+export function UserFormModal({ initial, onClose, onSaved, onOpenEntitlements }: Props) {
   const { addToast } = useUIStore()
   const [form, setForm] = useState<UserFormState>(() => createInitialState(initial))
   const [saving, setSaving] = useState(false)
 
   const isEditMode = !!initial
+  // 云端账号（统一认证服务）的资料与套餐都不在本机修改，本窗口仅做只读展示。
   const isCloudEdit = isEditMode && Boolean(initial?.cloud_mode)
   const statusOptions = useMemo<Array<{ value: UserStatus; label: string }>>(() => {
     const options: Array<{ value: UserStatus; label: string }> = [
       { value: 'ACTIVE', label: '正常' },
+      { value: 'PENDING', label: '待审批' },
       { value: 'INACTIVE', label: '停用' },
       { value: 'SUSPENDED', label: '封禁' },
     ]
@@ -97,41 +97,39 @@ export function UserFormModal({ initial, onClose, onSaved }: Props) {
     const accountLimitText = form.account_limit.trim()
     const accountLimit = accountLimitText === '' ? null : Number(accountLimitText)
 
-    if (!username && !isCloudEdit) {
+    if (!username) {
       addToast({ type: 'warning', message: '请输入用户名' })
       return
     }
 
-    if (!isCloudEdit && email && !/^\S+@\S+\.\S+$/.test(email)) {
+    if (email && !/^\S+@\S+\.\S+$/.test(email)) {
       addToast({ type: 'warning', message: '请输入正确的邮箱地址' })
       return
     }
 
-    if (!isCloudEdit && !isEditMode && !password) {
+    if (!isEditMode && !password) {
       addToast({ type: 'warning', message: '请输入登录密码' })
       return
     }
 
-    if (!isCloudEdit && password && password.length < 6) {
+    if (password && password.length < 6) {
       addToast({ type: 'warning', message: '密码长度不能少于6位' })
       return
     }
 
-    if (!isCloudEdit && password !== confirmPassword) {
+    if (password !== confirmPassword) {
       addToast({ type: 'warning', message: '两次输入的密码不一致' })
       return
     }
 
-    if (!isCloudEdit && accountLimitText && (accountLimit === null || !Number.isInteger(accountLimit) || accountLimit <= 0)) {
+    if (accountLimitText && (accountLimit === null || !Number.isInteger(accountLimit) || accountLimit <= 0)) {
       addToast({ type: 'warning', message: '可添加账号数量必须为正整数' })
       return
     }
 
     setSaving(true)
     try {
-      // 到期日：留空表示永不过期（显式传 null 清空），非空则传 'YYYY-MM-DDTHH:MM:SS'
-      const expireAtValue = form.expire_at.trim() ? form.expire_at.trim() : null
-
+      // 套餐与到期时间不在此提交：VIP 开通和功能授权由“套餐权限”页面负责。
       const basePayload = {
         username,
         email,
@@ -139,15 +137,11 @@ export function UserFormModal({ initial, onClose, onSaved }: Props) {
         role: form.role,
         status: form.status,
         account_limit: accountLimit,
-        plan_code: form.plan_code,
-        expire_at: expireAtValue,
       }
 
       let result
       if (isEditMode && initial) {
-        const payload: UpdateAdminUserPayload = isCloudEdit
-          ? { plan_code: form.plan_code, plan_expires_at: expireAtValue }
-          : { ...basePayload, password: password || undefined }
+        const payload: UpdateAdminUserPayload = { ...basePayload, password: password || undefined }
         result = await updateUser(initial.user_id, payload)
       } else {
         const payload: CreateAdminUserPayload = {
@@ -183,9 +177,44 @@ export function UserFormModal({ initial, onClose, onSaved }: Props) {
         <div className="modal-body">
           {isCloudEdit && (
             <div className="mb-4 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-700 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-200">
-              当前为云端模式。账号资料和套餐权限以统一认证服务为准；本窗口仅修改云端套餐和到期时间，并会同步到该用户登录的所有电脑。
+              <div className="flex items-center gap-2 font-medium">
+                <Cloud className="w-4 h-4" />
+                云端统一认证账号
+              </div>
+              <div className="mt-1">
+                该账号由云端统一认证服务管理，账号资料请在云端服务中修改；本页仅可查看，避免出现“本机改成功、云端未生效”的分裂状态。
+              </div>
             </div>
           )}
+
+          {isEditMode && initial && (
+            <div className="mb-4 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm dark:border-slate-700 dark:bg-slate-800/60">
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <div className="flex items-center gap-2 font-medium text-slate-700 dark:text-slate-200">
+                    <ShieldCheck className="w-4 h-4" />
+                    套餐：{initial.plan_code || 'NORMAL'}
+                  </div>
+                  <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                    到期时间：{formatPlanExpiresAt(initial.plan_expires_at ?? initial.expire_at)}
+                  </div>
+                </div>
+                {!initial.is_admin && onOpenEntitlements && (
+                  <button
+                    type="button"
+                    className="btn-ios-secondary whitespace-nowrap"
+                    onClick={() => onOpenEntitlements(initial)}
+                  >
+                    去套餐权限开通
+                  </button>
+                )}
+              </div>
+              <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+                VIP 开通、套餐变更与功能授权已统一放到「套餐权限」页面，此窗口不再编辑套餐。
+              </p>
+            </div>
+          )}
+
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div className="input-group">
               <label className="input-label">用户名 <span className="text-red-500">*</span></label>
@@ -258,24 +287,7 @@ export function UserFormModal({ initial, onClose, onSaved }: Props) {
                 placeholder="留空表示不限制"
                 disabled={isCloudEdit}
               />
-            </div>
-            <div className="input-group">
-              <label className="input-label">套餐</label>
-              <select className="input-ios" value={form.plan_code} onChange={(event) => updateField('plan_code', event.target.value)}>
-                <option value="NORMAL">普通用户</option>
-                <option value="VIP">VIP 用户</option>
-              </select>
-            </div>
-            <div className="input-group">
-              <label className="input-label">到期日</label>
-              <input
-                className="input-ios"
-                type="datetime-local"
-                step={1}
-                value={form.expire_at}
-                onChange={(event) => updateField('expire_at', event.target.value)}
-              />
-              <p className="text-xs text-slate-400 mt-1">留空表示永不过期；精确到秒</p>
+              <p className="text-xs text-slate-400 mt-1">账号数量上限也可在「套餐权限」中按用户单独授权</p>
             </div>
             <div className="input-group">
               <label className="input-label">{isEditMode ? '新密码' : '登录密码'} {!isEditMode && <span className="text-red-500">*</span>}</label>
@@ -289,7 +301,7 @@ export function UserFormModal({ initial, onClose, onSaved }: Props) {
                 disabled={isCloudEdit}
               />
             </div>
-            <div className="input-group sm:col-span-2">
+            <div className="input-group">
               <label className="input-label">确认密码 {(form.password || !isEditMode) && <span className="text-red-500">*</span>}</label>
               <input
                 className="input-ios"
@@ -305,10 +317,12 @@ export function UserFormModal({ initial, onClose, onSaved }: Props) {
         </div>
         <div className="modal-footer">
           <button className="btn-ios-secondary" onClick={onClose} disabled={saving}>取消</button>
-          <button className="btn-ios-primary" onClick={handleSave} disabled={saving}>
-            {saving && <Loader2 className="w-4 h-4 animate-spin" />}
-            {isCloudEdit ? '保存云端套餐' : isEditMode ? '保存修改' : '创建用户'}
-          </button>
+          {!isCloudEdit && (
+            <button className="btn-ios-primary" onClick={handleSave} disabled={saving}>
+              {saving && <Loader2 className="w-4 h-4 animate-spin" />}
+              {isEditMode ? '保存修改' : '创建用户'}
+            </button>
+          )}
         </div>
       </div>
     </div>

@@ -16,8 +16,12 @@ from backend.app.services.entitlements import entitlement_payload, get_effective
 from common.db.session import get_session
 from common.models import EntitlementAuditLog, Plan, PlanEntitlement, User, UserEntitlementOverride
 from common.services.cloud_auth import CloudAuthError, cloud_auth_request, cloud_auth_url
+from common.services.entitlements import ENTITLEMENT_FEATURES
 
 router = APIRouter(prefix="/api/v1/admin/entitlements", tags=["管理员套餐权限"])
+
+#: 允许在功能授权中出现的功能键，未在此列出的键一律拒绝写入。
+KNOWN_FEATURE_KEYS = frozenset(ENTITLEMENT_FEATURES)
 
 
 async def _cloud_entitlement(action: str, payload: dict[str, Any], user: dict[str, Any]) -> dict[str, Any]:
@@ -66,6 +70,46 @@ def _plan_data(plan: Plan, entries: list[PlanEntitlement]) -> dict[str, Any]:
     }
 
 
+def _normalize_override(feature_key: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """校验并规范化单个功能覆盖，只保留允许的字段。"""
+    key = str(feature_key or "").strip()
+    if key not in KNOWN_FEATURE_KEYS:
+        raise HTTPException(status_code=422, detail=f"不支持的功能授权：{key or '(空)'}")
+    if "enabled" in payload and not isinstance(payload.get("enabled"), bool):
+        raise HTTPException(status_code=422, detail="enabled 必须是布尔值")
+    if "unlimited" in payload and not isinstance(payload.get("unlimited"), bool):
+        raise HTTPException(status_code=422, detail="unlimited 必须是布尔值")
+    raw_limit = payload.get("limit", payload.get("limit_value"))
+    limit: int | None = None
+    if raw_limit not in (None, ""):
+        try:
+            limit = int(raw_limit)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail="配额必须是整数") from exc
+        if limit < 0:
+            raise HTTPException(status_code=422, detail="配额不能为负数")
+    return {
+        "enabled": bool(payload.get("enabled")) if "enabled" in payload else None,
+        "limit": limit,
+        "unlimited": bool(payload.get("unlimited")) if "unlimited" in payload else None,
+        "expires_at": _parse_datetime(payload.get("expires_at")),
+        "reason": str(payload.get("reason") or "").strip()[:255] or None,
+    }
+
+
+def _override_summary(overrides: dict[str, Any] | list[Any]) -> list[dict[str, Any]]:
+    """把本地列表或云端字典形态的覆盖统一成前端需要的数组。"""
+    items: list[dict[str, Any]] = []
+    if isinstance(overrides, dict):
+        for key, value in overrides.items():
+            entry = dict(value) if isinstance(value, dict) else {}
+            entry.setdefault("feature_key", key)
+            items.append(entry)
+    elif isinstance(overrides, list):
+        items = [dict(item) for item in overrides if isinstance(item, dict)]
+    return items
+
+
 async def _audit(db: AsyncSession, actor_id: int, target_id: int | None, action: str, feature_key: str | None, payload: dict[str, Any]) -> None:
     db.add(EntitlementAuditLog(
         actor_user_id=actor_id,
@@ -94,17 +138,35 @@ async def create_plan(payload: dict[str, Any] = Body(default_factory=dict), user
     name = str(payload.get("name") or code).strip()
     if not code or len(code) > 32 or not name:
         raise HTTPException(status_code=422, detail="套餐编码和名称不能为空")
+    # copy_from：从已有套餐复制功能授权，避免新建套餐没有任何可授权功能。
+    source_code = str(payload.get("copy_from") or "").strip().upper()
+    source_entries: list[PlanEntitlement] = []
+    if source_code:
+        source = (await db.execute(select(Plan).where(Plan.code == source_code))).scalar_one_or_none()
+        if source is None:
+            raise HTTPException(status_code=422, detail="复制来源套餐不存在")
+        source_entries = list((await db.execute(select(PlanEntitlement).where(PlanEntitlement.plan_id == source.id))).scalars().all())
     plan = Plan(code=code, name=name, status="active", is_default=bool(payload.get("is_default", False)))
     db.add(plan)
     try:
         await db.flush()
-        await _audit(db, actor_id, None, "plan.create", None, {"code": code, "name": name})
+        for row in source_entries:
+            db.add(PlanEntitlement(
+                plan_id=plan.id,
+                feature_key=row.feature_key,
+                enabled=bool(row.enabled),
+                limit_value=row.limit_value,
+                unlimited=bool(row.unlimited),
+                config=row.config or {},
+            ))
+        await _audit(db, actor_id, None, "plan.create", None, {"code": code, "name": name, "copy_from": source_code or None})
         await db.commit()
         await db.refresh(plan)
     except IntegrityError as exc:
         await db.rollback()
         raise HTTPException(status_code=409, detail="套餐编码已存在") from exc
-    return ok(_plan_data(plan, []), "套餐创建成功")
+    entries = list((await db.execute(select(PlanEntitlement).where(PlanEntitlement.plan_id == plan.id))).scalars().all())
+    return ok(_plan_data(plan, entries), "套餐创建成功")
 
 
 @router.put("/plans/{plan_code}")
@@ -161,7 +223,7 @@ async def get_user_entitlements(target_user_id: int, user=Depends(get_current_us
     _require_admin(user)
     if cloud_auth_url():
         remote = await _cloud_entitlement("get_entitlements", {"user_id": target_user_id}, user)
-        return ok({"user_id": target_user_id, "plan_code": remote.get("plan_code") or "NORMAL", "plan_expires_at": remote.get("plan_expires_at"), "overrides": [{"feature_key": key, **value} for key, value in (remote.get("overrides") or {}).items()], "effective": {}}, "用户权限查询成功")
+        return ok({"user_id": target_user_id, "plan_code": remote.get("plan_code") or "NORMAL", "plan_expires_at": remote.get("plan_expires_at"), "overrides": _override_summary(remote.get("overrides") or {}), "effective": {}}, "用户权限查询成功")
     target = (await db.execute(select(User).where(User.id == target_user_id))).scalar_one_or_none()
     if target is None:
         raise HTTPException(status_code=404, detail="用户不存在")
@@ -217,9 +279,11 @@ async def set_user_feature(
     db: AsyncSession = Depends(get_session),
 ):
     actor_id = _require_admin(user)
+    values = _normalize_override(feature_key, payload)
+    feature_key = str(feature_key or "").strip()
     if cloud_auth_url():
-        remote = await _cloud_entitlement("set_user_feature", {"user_id": target_user_id, "feature_key": feature_key, "feature": payload}, user)
-        return ok({"feature_key": feature_key, "effective": remote.get("overrides", {}).get(feature_key, payload)}, "用户功能权限已更新")
+        remote = await _cloud_entitlement("set_user_feature", {"user_id": target_user_id, "feature_key": feature_key, "feature": {key: values[key] for key in ("enabled", "limit", "unlimited", "reason") if values[key] is not None}}, user)
+        return ok({"feature_key": feature_key, "effective": (remote.get("overrides") or {}).get(feature_key, payload)}, "用户功能权限已更新")
     target = (await db.execute(select(User).where(User.id == target_user_id))).scalar_one_or_none()
     if target is None:
         raise HTTPException(status_code=404, detail="用户不存在")
@@ -228,18 +292,15 @@ async def set_user_feature(
         row = UserEntitlementOverride(user_id=target.id, feature_key=feature_key, created_by=actor_id)
         db.add(row)
     if "enabled" in payload:
-        row.enabled = bool(payload.get("enabled"))
+        row.enabled = values["enabled"]
     if "limit" in payload or "limit_value" in payload:
-        value = payload.get("limit", payload.get("limit_value"))
-        if value is not None and int(value) < 0:
-            raise HTTPException(status_code=422, detail="配额不能为负数")
-        row.limit_value = int(value) if value is not None else None
+        row.limit_value = values["limit"]
     if "unlimited" in payload:
-        row.unlimited = bool(payload.get("unlimited"))
+        row.unlimited = values["unlimited"]
     if "expires_at" in payload:
-        row.expires_at = _parse_datetime(payload.get("expires_at"))
+        row.expires_at = values["expires_at"]
     if "reason" in payload:
-        row.reason = str(payload.get("reason") or "")[:255] or None
+        row.reason = values["reason"]
     target.auth_version = int(target.auth_version or 1) + 1
     await _audit(db, actor_id, target.id, "user.feature.update", feature_key, payload)
     await db.commit()

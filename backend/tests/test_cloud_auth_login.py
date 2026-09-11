@@ -21,13 +21,25 @@ class _FakeResult:
     def scalar_one_or_none(self):
         return self.record
 
+    def scalars(self):
+        # 云端登录会额外查询本机功能授权覆盖表；测试替身返回空集合，
+        # 表示本机还没有任何需要清理或镜像的覆盖记录。
+        return SimpleNamespace(all=lambda: [])
+
 
 class _FakeSession:
     def __init__(self, record):
         self.record = record
+        self.deleted = []
 
     async def execute(self, _query):
         return _FakeResult(self.record)
+
+    async def delete(self, record):
+        self.deleted.append(record)
+
+    async def add(self, record):
+        return None
 
     async def commit(self):
         return None

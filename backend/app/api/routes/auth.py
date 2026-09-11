@@ -9,8 +9,10 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 from common.schemas.api import LoginRequest
 from common.db.session import get_session
-from common.models import RegistrationInvite, User, SystemSetting
+from common.models import RegistrationInvite, User, SystemSetting, UserEntitlementOverride
+from common.services.entitlements import ENTITLEMENT_FEATURES
 from common.services.registration_invites import hash_invite_code, normalize_invite_code
+from common.services.system_settings import registration_enabled
 from backend.app.core.dependencies import get_current_user
 from backend.app.core.response import ok
 from backend.app.core.security import create_access_token, create_refresh_token, decode_refresh_token, hash_password, verify_password
@@ -33,6 +35,74 @@ def _cloud_expiry(value: object) -> datetime | None:
         return datetime.fromisoformat(str(value).replace("Z", "+00:00")).replace(tzinfo=None)
     except ValueError:
         return None
+
+
+def normalize_cloud_overrides(value: object) -> dict[str, dict[str, object]]:
+    """把云端 entitlements_json 规范化为可写入本机覆盖表的字段。
+
+    只接受平台已支持的功能键，忽略无法解释的字段，避免云端返回的
+    任意 JSON 污染本机授权表。
+    """
+    if not isinstance(value, dict):
+        return {}
+    result: dict[str, dict[str, object]] = {}
+    for raw_key, raw_feature in value.items():
+        key = str(raw_key or "").strip()
+        if key not in ENTITLEMENT_FEATURES or not isinstance(raw_feature, dict):
+            continue
+        entry: dict[str, object] = {}
+        if isinstance(raw_feature.get("enabled"), bool):
+            entry["enabled"] = raw_feature["enabled"]
+        if isinstance(raw_feature.get("unlimited"), bool):
+            entry["unlimited"] = raw_feature["unlimited"]
+        limit = raw_feature.get("limit", raw_feature.get("limit_value"))
+        if limit is not None:
+            try:
+                parsed = int(limit)
+            except (TypeError, ValueError):
+                parsed = None
+            if parsed is not None and parsed >= 0:
+                entry["limit_value"] = parsed
+        expires_at = _cloud_expiry(raw_feature.get("expires_at"))
+        if expires_at is not None:
+            entry["expires_at"] = expires_at
+        reason = str(raw_feature.get("reason") or "").strip()[:255]
+        if reason:
+            entry["reason"] = reason
+        result[key] = entry
+    return result
+
+
+async def _sync_cloud_overrides(session: AsyncSession, record: User, raw_overrides: object) -> None:
+    """云端模式下把云端功能授权镜像到本机，使本机功能拦截与云端一致。
+
+    云端统一认证是套餐与功能授权的权威来源，本机覆盖表只是执行镜像；
+    不修改 auth_version，避免在登录时把用户已签发的令牌全部作废。
+
+    注意：只有云端明确返回了 entitlements 字典时才做清理。旧版鉴权服务
+    不返回该字段，此时必须保持本机授权不变，否则每次登录都会把用户授权清空。
+    """
+    if not isinstance(raw_overrides, dict):
+        return
+    overrides = normalize_cloud_overrides(raw_overrides)
+    rows = list(
+        (await session.execute(select(UserEntitlementOverride).where(UserEntitlementOverride.user_id == record.id))).scalars().all()
+    )
+    by_key = {str(row.feature_key): row for row in rows}
+    for key, row in by_key.items():
+        # 只清理平台受管功能键，保留其他历史数据。
+        if key in ENTITLEMENT_FEATURES and key not in overrides:
+            await session.delete(row)
+    for key, values in overrides.items():
+        row = by_key.get(key)
+        if row is None:
+            row = UserEntitlementOverride(user_id=record.id, feature_key=key)
+            session.add(row)
+        row.enabled = values.get("enabled") if isinstance(values.get("enabled"), bool) else None
+        row.unlimited = values.get("unlimited") if isinstance(values.get("unlimited"), bool) else None
+        row.limit_value = values.get("limit_value") if isinstance(values.get("limit_value"), int) else None
+        row.expires_at = values.get("expires_at") if isinstance(values.get("expires_at"), datetime) else None
+        row.reason = values.get("reason") if isinstance(values.get("reason"), str) else None
 
 
 async def _authenticate_cloud_user(username: str, password: str) -> tuple[dict, str]:
@@ -170,6 +240,9 @@ async def login(request: LoginRequest, session: AsyncSession = Depends(get_sessi
             user_record.plan_code = str(remote_user.get("plan_code") or user_record.plan_code or "NORMAL").upper()
             if "plan_expires_at" in remote_user:
                 user_record.plan_expires_at = _cloud_expiry(remote_user.get("plan_expires_at"))
+        # 云端功能授权是权威来源：镜像到本机，否则管理员在“套餐权限”里为
+        # 单个用户开关的功能在本机拦截逻辑中不会生效。
+        await _sync_cloud_overrides(session, user_record, remote_user.get("entitlements"))
         await session.commit()
         await session.refresh(user_record)
     elif user_record is None or not user_record.status or (password and not verify_password(password, user_record.password_hash)):
@@ -219,14 +292,9 @@ async def logout(user=Depends(get_current_user)):
 
 @router.post("/register")
 async def register(request: RegisterRequest, session: AsyncSession = Depends(get_session)):
-    registration_enabled = (
-        await session.execute(
-            select(SystemSetting.setting_value)
-            .where(SystemSetting.setting_key == "registration_enabled")
-            .limit(1)
-        )
-    ).scalar_one_or_none()
-    if str(registration_enabled or "").strip().lower() not in {"1", "true", "yes", "on"}:
+    # 与 /system-settings/public 共用同一个读取函数，避免出现
+    # “页面显示注册开放、提交却被拒绝”的分裂状态。
+    if not await registration_enabled(session):
         raise HTTPException(status_code=403, detail="注册功能已关闭，请联系管理员")
     invite_code = normalize_invite_code(request.invite_code)
     if len(invite_code) < 8:

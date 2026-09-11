@@ -7,6 +7,7 @@ import type {
   SystemSettings,
   ThemeAppearanceSettings,
   ThemeFontSettings,
+  UserEntitlements,
 } from '@/types'
 import {
   dispatchThemeSettingsUpdated,
@@ -383,7 +384,7 @@ export const changePassword = async (data: { current_password: string; new_passw
   return post(`${USERS_PREFIX}/change-password`, data)
 }
 
-// 获取当前登录用户信息（含到期日）
+// 获取当前登录用户信息（含到期日与套餐详情）
 export interface CurrentUserProfile {
   id: number
   username: string
@@ -394,6 +395,12 @@ export interface CurrentUserProfile {
   account_limit?: number | null
   last_login_at?: string | null
   expire_at?: string | null
+  /** 当前套餐编码，例如 NORMAL / VIP。 */
+  plan_code?: string
+  /** 套餐到期时间（云端账号以此为准，缺失时回落到 expire_at）。 */
+  plan_expires_at?: string | null
+  /** 只读套餐详情：功能开关与配额快照。 */
+  entitlements?: UserEntitlements
 }
 
 export const getCurrentUserProfile = async (): Promise<CurrentUserProfile> => {

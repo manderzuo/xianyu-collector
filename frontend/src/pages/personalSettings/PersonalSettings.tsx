@@ -7,8 +7,8 @@
  * 3. 后续可扩展更多个人设置项
  */
 import { useState, useEffect, useRef } from 'react'
-import { User, RefreshCw, Wallet, Plus, Key, Link2, Copy, RotateCcw, Save, Package, X, ScrollText, ArrowUpFromLine, Upload, QrCode, Eye, EyeOff, CalendarClock } from 'lucide-react'
-import { getUserSetting, updateUserSetting, createCardSecretKey, changePassword, getDockCode, resetDockCode, getSecretKey, resetSecretKey, uploadPaymentQrcode, getSystemSettings, getCurrentUserProfile } from '@/api/settings'
+import { User, RefreshCw, Wallet, Plus, Key, Link2, Copy, RotateCcw, Save, Package, X, ScrollText, ArrowUpFromLine, Upload, QrCode, Eye, EyeOff, CalendarClock, ShieldCheck } from 'lucide-react'
+import { getUserSetting, updateUserSetting, createCardSecretKey, changePassword, getDockCode, resetDockCode, getSecretKey, resetSecretKey, uploadPaymentQrcode, getSystemSettings, getCurrentUserProfile, type CurrentUserProfile } from '@/api/settings'
 import { createWithdraw, getSettlementRecords, type SettlementRecord } from '@/api/payment'
 import { useUIStore } from '@/store/uiStore'
 import { useAuthStore } from '@/store/authStore'
@@ -44,6 +44,16 @@ const PAYMENT_TYPE_KEY = 'payment_type'
 // 对接卡密秘钥的 key（按用户存储，用于「分销卡券」页面对接上游卡券系统）
 const CARD_SECRET_KEY = 'distribution.card_secret_key'
 
+/** 套餐功能键的中文名：与「套餐权限」页面保持一致，便于用户对照自己的授权。 */
+const PLAN_FEATURE_LABELS: Record<string, string> = {
+  'account.manage': '闲鱼账号',
+  'card.auto_delivery': '自动发货卡券',
+  'product.auto_publish': '自动发布商品',
+  'ai.smart_reply': 'AI 智能回复',
+  'ai.builtin_reply': '内置AI自动回复',
+  'keyword.reply': '关键词回复',
+}
+
 export function PersonalSettings() {
   const { addToast } = useUIStore()
   const { isAuthenticated, token, _hasHydrated, user, clearAuth } = useAuthStore()
@@ -51,6 +61,8 @@ export function PersonalSettings() {
   const [balance, setBalance] = useState('')
   const [showRecharge, setShowRecharge] = useState(false)
   const [expireAt, setExpireAt] = useState<string | null>(null)
+  // 当前套餐详情：只读展示，实际授权由管理员在「套餐权限」页面维护。
+  const [plan, setPlan] = useState<CurrentUserProfile | null>(null)
   const [renewPrice, setRenewPrice] = useState('')
   const [showRenew, setShowRenew] = useState(false)
   const [showFundFlowModal, setShowFundFlowModal] = useState(false)
@@ -143,10 +155,12 @@ export function PersonalSettings() {
       if (cardKeyResult.success && cardKeyResult.value !== undefined) {
         setCardSecretKey(cardKeyResult.value)
       }
-      // 加载当前用户到期日
+      // 加载当前用户到期日与套餐详情
       try {
         const profile = await getCurrentUserProfile()
-        setExpireAt(profile.expire_at ?? null)
+        setPlan(profile)
+        // 套餐到期时间优先（云端 VIP 以此为准），缺失时回落到旧版账户到期日
+        setExpireAt(profile.plan_expires_at ?? profile.expire_at ?? null)
       } catch {
         // 到期日加载失败不阻断其他设置展示
       }
@@ -531,6 +545,15 @@ export function PersonalSettings() {
                 className="input-ios bg-gray-50 dark:bg-gray-800 cursor-not-allowed"
               />
             </div>
+            <div>
+              <label className="input-label">当前套餐</label>
+              <input
+                type="text"
+                value={plan?.plan_code || user?.entitlements?.plan || 'NORMAL'}
+                disabled
+                className="input-ios bg-gray-50 dark:bg-gray-800 cursor-not-allowed"
+              />
+            </div>
             <div className="md:col-span-2">
               <label className="input-label">账户到期日</label>
               <div className="flex items-center gap-2">
@@ -551,6 +574,42 @@ export function PersonalSettings() {
               {isExpiredTime(expireAt) && (
                 <p className="mt-1 text-xs text-red-500">账户已到期，请尽快续期以恢复服务。</p>
               )}
+            </div>
+
+            {/* 套餐详情：只读展示当前生效的功能授权，避免正文页看不到 VIP 权益 */}
+            <div className="md:col-span-2">
+              <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 dark:border-slate-700 dark:bg-slate-800/60">
+                <div className="flex items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-200">
+                  <ShieldCheck className="w-4 h-4" />
+                  套餐详情（{plan?.plan_code || user?.entitlements?.plan || 'NORMAL'}）
+                </div>
+                <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                  {Object.entries(PLAN_FEATURE_LABELS).map(([featureKey, label]) => {
+                    const quota = plan?.entitlements?.quotas?.[featureKey]
+                    const enabled = quota?.enabled ?? plan?.entitlements?.features?.[featureKey] ?? false
+                    const unlimited = Boolean(quota?.unlimited)
+                    const remaining = quota?.remaining
+                    const detail = !enabled
+                      ? '未开通'
+                      : unlimited
+                        ? '不限量'
+                        : remaining === null || remaining === undefined
+                          ? '已开通'
+                          : `剩余 ${remaining}`
+                    return (
+                      <div key={featureKey} className="flex items-center justify-between gap-2 text-sm">
+                        <span className="text-slate-600 dark:text-slate-300">{label}</span>
+                        <span className={enabled ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-400'}>
+                          {detail}
+                        </span>
+                      </div>
+                    )
+                  })}
+                </div>
+                <p className="mt-2 text-xs text-slate-400">
+                  套餐开通与功能授权由管理员在「套餐权限」页面维护，此处仅展示当前生效结果。
+                </p>
+              </div>
             </div>
           </div>
         </div>

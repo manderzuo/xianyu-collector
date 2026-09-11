@@ -134,9 +134,16 @@ export const getRegistrationStatus = async (): Promise<{ enabled: boolean }> => 
   // 注册开关可能由管理员在另一个页面或另一个浏览器标签页修改，
   // 不能复用登录页生命周期内的旧公开设置缓存。
   const settings = await getPublicSettings(true)
-  // 处理多种可能的值类型：true, 'true', 1, '1'
+  // 后端已把该值归一化为 'true'/'false'，这里仍保持宽容解析，
+  // 兼容旧版本后端可能返回的 1/'yes'/'on'，避免页面误判为已关闭。
   const value = settings.registration_enabled
-  return { enabled: value === true || value === 'true' || value === 1 || value === '1' }
+  if (value === undefined || value === null) {
+    return { enabled: false }
+  }
+  if (typeof value === 'boolean') {
+    return { enabled: value }
+  }
+  return { enabled: ['1', 'true', 'yes', 'on'].includes(String(value).trim().toLowerCase()) }
 }
 
 // 获取登录信息显示状态 - 从系统设置获取
