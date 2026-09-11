@@ -1,1 +1,1 @@
-20260911-1.3.6-registration-gate-fix
+20260911-1.3.7-cloud-account-sync

@@ -21,6 +21,7 @@ from common.services.registration_invites import (
     hash_invite_code,
     preview_invite_code,
 )
+from common.services.cloud_auth import CloudAuthError, cloud_auth_request, cloud_auth_url
 
 router = APIRouter(prefix="/api/v1/admin/invites", tags=["管理员邀请码"])
 CODE_ALPHABET = string.ascii_uppercase + string.digits
@@ -157,6 +158,26 @@ async def create_invites(
     except IntegrityError as exc:
         await db.rollback()
         raise HTTPException(status_code=500, detail="邀请码生成失败，请重试") from exc
+
+    # 云端模式下注册会转发到共享认证服务校验邀请码，因此新生成的邀请码
+    # 必须立即同步过去；否则在别的电脑上凭这个码注册会提示“邀请码无效”。
+    if cloud_auth_url():
+        token = str(user.get("cloud_session_token") or "").strip()
+        if token:
+            try:
+                await cloud_auth_request("sync_invites", {
+                    "items": [
+                        {"code": entry["code"], "status": "active", "expires_at": expires_at.isoformat() if expires_at else None}
+                        for entry in created
+                    ],
+                }, token)
+            except CloudAuthError as exc:
+                # 邀请码已在本机创建成功；同步失败只提示管理员，
+                # 避免出现“界面报错但码其实已生成”的假失败。
+                raise HTTPException(
+                    status_code=exc.status_code,
+                    detail=f"邀请码已在本机生成，但同步到云端失败：{exc}。请在别的电脑上重新登录管理端后重试。",
+                ) from exc
 
     return ok({
         "items": [

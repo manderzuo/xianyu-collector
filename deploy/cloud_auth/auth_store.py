@@ -102,6 +102,9 @@ class AuthStore:
                     ("plan_code", "TEXT NOT NULL DEFAULT 'NORMAL'"),
                     ("plan_expires_at", "TEXT"),
                     ("entitlements_json", "TEXT NOT NULL DEFAULT '{}'"),
+                    # 邮箱用于把账号资料同步到各机器的本机镜像，
+                    # 让「邮箱密码」登录在其他电脑上也能解析出账号名。
+                    ("email", "TEXT"),
                 ):
                     try:
                         conn.execute(f"ALTER TABLE app_users ADD COLUMN {column} {definition}")
@@ -263,6 +266,16 @@ class AuthStore:
             raise AuthError("invalid_input", "密码不能超过256位")
         return password
 
+    @classmethod
+    def _email(cls, value: Any) -> str | None:
+        """邮箱是可选资料：不做格式强校验，只做长度与清洗。"""
+        text = str(value or "").strip().lower()
+        if not text:
+            return None
+        if len(text) > 255 or any(ord(char) < 32 for char in text):
+            raise AuthError("invalid_input", "邮箱格式无效")
+        return text
+
     @staticmethod
     def _normalize_expiry(value: Any) -> str | None:
         if value in (None, ""):
@@ -373,6 +386,7 @@ class AuthStore:
             "last_login_at": str(row["last_login_at"] or ""),
             "plan_code": str(row["plan_code"] or "NORMAL"),
             "plan_expires_at": str(row["plan_expires_at"] or "") or None,
+            "email": str(row["email"] or "") or None,
             "entitlements": json.loads(row["entitlements_json"] or "{}"),
         }
 
@@ -420,12 +434,13 @@ class AuthStore:
         finally:
             conn.close()
 
-    def register(self, username: Any, password: Any, employee_name: Any, invite_code: Any, source_ip: Any = "") -> dict[str, Any]:
+    def register(self, username: Any, password: Any, employee_name: Any, invite_code: Any, source_ip: Any = "", email: Any = None) -> dict[str, Any]:
         username = self._text(username, "账号", self.MAX_USERNAME_LENGTH)
         password = self._password(password)
         employee_name = self._text(
             employee_name, "员工姓名", self.MAX_EMPLOYEE_NAME_LENGTH
         )
+        email = self._email(email)
         invite_code = normalize_invite_code(invite_code)
         if len(invite_code) < 8:
             raise AuthError("invalid_invite", "邀请码无效，请向管理员索取有效邀请码")
@@ -460,10 +475,10 @@ class AuthStore:
                     """
                     INSERT INTO app_users
                       (username, password_hash, employee_name, role, status,
-                       created_at, updated_at)
-                    VALUES (?, ?, ?, 'employee', 'pending', ?, ?)
+                       created_at, updated_at, email)
+                    VALUES (?, ?, ?, 'employee', 'pending', ?, ?, ?)
                     """,
-                    (username, self.hash_password(password), employee_name, now, now),
+                    (username, self.hash_password(password), employee_name, now, now, email),
                 )
             except sqlite3.IntegrityError as exc:
                 self._record_auth_failure(conn, identities)
@@ -485,8 +500,99 @@ class AuthStore:
         finally:
             conn.close()
 
+    #: 导入存量账号时允许写入的状态取值。
+    IMPORTABLE_STATUSES = frozenset({"pending", "approved", "rejected", "disabled"})
+    MAX_IMPORT_BATCH = 500
+
+    @classmethod
+    def is_cloud_password_hash(cls, value: Any) -> bool:
+        """判断是否为云端可验证的哈希格式（pbkdf2_<alg>$<iterations>$<salt>$<digest>）。
+
+        本机用户表的哈希是另一种序列化格式，导入前必须由调用方无损转码。
+        这里拒绝其它格式，避免写入永远无法通过验证的哈希。
+        """
+        text = str(value or "")
+        parts = text.split("$")
+        if len(parts) != 4 or not parts[0].startswith("pbkdf2_"):
+            return False
+        try:
+            int(parts[1])
+        except ValueError:
+            return False
+        return bool(parts[2] and parts[3])
+
+    def import_users(self, items: Any) -> dict[str, Any]:
+        """把各机器本机用户表里的存量账号批量引入云端。
+
+        安全约定：
+        - **只创建云端不存在的账号，绝不覆盖已有记录。** 云端是权限与密码的
+          权威来源，管理员可能已在云端改过密码或状态，导入不能把它们抹掉。
+        - 只接受明文密码之外的东西：调用方必须传云端格式的 ``password_hash``
+          （从本机格式无损转码），本方法不接收也不生成明文密码。
+        - ``admin`` 保留账号同样不会被覆盖。
+        """
+        if not isinstance(items, list) or not items:
+            raise AuthError("invalid_input", "导入数据无效")
+        if len(items) > self.MAX_IMPORT_BATCH:
+            raise AuthError("invalid_input", f"单次最多导入 {self.MAX_IMPORT_BATCH} 个账号")
+
+        now = self._now()
+        created: list[str] = []
+        skipped: list[str] = []
+        conn = self._connect()
+        try:
+            for item in items:
+                if not isinstance(item, Mapping):
+                    raise AuthError("invalid_input", "导入数据无效")
+                username = self._text(item.get("username"), "账号", self.MAX_USERNAME_LENGTH)
+                status = str(item.get("status") or "approved").strip().lower()
+                if status not in self.IMPORTABLE_STATUSES:
+                    raise AuthError("invalid_input", f"{username} 的状态无效")
+                password_hash = str(item.get("password_hash") or "")
+                if not self.is_cloud_password_hash(password_hash):
+                    raise AuthError("invalid_input", f"{username} 的密码哈希格式无效，无法导入")
+                employee_name = self._text(
+                    item.get("employee_name"), "员工姓名", self.MAX_EMPLOYEE_NAME_LENGTH,
+                    required=False,
+                )
+                role = str(item.get("role") or "employee").strip().lower()
+                if role not in {"admin", "employee"}:
+                    role = "employee"
+                email = self._email(item.get("email"))
+                plan_code = str(item.get("plan_code") or "NORMAL").strip().upper()[:32] or "NORMAL"
+
+                existing = conn.execute(
+                    "SELECT id FROM app_users WHERE username = ?", (username,)
+                ).fetchone()
+                if existing is not None:
+                    skipped.append(username)
+                    continue
+                conn.execute(
+                    """
+                    INSERT INTO app_users
+                      (username, password_hash, employee_name, role, status,
+                       created_at, approved_at, updated_at, plan_code, email)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (username, password_hash, employee_name, role, status,
+                     str(item.get("created_at") or now),
+                     now if status == "approved" else None,
+                     now, plan_code, email),
+                )
+                created.append(username)
+            conn.commit()
+            return {"created": len(created), "skipped": len(skipped), "created_users": created, "skipped_users": skipped}
+        finally:
+            conn.close()
+
     def sync_invites(self, items: Any) -> list[dict[str, Any]]:
-        """Upsert invite hashes sent by an administrator client."""
+        """Upsert invite hashes sent by an administrator client.
+
+        接受两种形态，可混用：
+        - ``code``：明文邀请码（新建邀请码时使用，最精确）；
+        - ``code_hash``：直接给出哈希。存量邀请码在本机只保存了哈希（明文
+          从未落库），因此只能按哈希同步。两端哈希算法一致，校验行为不变。
+        """
         if not isinstance(items, list) or len(items) > 100:
             raise AuthError("invalid_input", "邀请码数据无效")
         now = self._now()
@@ -495,24 +601,44 @@ class AuthStore:
             for item in items:
                 if not isinstance(item, Mapping):
                     raise AuthError("invalid_input", "邀请码数据无效")
-                code = normalize_invite_code(item.get("code"))
-                if len(code) < 8:
-                    raise AuthError("invalid_input", "邀请码格式无效")
+                raw_code = normalize_invite_code(item.get("code"))
+                if raw_code:
+                    if len(raw_code) < 8:
+                        raise AuthError("invalid_input", "邀请码格式无效")
+                    code_hash = hash_invite_code(raw_code)
+                    preview = raw_code[:4] + "-" + raw_code[4:8] + ("-..." if len(raw_code) > 8 else "")
+                else:
+                    code_hash = str(item.get("code_hash") or "").strip().lower()
+                    if len(code_hash) != 64 or any(char not in "0123456789abcdef" for char in code_hash):
+                        raise AuthError("invalid_input", "邀请码哈希格式无效")
+                    preview = str(item.get("code_preview") or "").strip()[:64] or code_hash[:8]
                 status = str(item.get("status") or "active").strip().lower()
                 if status not in {"active", "used", "revoked", "expired"}:
                     raise AuthError("invalid_input", "邀请码状态无效")
                 expires_at = self._normalize_expiry(item.get("expires_at")) if "expires_at" in item else None
-                preview = code[:4] + "-" + code[4:8] + ("-..." if len(code) > 8 else "")
-                existing = conn.execute("SELECT id FROM app_invites WHERE code_hash = ?", (hash_invite_code(code),)).fetchone()
+                existing = conn.execute("SELECT id FROM app_invites WHERE code_hash = ?", (code_hash,)).fetchone()
                 if existing is None:
                     conn.execute(
                         "INSERT INTO app_invites(code_hash, code_preview, status, created_at, expires_at) VALUES (?, ?, ?, ?, ?)",
-                        (hash_invite_code(code), preview, status, now, expires_at),
+                        (code_hash, preview, status, now, expires_at),
                     )
                 elif "expires_at" in item:
-                    conn.execute("UPDATE app_invites SET status=?, expires_at=? WHERE id=?", (status, expires_at, int(existing["id"])))
-                else:
-                    conn.execute("UPDATE app_invites SET status=? WHERE id=?", (status, int(existing["id"])))
+                    # 已存在的邀请码不回退状态：云端可能已经核销过它，
+                    # 用本机的旧状态覆盖会造成邀请码被重复使用。
+                    conn.execute(
+                        "UPDATE app_invites SET expires_at=? WHERE id=? AND status='active'",
+                        (expires_at, int(existing["id"])),
+                    )
+                    if status == "revoked":
+                        conn.execute(
+                            "UPDATE app_invites SET status='revoked' WHERE id=? AND status='active'",
+                            (int(existing["id"]),),
+                        )
+                elif status == "revoked":
+                    conn.execute(
+                        "UPDATE app_invites SET status='revoked' WHERE id=? AND status='active'",
+                        (int(existing["id"]),),
+                    )
             conn.commit()
             rows = conn.execute(
                 "SELECT id, code_preview, status, created_at, expires_at, used_at, used_by FROM app_invites ORDER BY id DESC"

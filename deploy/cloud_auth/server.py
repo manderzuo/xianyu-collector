@@ -44,6 +44,40 @@ class Handler(BaseHTTPRequestHandler):
             return forwarded[-1][:128]
         return str(self.client_address[0] if self.client_address else '').strip()[:128]
 
+    def _handle_sync_users(self, store, body):
+        """把采集端本机用户表里的存量账号导入云端。
+
+        鉴权二选一，任一通过即可：
+        - 管理员会话令牌（管理员在客户端登录后触发，无需额外配置）；
+        - ``XIANYU_CLOUD_SYNC_SECRET`` 共享密钥（采集端后端启动时自动导入，
+          此时没有用户会话可用）。
+
+        未配置共享密钥时，只接受管理员会话——失败关闭，不会因为漏配环境变量
+        而变成任何人都能向云端写入账号。
+        """
+        import hmac as _hmac
+        import os as _os
+
+        expected = _os.environ.get('XIANYU_CLOUD_SYNC_SECRET', '').strip()
+        supplied = str(body.get('sync_secret') or '').strip()
+        secret_ok = bool(expected) and bool(supplied) and _hmac.compare_digest(expected, supplied)
+
+        if not secret_ok:
+            header = self.headers.get('Authorization', '')
+            token = header[7:] if header.startswith('Bearer ') else ''
+            user = store.get_session_user(token) if token else None
+            if not user:
+                return self.reply(401, {'ok': False, 'message': '登录已失效或账号未获批准，请重新登录'})
+            if user.get('role') != 'admin':
+                return self.reply(403, {'ok': False, 'message': '只有管理员可以导入存量账号'})
+
+        result = store.import_users(body.get('users') or [])
+        logger.info(
+            "cloud user import request_id=%s created=%s skipped=%s via_secret=%s",
+            self.request_id, result.get('created'), result.get('skipped'), secret_ok,
+        )
+        return self.reply(200, {'ok': True, **result, 'message': '存量账号已导入'})
+
     def reply(self, status, data):
         raw = json.dumps(data, ensure_ascii=False).encode()
         self.send_response(status)
@@ -127,11 +161,15 @@ class Handler(BaseHTTPRequestHandler):
                 report = diagnostics.save_upload(body, owner, self.client_source())
                 return self.reply(200, {'ok': True, 'report': report, 'message': '诊断日志已上传'})
             if action == 'register':
-                user = store.register(body.get('username'), body.get('password'), body.get('nickname') or body.get('username'), body.get('invite_code'), self.client_source())
+                user = store.register(body.get('username'), body.get('password'), body.get('nickname') or body.get('username'), body.get('invite_code'), self.client_source(), body.get('email'))
                 return self.reply(200, {'ok': True, 'user': user, 'message': '注册申请已提交，请等待管理员审核'})
             if action == 'login':
                 user = store.authenticate(body.get('username'), body.get('password'), self.client_source())
                 return self.reply(200, {'ok': True, 'user': user, 'session_token': store.create_session(user['id'])})
+            if action == 'sync_users':
+                # 存量账号导入必须在会话校验之前处理：调用方可能是没有用户会话的
+                # 采集端后端（服务器到服务器），它只能用共享密钥证明身份。
+                return self._handle_sync_users(store, body)
             header = self.headers.get('Authorization', '')
             token = header[7:] if header.startswith('Bearer ') else ''
             user = store.get_session_user(token)

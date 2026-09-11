@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import logging
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -18,10 +19,12 @@ from backend.app.core.response import ok
 from backend.app.core.security import create_access_token, create_refresh_token, decode_refresh_token, hash_password, verify_password
 from backend.app.services.entitlements import entitlement_payload
 from common.services.cloud_auth import CloudAuthError, cloud_auth_request, cloud_auth_url
+from common.services.cloud_user_sync import sync_invites_to_cloud, sync_users_to_cloud
 
 router = APIRouter(prefix="/api/v1/auth", tags=["鉴权"])
 refresh_bearer = HTTPBearer(auto_error=False)
 DEFAULT_ADMIN_PASSWORD = "admin123"
+logger = logging.getLogger("xr.auth")
 
 
 def _cloud_role(value: object) -> str:
@@ -128,6 +131,32 @@ async def _authenticate_cloud_user(username: str, password: str) -> tuple[dict, 
     return remote_user, cloud_token
 
 
+def _is_admin_claims(record: User) -> bool:
+    return str(record.role or "").strip().lower() in {"admin", "administrator"}
+
+
+#: 每次进程只做一次云端补录，避免管理员反复登录时重复扫描本机用户表。
+_cloud_backfill_done = False
+
+
+async def _run_cloud_backfill(session: AsyncSession, cloud_token: str) -> None:
+    """管理员登录后把本机存量账号与邀请码补进云端。
+
+    这是没有配置共享密钥时也能生效的自动迁移路径：管理员登录一次，
+    该机器上的存量账号即可被引入云端。失败只记录日志，不影响登录本身。
+    """
+    global _cloud_backfill_done
+    if _cloud_backfill_done or not cloud_auth_url() or not cloud_token:
+        return
+    _cloud_backfill_done = True
+    try:
+        users_result = await sync_users_to_cloud(session, token=cloud_token)
+        invites_result = await sync_invites_to_cloud(session, token=cloud_token)
+        logger.info("cloud backfill after admin login users=%s invites=%s", users_result, invites_result)
+    except Exception:  # pragma: no cover - 补录失败不能阻断管理员登录
+        logger.exception("cloud backfill after admin login failed")
+
+
 class RegisterRequest(BaseModel):
     username: str = Field(min_length=3, max_length=64)
     password: str = Field(min_length=6, max_length=128)
@@ -213,6 +242,9 @@ async def login(request: LoginRequest, session: AsyncSession = Depends(get_sessi
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="用户名或密码错误")
         remote_user, cloud_token = await _authenticate_cloud_user(cloud_username, password)
         remote_username = str(remote_user["username"]).strip()
+        # 云端返回的邮箱用于本机镜像：没有它，「邮箱密码」登录在别的电脑上
+        # 无法把邮箱解析成账号名，只能报“用户名或密码错误”。
+        remote_email = str(remote_user.get("email") or request.email or "").strip().lower() or None
         if user_record is None or str(user_record.username).casefold() != remote_username.casefold():
             user_record = (
                 await session.execute(select(User).where(User.username == remote_username).limit(1))
@@ -222,6 +254,7 @@ async def login(request: LoginRequest, session: AsyncSession = Depends(get_sessi
                 username=remote_username,
                 password_hash=hash_password(password),
                 nickname=str(remote_user.get("employee_name") or remote_username),
+                email=remote_email,
                 role=_cloud_role(remote_user.get("role")),
                 status=1,
                 plan_code=str(remote_user.get("plan_code") or "NORMAL").upper(),
@@ -237,6 +270,9 @@ async def login(request: LoginRequest, session: AsyncSession = Depends(get_sessi
             user_record.username = remote_username
             user_record.role = _cloud_role(remote_user.get("role"))
             user_record.status = 1
+            # 只在能拿到邮箱时补写，避免把已有邮箱清空。
+            if remote_email:
+                user_record.email = remote_email
             user_record.plan_code = str(remote_user.get("plan_code") or user_record.plan_code or "NORMAL").upper()
             if "plan_expires_at" in remote_user:
                 user_record.plan_expires_at = _cloud_expiry(remote_user.get("plan_expires_at"))
@@ -245,6 +281,10 @@ async def login(request: LoginRequest, session: AsyncSession = Depends(get_sessi
         await _sync_cloud_overrides(session, user_record, remote_user.get("entitlements"))
         await session.commit()
         await session.refresh(user_record)
+        # 管理员登录时顺带把本机存量账号与邀请码补进云端。用管理员自己的
+        # 云端会话即可完成，无需额外配置；只创建缺失项，重复执行安全。
+        if _is_admin_claims(user_record):
+            await _run_cloud_backfill(session, cloud_token)
     elif user_record is None or not user_record.status or (password and not verify_password(password, user_record.password_hash)):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="用户名或密码错误")
     claims = {
@@ -299,6 +339,26 @@ async def register(request: RegisterRequest, session: AsyncSession = Depends(get
     invite_code = normalize_invite_code(request.invite_code)
     if len(invite_code) < 8:
         raise HTTPException(status_code=400, detail="邀请码格式无效")
+
+    # 云端模式下邀请码与账号都属于共享认证服务：必须转发到云端建立待审账号。
+    # 若在本机库创建，账号只存在于这一台电脑，而登录由云端验密，
+    # 结果就是“注册成功但永远登不上”。邀请码也由本模块同步到云端。
+    if cloud_auth_url():
+        try:
+            remote = await cloud_auth_request("register", {
+                "username": request.username.strip(),
+                "password": request.password,
+                "nickname": request.nickname or request.username.strip(),
+                "invite_code": invite_code,
+                "email": (request.email or "").strip().lower() or None,
+            })
+        except CloudAuthError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+        return ok(
+            (remote or {}).get("user") or {},
+            (remote or {}).get("message") or "注册申请已提交，请等待管理员审核",
+        )
+
     email = (request.email or "").strip().lower() or None
     existing = (await session.execute(select(User).where(User.username == request.username.strip()))).scalar_one_or_none()
     if existing is not None:

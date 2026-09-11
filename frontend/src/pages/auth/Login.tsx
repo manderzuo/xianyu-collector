@@ -313,7 +313,7 @@ export function Login() {
     try {
       const result = await register({ username: username.trim(), invite_code: registerInviteCode.trim(), password, session_id: sessionId })
       if (result.success) {
-        addToast({ type: 'success', message: '注册申请已提交，请等待管理员审核' })
+        addToast({ type: 'success', message: result.message || '注册申请已提交，请等待管理员审核' })
         setShowRegister(false)
         setRegisterInviteCode('')
         setRegisterConfirmPassword('')

@@ -116,7 +116,9 @@ export function Register() {
         session_id: sessionId,
       })
       if (result.success) {
-        addToast({ type: 'success', message: '注册成功，请登录' })
+        // 云端模式下注册只创建待审核账号，通过后才能真正登录，
+        // 因此优先展示后端返回的说明，不能提示“注册成功，请登录”。
+        addToast({ type: 'success', message: result.message || '注册申请已提交，请等待管理员审核' })
         navigate('/login')
       } else {
         addToast({ type: 'error', message: result.message || '注册失败' })

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -85,6 +86,29 @@ async def startup() -> None:
         logger.info("database schema initialized")
     except Exception as exc:  # pragma: no cover - 本地无 MySQL 时仍可启动健康检查
         logger.warning("database initialization skipped: %s", exc)
+    await _backfill_cloud_accounts()
+
+
+async def _backfill_cloud_accounts() -> None:
+    """把本机存量账号引入云端统一认证服务。
+
+    只有配置了共享密钥才在启动时执行：这条路径没有管理员会话，
+    必须靠 ``XIANYU_CLOUD_SYNC_SECRET`` 证明身份（云端失败关闭）。
+    未配置时改为管理员登录后自动补录，见 auth._run_cloud_backfill。
+    """
+    from common.services.cloud_auth import cloud_auth_url
+    from common.services.cloud_user_sync import sync_users_to_cloud
+    from common.db.session import async_session_maker
+
+    secret = os.getenv("XIANYU_CLOUD_SYNC_SECRET", "").strip()
+    if not cloud_auth_url() or not secret:
+        return
+    try:
+        async with async_session_maker() as session:
+            result = await sync_users_to_cloud(session, sync_secret=secret)
+        logger.info("cloud account backfill at startup: %s", result)
+    except Exception:  # pragma: no cover - 补录失败不能阻断服务启动
+        logger.exception("cloud account backfill at startup failed")
 
 
 @app.get("/health", tags=["系统"])
