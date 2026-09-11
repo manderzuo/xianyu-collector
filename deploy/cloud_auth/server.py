@@ -14,6 +14,18 @@ logger = logging.getLogger("xianyu.cloud_auth")
 if not logging.getLogger().handlers:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 
+ACCOUNT_SESSION_ACTIONS = {
+    'list_account_sessions',
+    'sync_account_session',
+    'get_account_session',
+    'delete_account_session',
+}
+ACCOUNT_SESSION_SYNC_DISABLED = {
+    'ok': False,
+    'code': 'account_session_sync_disabled',
+    'message': '闲鱼账号云端会话同步已禁用，账号 Cookie 和 Token 仅保存在本机',
+}
+
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
@@ -125,6 +137,12 @@ class Handler(BaseHTTPRequestHandler):
             user = store.get_session_user(token)
             if not user:
                 return self.reply(401, {'ok': False, 'message': '登录已失效或账号未获批准，请重新登录'})
+            if action in ACCOUNT_SESSION_ACTIONS:
+                # The shared service is only the authority for application
+                # login and entitlements.  Xianyu account cookies/tokens are
+                # deliberately kept on the customer machine and must never be
+                # uploaded or returned by this service.
+                return self.reply(410, ACCOUNT_SESSION_SYNC_DISABLED)
             if action == 'me':
                 return self.reply(200, {'ok': True, 'user': user})
             if action == 'logout':

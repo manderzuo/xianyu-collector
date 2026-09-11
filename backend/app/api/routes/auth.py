@@ -15,10 +15,47 @@ from backend.app.core.dependencies import get_current_user
 from backend.app.core.response import ok
 from backend.app.core.security import create_access_token, create_refresh_token, decode_refresh_token, hash_password, verify_password
 from backend.app.services.entitlements import entitlement_payload
+from common.services.cloud_auth import CloudAuthError, cloud_auth_request, cloud_auth_url
 
 router = APIRouter(prefix="/api/v1/auth", tags=["鉴权"])
 refresh_bearer = HTTPBearer(auto_error=False)
 DEFAULT_ADMIN_PASSWORD = "admin123"
+
+
+def _cloud_role(value: object) -> str:
+    return "admin" if str(value or "").strip().lower() == "admin" else "user"
+
+
+def _cloud_expiry(value: object) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).replace(tzinfo=None)
+    except ValueError:
+        return None
+
+
+async def _authenticate_cloud_user(username: str, password: str) -> tuple[dict, str]:
+    """Authenticate the system user and obtain the session used by /auth/verify.
+
+    The local database remains a mirror for business ownership and quotas.  In
+    cloud mode the password authority is the shared auth service, and the
+    returned session token must travel inside the local JWT so every protected
+    request can validate the same cloud session.
+    """
+    try:
+        remote = await cloud_auth_request(
+            "login",
+            {"username": username, "password": password},
+        )
+    except CloudAuthError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    remote_user = (remote or {}).get("user") or {}
+    cloud_token = str((remote or {}).get("session_token") or "").strip()
+    remote_username = str(remote_user.get("username") or "").strip()
+    if not remote_username or not cloud_token:
+        raise HTTPException(status_code=502, detail="云端登录响应缺少有效会话，请稍后重试")
+    return remote_user, cloud_token
 
 
 class RegisterRequest(BaseModel):
@@ -79,6 +116,8 @@ async def login(request: LoginRequest, session: AsyncSession = Depends(get_sessi
             if not verified:
                 raise HTTPException(status_code=401, detail=message)
     if email and request.verification_code and not password:
+        if cloud_auth_url():
+            raise HTTPException(status_code=409, detail="云端模式请使用用户名和密码登录")
         from backend.app.api.routes.captcha import check_email_code
         verified, message = check_email_code(email, request.verification_code, "login")
         if not verified:
@@ -90,8 +129,50 @@ async def login(request: LoginRequest, session: AsyncSession = Depends(get_sessi
         result = await session.execute(select(User).where(User.email == email).limit(1))
     else:
         raise HTTPException(status_code=422, detail="请提供用户名或邮箱及登录凭据")
+
     user_record = result.scalar_one_or_none()
-    if user_record is None or not user_record.status or (password and not verify_password(password, user_record.password_hash)):
+    cloud_token = ""
+    remote_user: dict = {}
+    if cloud_auth_url():
+        if not password:
+            raise HTTPException(status_code=409, detail="云端模式请使用用户名和密码登录")
+        # Cloud login is the password authority.  Email/password remains
+        # compatible by resolving the local mirror to its cloud username.
+        cloud_username = username or (str(user_record.username).strip() if user_record else "")
+        if not cloud_username:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="用户名或密码错误")
+        remote_user, cloud_token = await _authenticate_cloud_user(cloud_username, password)
+        remote_username = str(remote_user["username"]).strip()
+        if user_record is None or str(user_record.username).casefold() != remote_username.casefold():
+            user_record = (
+                await session.execute(select(User).where(User.username == remote_username).limit(1))
+            ).scalar_one_or_none()
+        if user_record is None:
+            user_record = User(
+                username=remote_username,
+                password_hash=hash_password(password),
+                nickname=str(remote_user.get("employee_name") or remote_username),
+                role=_cloud_role(remote_user.get("role")),
+                status=1,
+                plan_code=str(remote_user.get("plan_code") or "NORMAL").upper(),
+                plan_expires_at=_cloud_expiry(remote_user.get("plan_expires_at")),
+            )
+            session.add(user_record)
+            await session.flush()
+        else:
+            # Keep the local mirror usable for ownership/quota lookups and for
+            # a future explicitly configured local-auth fallback.  Do not sync
+            # any Xianyu account Cookie/Token here.
+            user_record.password_hash = hash_password(password)
+            user_record.username = remote_username
+            user_record.role = _cloud_role(remote_user.get("role"))
+            user_record.status = 1
+            user_record.plan_code = str(remote_user.get("plan_code") or user_record.plan_code or "NORMAL").upper()
+            if "plan_expires_at" in remote_user:
+                user_record.plan_expires_at = _cloud_expiry(remote_user.get("plan_expires_at"))
+        await session.commit()
+        await session.refresh(user_record)
+    elif user_record is None or not user_record.status or (password and not verify_password(password, user_record.password_hash)):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="用户名或密码错误")
     claims = {
         "sub": str(user_record.id),
@@ -100,6 +181,8 @@ async def login(request: LoginRequest, session: AsyncSession = Depends(get_sessi
         "plan_code": user_record.plan_code or "NORMAL",
         "auth_version": int(user_record.auth_version or 1),
     }
+    if cloud_token:
+        claims["cloud_session_token"] = cloud_token
     entitlements = await entitlement_payload(session, claims)
     user = {
         "id": user_record.id,
@@ -213,6 +296,11 @@ async def refresh(credentials: HTTPAuthorizationCredentials | None = Depends(ref
         "username": claims.get("username", ""),
         "role": claims.get("role", "user"),
     }
+    # Cloud mode validates the shared session on every protected request.  A
+    # refresh must carry that session forward or the next /auth/verify call
+    # will immediately log the user out again.
+    if claims.get("cloud_session_token"):
+        base_claims["cloud_session_token"] = claims["cloud_session_token"]
     token, expires_in = create_access_token(base_claims)
     refresh_token, refresh_expires_in = create_refresh_token(base_claims)
     return ok({
