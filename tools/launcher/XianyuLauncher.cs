@@ -1358,9 +1358,10 @@ internal sealed class UpdaterWindow : LauncherWindow
     private string latestBuild = "";
     private string updateReason = "";
     private string notes = "";
-    private bool pendingRestartClient;
     private bool autoUpdateAfterCheck;
     private readonly Timer latestAutoCloseTimer = new Timer();
+    private readonly Timer completionAutoCloseTimer = new Timer();
+    private bool relaunchAfterCompletion;
 
     internal UpdaterWindow() : base(LauncherText.Updater, true)
     {
@@ -1376,7 +1377,13 @@ internal sealed class UpdaterWindow : LauncherWindow
             latestAutoCloseTimer.Stop();
             if (!IsDisposed) Close();
         };
-        Disposed += (s, e) => latestAutoCloseTimer.Dispose();
+        completionAutoCloseTimer.Interval = 1800;
+        completionAutoCloseTimer.Tick += (s, e) => CompleteUpdateHandoff();
+        Disposed += (s, e) =>
+        {
+            latestAutoCloseTimer.Dispose();
+            completionAutoCloseTimer.Dispose();
+        };
 
         var body = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 6, BackColor = Ui.LightBackground, Padding = Ui.Pad(32, 12, 32, 16) };
         body.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -1550,7 +1557,8 @@ internal sealed class UpdaterWindow : LauncherWindow
                 StartUpdate();
                 break;
             case OperationState.Completed:
-                Close();
+                if (relaunchAfterCompletion) CompleteUpdateHandoff();
+                else Close();
                 break;
             case OperationState.Idle:
                 if (latestVersion.Length > 0) { } // already checked: nothing to do
@@ -1616,6 +1624,9 @@ internal sealed class UpdaterWindow : LauncherWindow
 
     private void ResetStages()
     {
+        latestAutoCloseTimer.Stop();
+        completionAutoCloseTimer.Stop();
+        relaunchAfterCompletion = false;
         foreach (var pair in stageRows) { pair.Value.ClearActions(); pair.Value.SetState(StageStatus.Pending, "等待开始", ""); }
         stageProgress.Clear();
         rollbackShown = false;
@@ -1735,6 +1746,7 @@ internal sealed class UpdaterWindow : LauncherWindow
                 case "available":
                     SetState(OperationState.Ready);
                     autoUpdateAfterCheck = true;
+                    shieldBadge.Set("将在更新开始后检测回滚保护", Ui.TextSecondary, Ui.TextSecondary);
                     nowButton.Enabled = false;
                     nowButton.SetLoading(true);
                     nowButton.Text = "正在准备更新";
@@ -1744,6 +1756,7 @@ internal sealed class UpdaterWindow : LauncherWindow
                     break;
                 case "latest":
                     ShowBanner(StageStatus.Success, string.IsNullOrEmpty(evt.Detail) ? "当前已是最新版本" : evt.Detail, "");
+                    shieldBadge.Set("当前无需回滚保护", Ui.TextSecondary, Ui.TextSecondary);
                     state = OperationState.Idle;
                     nowButton.Enabled = true;
                     nowButton.SetLoading(false);
@@ -1761,6 +1774,7 @@ internal sealed class UpdaterWindow : LauncherWindow
                 case "completed":
                     ShowBanner(StageStatus.Success, "更新完成，当前版本 v" + latestVersion, "");
                     state = OperationState.Completed;
+                    relaunchAfterCompletion = false;
                     nowButton.Enabled = true;
                     nowButton.SetLoading(false);
                     nowButton.Text = "关闭";
@@ -1769,17 +1783,22 @@ internal sealed class UpdaterWindow : LauncherWindow
                     laterButton.Visible = false;
                     progressBar.Value = 100;
                     progressCaption.Text = "更新完成";
+                    progressCount.Text = "已完成 6 / 6";
+                    ScheduleCompletionClose(false);
                     break;
                 case "restart_client":
-                    pendingRestartClient = true;
-                    ShowBanner(StageStatus.Warning, "更新包已下载，重新启动闲鱼管理系统后应用新版界面", "");
+                    ShowBanner(StageStatus.Warning, "更新包已准备，正在自动重启闲鱼管理系统并继续同步运行环境", "");
                     state = OperationState.Completed;
+                    relaunchAfterCompletion = true;
                     nowButton.Enabled = true;
                     nowButton.SetLoading(false);
                     nowButton.Text = "关闭";
                     nowButton.IconName = "";
                     laterButton.Visible = false;
                     progressBar.Value = 100;
+                    progressCaption.Text = "正在准备重启应用";
+                    progressCount.Text = "客户端待重启";
+                    ScheduleCompletionClose(true);
                     break;
                 case "rolled_back":
                     ShowFailure("safe", evt);
@@ -1899,6 +1918,9 @@ internal sealed class UpdaterWindow : LauncherWindow
     {
         AppOps.Trace("showfailure enter mode=" + mode);
         autoUpdateAfterCheck = false;
+        latestAutoCloseTimer.Stop();
+        completionAutoCloseTimer.Stop();
+        relaunchAfterCompletion = false;
         state = OperationState.Failed;
         nowButton.Enabled = true;
         nowButton.SetLoading(false);
@@ -1950,6 +1972,36 @@ internal sealed class UpdaterWindow : LauncherWindow
             else AppOps.OpenFolder(Path.Combine(appRoot, "logs"));
         }
         catch { }
+    }
+
+    private void ScheduleCompletionClose(bool relaunch)
+    {
+        relaunchAfterCompletion = relaunch;
+        completionAutoCloseTimer.Stop();
+        completionAutoCloseTimer.Start();
+    }
+
+    private void CompleteUpdateHandoff()
+    {
+        completionAutoCloseTimer.Stop();
+        if (IsDisposed) return;
+        if (relaunchAfterCompletion)
+        {
+            relaunchAfterCompletion = false;
+            var launched = AppOps.LaunchPackageExecutable(packageRoot, "xianyu-launcher", LauncherText.Product, "--launcher", "", "");
+            if (!launched)
+            {
+                ShowBanner(StageStatus.Warning, "更新包已准备完成，请手动重新打开闲鱼管理系统", "E_UPDATE_CLIENT_RESTART");
+                nowButton.Enabled = true;
+                nowButton.SetLoading(false);
+                nowButton.Text = "关闭";
+                nowButton.IconName = "circle-check";
+                laterButton.Visible = false;
+                return;
+            }
+            AppOps.Trace("client_update_handoff_started");
+        }
+        Close();
     }
 
     private bool bannerShown;

@@ -873,8 +873,14 @@ $worker = {
             # that package has been applied; otherwise an old executable can
             # report the new version after a failed file replacement.
             Write-Detail "client_update_pending version=$latestVersion build=$latestBuild path=$pendingClientPath"
-            Write-Detail "update_completed runtime_version=$latestVersion client_version_pending=true"
-            Send-Message 'completed' "更新包已下载，请关闭并重新启动启动器以应用新版界面" 100
+            # This is not the final update state. The next launcher startup
+            # must apply the package and, for client-first releases, continue
+            # the deferred runtime image synchronization. Older launchers may
+            # still show the legacy text message, but the structured result is
+            # consumed by the current launcher to perform the handoff.
+            Write-Detail "client_update_staged version=$latestVersion build=$latestBuild runtime_sync_deferred=$runtimeImagesDeferred"
+            Send-Message 'restart_client' "更新包已准备，正在重启启动器并继续同步运行环境" 100
+            Send-Result 'restart_client' "更新包已准备，正在重启启动器并继续同步运行环境"
         } else {
             Set-Content -LiteralPath $versionFile -Value $latestVersion -Encoding UTF8
             Set-Content -LiteralPath $buildFile -Value $latestBuild -Encoding UTF8
