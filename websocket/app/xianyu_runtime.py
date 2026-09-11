@@ -29,7 +29,7 @@ from common.db.session import async_session_maker
 from common.models.accounts import Account
 from common.models.system import SystemSetting
 from common.services.account_renewal import renew_account_session
-from common.services.cookie_renewal import is_session_expired_message
+from common.services.cookie_renewal import describe_failure, is_session_expired_message
 from common.services.remote_token_api import request_remote_xianyu_token
 from common.services.goofish_mtop import parse_cookie_string, serialize_cookies
 from common.utils.xianyu_push import extract_events
@@ -697,6 +697,44 @@ class AccountRuntimeManager:
         except Exception:
             logger.exception("启动已启用账号运行时失败")
 
+    async def _mark_login_expired(self, runtime: AccountRuntime) -> None:
+        """平台确认登录态失效时标记账号，供人工介入。
+
+        仅在此处把 ``status`` 写成 ``expired``：IM token 取不到只影响聊天，
+        不代表登录态失效，不应写这个状态。
+        """
+        try:
+            async with async_session_maker() as session:
+                account = (
+                    await session.execute(select(Account).where(Account.id == int(runtime.account_id)))
+                ).scalar_one_or_none()
+                if account is None:
+                    return
+                account.status = "expired"
+                account.im_status = "expired"
+                account.cookie_expire_at = datetime.now(timezone.utc).replace(tzinfo=None)
+                await session.commit()
+        except Exception:
+            logger.debug("账号 %s 标记登录态失效失败", runtime.account_id)
+
+    async def _persist_im_status(self, runtime: AccountRuntime, im_status: str) -> None:
+        """单独记录 IM 长连接状态，不触碰登录态 ``status``。
+
+        ``im_status`` 与 ``status`` 互相独立：只有网页/登录态确认失效时才写
+        ``status = "expired"``；IM token 取不到只写 ``im_status = "error"``，
+        这样「只有聊天不可用」不会被误判成「整个账号失效」。
+        """
+        try:
+            async with async_session_maker() as session:
+                account = (
+                    await session.execute(select(Account).where(Account.id == int(runtime.account_id)))
+                ).scalar_one_or_none()
+                if account is not None and account.im_status != im_status:
+                    account.im_status = im_status
+                    await session.commit()
+        except Exception:
+            logger.debug("账号 %s im_status 写库失败", runtime.account_id)
+
     async def _persist_runtime_cookie(self, runtime: AccountRuntime, cookie: str) -> None:
         """把刷新的 Cookie 写回账号表；写库失败不阻断运行时。"""
         if not str(cookie or "").strip():
@@ -841,6 +879,7 @@ class AccountRuntimeManager:
                         # 真正完成 IM 握手后才清除续期冷却；这样续期后若仍被
                         # USER_VALIDATE 拒绝，不会每 5 秒重复打 Passport。
                         runtime.last_renewal_attempt_monotonic = 0.0
+                        await self._persist_im_status(runtime, "connected")
                         retry_delay = 5.0
                         heartbeat_task = asyncio.create_task(
                             self._heartbeat(websocket),
@@ -879,8 +918,12 @@ class AccountRuntimeManager:
                         retry_delay = max(retry_delay, 60.0)
                         if not runtime.last_error:
                             runtime.update("expired", str(exc))
+                        # 登录态被平台确认失效时，才把账号标记为需要人工处理。
+                        # 这是 status 的唯一写入点，与 IM token 失败严格区分。
+                        await self._mark_login_expired(runtime)
                     else:
                         runtime.update("reconnecting", str(exc))
+                        await self._persist_im_status(runtime, "error")
                     logger.warning("账号 %s 长连接断开，将在 %.1f 秒后重试：%s", runtime.account_id, retry_delay, str(exc)[:300])
                     await asyncio.sleep(retry_delay)
                     retry_delay = min(retry_delay * 2, 60.0)
@@ -948,15 +991,19 @@ class AccountRuntimeManager:
                             device_id,
                         )
                     except Exception as verify_exc:
-                        account.status = "expired"
-                        account.cookie_expire_at = datetime.now(timezone.utc).replace(tzinfo=None)
+                        # 关键区分：续期本身已经成功，说明**登录态是有效的**，
+                        # 失败的只是 IM Token 这一段。这里绝不能把整个账号标成
+                        # expired —— 否则网页侧同步任务会按 status 过滤跳过该
+                        # 账号，把「聊天链路故障」放大成「整账号停摆」。
+                        account.im_status = "error"
                         await session.commit()
                         runtime.update(
-                            "expired",
-                            f"自动续期后平台仍要求重新验证：{str(verify_exc)[:700]}；请重新扫码登录",
+                            "im_error",
+                            f"登录态有效，但获取 IM Token 失败：{str(verify_exc)[:700]}；"
+                            f"{describe_failure(str(verify_exc))}",
                         )
                         logger.warning(
-                            "账号 %s 自动续期验收失败，需要重新扫码：%s",
+                            "账号 %s 登录态已续期成功，但 IM Token 获取失败（不影响网页功能）：%s",
                             runtime.account_id,
                             str(verify_exc)[:500],
                         )
@@ -968,6 +1015,8 @@ class AccountRuntimeManager:
                     runtime.cookie_value = renewed_cookie
                     runtime.user_id = int(account.user_id)
                     runtime.token_mode = token_mode
+                    account.im_status = "connected"
+                    await session.commit()
                     runtime.update("reconnecting", "登录态自动续期成功，正在重新连接")
                     logger.info("账号 %s 已自动续期并准备重连", runtime.account_id)
                     return True

@@ -731,7 +731,19 @@ export const getOrderAmountTrend = async (): Promise<OrderTrendItem[]> => {
 
 // 重写版账号详情：展示 Cookie 登录态、连接状态、同步结果及已同步内容。
 export interface RewriteAccountContentDetail {
-  account?: { id: number; account_name?: string; goofish_id?: string | null; status?: string; proxy?: string | null }
+  account?: {
+    id: number
+    account_name?: string
+    goofish_id?: string | null
+    status?: string
+    proxy?: string | null
+    /** IM 长连接状态：unknown / connected / expired / error。与登录态 status 分开。 */
+    im_status?: string
+    im_device_id?: string | null
+    last_renewal_attempt_at?: string | null
+    cookie_last_renewed_at?: string | null
+    cookie_next_renewal_at?: string | null
+  }
   login_state?: { has_cookie?: boolean; cookie_length?: number; cookie_records?: number; last_cookie_at?: string | null; expires_at?: string | null }
   connection?: {
     status?: string

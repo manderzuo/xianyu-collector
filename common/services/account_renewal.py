@@ -19,13 +19,53 @@ from common.services.cookie_renewal import (
     cookie_renewal_service,
     is_session_expired_message,
     requires_browser_recovery_message,
+    requires_verification_message,
 )
 
 logger = logging.getLogger("xr.account_renewal")
 
+#: 同一账号两次自动续期之间的最小间隔（分钟）。
+#: 多个定时任务都会因会话失效触发续期（Cookie 续期 20 分钟、商品同步 10 分钟、
+#: 长连接运行时 5 分钟冷却），没有这一层限制时同一账号会被反复打 Passport，
+#: 既浪费配额也更容易触发风控。手动续期不受此限制。
+RENEWAL_ATTEMPT_COOLDOWN_MINUTES = 15
+
+#: 免于冷却限制的来源：人工触发，以及长连接运行时（它自带 5 分钟冷却）。
+COOLDOWN_EXEMPT_SOURCES = frozenset({"manual", "runtime"})
+
+#: 续期成功后按调度约定给出的“下次续期”时间，用于把 cookie_next_renewal_at
+#: 写成真实值（该字段此前长期无人维护，会让排查看到过期时间）。
+NEXT_RENEWAL_INTERVAL_MINUTES = 20
+
 
 def _now_naive() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def renewal_cooldown_remaining(account: Account, now: datetime | None = None) -> int:
+    """返回距离下次允许自动续期还剩的秒数；已可续期时返回 0。"""
+    last = account.last_renewal_attempt_at
+    if last is None:
+        return 0
+    reference = now or _now_naive()
+    if isinstance(last, datetime) and last.tzinfo is not None:
+        last = last.astimezone(timezone.utc).replace(tzinfo=None)
+    elapsed = (reference - last).total_seconds()
+    remaining = RENEWAL_ATTEMPT_COOLDOWN_MINUTES * 60 - elapsed
+    return max(0, int(remaining))
+
+
+def renewal_in_cooldown(account: Account, *, source: str, force: bool) -> bool:
+    """判断本次自动续期是否应因冷却而跳过。
+
+    仅对后台来源生效：人工触发（``source="manual"``）与长连接运行时
+    （自带冷却）始终放行，避免用户点了续期却什么都不发生。
+    """
+    if not force:
+        return False
+    if str(source or "").strip().lower() in COOLDOWN_EXEMPT_SOURCES:
+        return False
+    return renewal_cooldown_remaining(account) > 0
 
 
 async def _notify_runtime(account: Account, action: str = "restart") -> dict[str, Any]:
@@ -74,6 +114,24 @@ async def renew_account_session(
                 "runtime": None,
             }
 
+    # 冷却限制：多个后台任务都会因会话失效触发续期，必须限制同一账号的
+    # 续期频率，否则会把 Passport 打成高频请求。人工续期不受限制。
+    if renewal_in_cooldown(account, source=source, force=force):
+        remaining = renewal_cooldown_remaining(account)
+        return {
+            "account_id": account.id,
+            "success": False,
+            "status": "skipped",
+            "method": "none",
+            "message": f"距上次续期不足 {RENEWAL_ATTEMPT_COOLDOWN_MINUTES} 分钟，本次跳过（剩余约 {remaining} 秒）",
+            "updated_cookie_names": [],
+            "runtime": None,
+            "cooldown_remaining": remaining,
+        }
+
+    # 记录本次尝试时间；无论成败都写，冷却才有意义。
+    account.last_renewal_attempt_at = now
+
     account_settings: dict[str, Any] = {}
     settings_row = (
         await session.execute(
@@ -112,6 +170,10 @@ async def renew_account_session(
         if account.status == "expired":
             account.status = "active"
         account.cookie_expire_at = now + timedelta(days=30)
+        # 维护续期时间字段：这两个字段此前是死字段，会让排查看到的时间与
+        # 实际调度不符。成功后写入真实值与按调度约定的下次续期时间。
+        account.cookie_last_renewed_at = now
+        account.cookie_next_renewal_at = now + timedelta(minutes=NEXT_RENEWAL_INTERVAL_MINUTES)
     elif observed_session_expired:
         # 运行时已经从闲鱼接口确认 Session 失效时，不能继续相信本地缓存的
         # cookie_expire_at。将账号置为 expired，确保下一轮定时任务不会因本地
@@ -133,6 +195,9 @@ async def renew_account_session(
     if result.success and notify_runtime:
         runtime = await _notify_runtime(account, "restart")
 
+    # 区分「需要完成安全验证」与「登录态失效」：前者应提示用户去过滑块/人脸，
+    # 后者才需要重新扫码。早期实现把两者都写成“请重新扫码”，会误导排查。
+    verification_required = requires_verification_message(result.message)
     return {
         "account_id": account.id,
         "success": result.success,
@@ -142,6 +207,7 @@ async def renew_account_session(
         "updated_cookie_names": result.updated_cookie_names,
         "cookie_changed": cookie_changed,
         "needs_manual_login": result.needs_manual_login,
+        "verification_required": verification_required,
         "steps": result.steps,
         "runtime": runtime,
     }

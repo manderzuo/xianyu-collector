@@ -116,17 +116,30 @@ def _migrate_entitlements_v1(connection) -> None:
 
 
 def _migrate_account_columns(connection) -> None:
-    """给旧闲鱼账号表补齐设备指纹字段。
+    """给旧闲鱼账号表补齐设备指纹、IM 状态与续期时间字段。
 
-    ``im_device_id`` 用于把 IM 设备指纹固定下来；旧库可能没有该列，
-    缺失时补一列可空字段，由运行时首次取 Token 时写入。
+    - ``im_device_id``：把 IM 设备指纹固定下来；旧库缺失时补可空列，
+      由运行时首次取 Token 时写入。
+    - ``im_status``：把「IM 长连接是否可用」与「登录态是否有效」分开记录，
+      避免取不到 IM Token 就把整个账号判为过期。
+    - ``last_renewal_attempt_at``：续期频率限制的时间戳。
+    - ``cookie_last_renewed_at`` / ``cookie_next_renewal_at``：此前是无人维护的
+      死字段，现在由续期流程写入，因此必须确保旧库存在这两列。
     """
     inspector = sqlalchemy_inspect(connection)
     if "xr_accounts" not in inspector.get_table_names():
         return
     existing = {column["name"] for column in inspector.get_columns("xr_accounts")}
-    if "im_device_id" not in existing:
-        connection.execute(text("ALTER TABLE xr_accounts ADD COLUMN im_device_id VARCHAR(128) NULL"))
+    missing = {
+        "im_device_id": "VARCHAR(128) NULL",
+        "im_status": "VARCHAR(16) NOT NULL DEFAULT 'unknown'",
+        "last_renewal_attempt_at": "DATETIME NULL",
+        "cookie_last_renewed_at": "DATETIME NULL",
+        "cookie_next_renewal_at": "DATETIME NULL",
+    }
+    for name, definition in missing.items():
+        if name not in existing:
+            connection.execute(text(f"ALTER TABLE xr_accounts ADD COLUMN {name} {definition}"))
 
 
 def _migrate_order_columns(connection) -> None:

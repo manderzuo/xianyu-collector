@@ -56,6 +56,19 @@ def serialize(account: Account, account_settings: dict | None = None) -> dict:
         "status": account.status,
         "cookie_expire_at": account.cookie_expire_at.isoformat() if account.cookie_expire_at else None,
         "created_at": account.created_at.isoformat() if account.created_at else None,
+        # IM 长连接状态单独返回：status 描述登录态，im_status 描述聊天链路。
+        # 两者分开后，“只有聊天不可用”不会再被误读成“整个账号失效”。
+        "im_status": getattr(account, "im_status", None) or "unknown",
+        "im_device_id": getattr(account, "im_device_id", None),
+        "last_renewal_attempt_at": (
+            account.last_renewal_attempt_at.isoformat() if getattr(account, "last_renewal_attempt_at", None) else None
+        ),
+        "cookie_last_renewed_at": (
+            account.cookie_last_renewed_at.isoformat() if getattr(account, "cookie_last_renewed_at", None) else None
+        ),
+        "cookie_next_renewal_at": (
+            account.cookie_next_renewal_at.isoformat() if getattr(account, "cookie_next_renewal_at", None) else None
+        ),
     }
     settings = account_settings or {}
     # 将账号列表需要的开关一并返回，确保按钮操作后刷新页面仍保持真实状态。

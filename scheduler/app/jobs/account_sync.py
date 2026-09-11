@@ -27,8 +27,13 @@ async def execute_account_sync(
         return {"task_name": f"sync_{mode}", "status": "failed", "detail": "同步模式无效"}
 
     async with async_session_maker() as session:
+        # 必须包含 expired 账号：``sync_account_products`` 内部的
+        # “会话失效 → 强制续期 → 重试同步”自愈逻辑就在这条路径上。
+        # 早期只选 active，导致账号一旦被标记过期就再也拿不到任何网页侧
+        # 恢复尝试，把一次局部故障放大成永久停摆。
+        # 续期频率由 account_renewal 的冷却窗口统一限制，不会因此打高频。
         statement = select(Account).where(
-            Account.status == "active",
+            Account.status.in_(["active", "expired"]),
             Account.cookie.isnot(None),
             Account.cookie != "",
         ).order_by(Account.id.asc())
@@ -70,6 +75,18 @@ async def execute_account_sync(
 
     success_count = sum(1 for item in results if item.get("success"))
     failed_count = len(results) - success_count
+    if not results:
+        # 没有可处理账号时必须报 skipped。此前 0 个账号会让 failed_count 为 0
+        # 从而判定 completed，界面上看起来“任务成功”，实际什么都没做。
+        return {
+            "task_name": f"sync_{mode}",
+            "status": "skipped",
+            "detail": f"{mode}同步没有可处理的账号（无 active/expired 账号）",
+            "success_count": 0,
+            "failed_count": 0,
+            "results": [],
+            "executed_at": datetime.now(timezone.utc).isoformat(),
+        }
     return {
         "task_name": f"sync_{mode}",
         "status": "partial" if failed_count else "completed",

@@ -116,6 +116,38 @@ def requires_browser_recovery_message(value: str | None) -> bool:
     return any(marker.lower() in text for marker in BROWSER_RECOVERY_MARKERS)
 
 
+#: 需要人工完成安全验证（滑块 / 人脸 / Baxia punish）的信号。
+#:
+#: 这类失败**不等于**登录态失效：账号密码可能仍然有效，只是平台要求先过
+#: 一次人机校验。早期实现把它们与「会话过期」混为一谈，统一提示“请重新扫码”，
+#: 会让用户和排查方都误判成登录态坏了。参考实现同样专门检测 punish 页面
+#: （含 ``_____tmd_____`` 或 ``punish``）并归为可拖动验证状态。
+VERIFICATION_MARKERS = (
+    "_____tmd_____",
+    "punish",
+    "安全验证",
+    "滑块",
+    "人脸",
+    "请完成验证",
+    "verification_required",
+)
+
+
+def requires_verification_message(value: str | None) -> bool:
+    """判断失败是否属于「需要人工完成安全验证」，而非登录态失效。"""
+    text = str(value or "").lower()
+    return any(marker.lower() in text for marker in VERIFICATION_MARKERS)
+
+
+def describe_failure(value: str | None) -> str:
+    """把底层失败原因翻译成给用户看的下一步动作。"""
+    if requires_verification_message(value):
+        return "闲鱼要求完成安全验证（滑块/人脸），请先在浏览器或客户端完成验证后再试"
+    if requires_browser_recovery_message(value):
+        return "闲鱼要求完成设备安全验证，请重新扫码登录或配置远程 Token"
+    return "登录态已失效，请重新扫码登录"
+
+
 def _headers(cookie_value: str, *, referer: str = "https://www.goofish.com/") -> dict[str, str]:
     return {
         "Accept": "application/json, text/plain, */*",
@@ -268,7 +300,7 @@ class CookieRenewalService:
                 method="password" if password_result["attempted"] else "browser",
                 message=(
                     f"浏览器已拿到新 Cookie，但长登录确认失败：{verify['message']}；"
-                    f"{password_result['message']}"
+                    f"{password_result['message']}；{describe_failure(verify['message'])}"
                 ),
                 response_text=verify["response_text"],
                 needs_manual_login=True,
@@ -300,7 +332,7 @@ class CookieRenewalService:
             method="password" if password_result["attempted"] else "none",
             message=(
                 f"接口续期失败：{api_result['message']}；浏览器续期失败：{browser['message']}；"
-                f"{password_result['message']}"
+                f"{password_result['message']}；{describe_failure(api_result['message'])}"
             ),
             response_text=api_result["response_text"],
             needs_manual_login=True,

@@ -96,11 +96,22 @@ async def execute_cookie_renewal(
     success_count = sum(1 for item in results if item.get("success") and item.get("status") != "skipped")
     skipped_count = sum(1 for item in results if item.get("status") == "skipped")
     failed_count = len(results) - success_count - skipped_count
-    task_status = "partial" if failed_count else "completed"
+    if not results:
+        # 0 个账号不能让 failed_count=0 推出 completed：那会显示成“任务成功”
+        # 而实际上什么都没做，掩盖了账号全部不可用的事实。
+        task_status = "skipped"
+    elif failed_count:
+        task_status = "partial"
+    else:
+        task_status = "completed"
     return {
         "task_name": "refresh_cookies",
         "status": task_status,
-        "detail": f"Cookie续期处理 {len(results)} 个账号，成功 {success_count} 个，跳过 {skipped_count} 个，失败 {failed_count} 个",
+        "detail": (
+            "Cookie续期没有可处理的账号（无 active/expired 账号）"
+            if not results
+            else f"Cookie续期处理 {len(results)} 个账号，成功 {success_count} 个，跳过 {skipped_count} 个，失败 {failed_count} 个"
+        ),
         "success_count": success_count,
         "skipped_count": skipped_count,
         "failed_count": failed_count,
@@ -146,6 +157,17 @@ async def execute_token_refresh(account_id: int | None = None) -> dict[str, Any]
                 })
 
     success_count = sum(1 for item in results if item.get("success"))
+    if not results:
+        # 同上：0 个账号不能报 completed。
+        return {
+            "task_name": "refresh_tokens",
+            "status": "skipped",
+            "detail": "IM Token刷新没有可处理的账号（无 active 账号）",
+            "success_count": 0,
+            "failed_count": 0,
+            "results": [],
+            "executed_at": _now(),
+        }
     return {
         "task_name": "refresh_tokens",
         "status": "partial" if len(results) != success_count else "completed",
