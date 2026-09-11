@@ -37,11 +37,17 @@ from common.utils.xianyu_push import extract_events
 logger = logging.getLogger("xr.websocket.runtime")
 
 IM_TOKEN_API = "mtop.taobao.idlemessage.pc.login.token"
+#: IM 会话保活接口。``login.token`` 只在连接时换取 WS 凭据；真正让长登录
+#: 会话“续命”的是这个接口，必须在会话仍有效时定期调用。
+IM_KEEPALIVE_API = "mtop.taobao.idlemessage.pc.loginuser.get"
 IM_APP_KEY = "34839810"
 IM_DEVICE_APP_KEY = "444e9908a51d1cb236a27862abc769c9"
 GOOFISH_WS_URL = "wss://wss-goofish.dingtalk.com/"
 WS_APP_KEY = "444e9908a51d1cb236a27862abc769c9"
 RUNTIME_RENEWAL_COOLDOWN_SECONDS = 300.0
+#: 保活间隔。与上游公开实现一致（600 秒），远小于会话有效期，
+#: 保证在会话失效前就完成一次确认。
+IM_KEEPALIVE_INTERVAL_SECONDS = 600.0
 
 
 def _runtime_renewal_due(runtime: "AccountRuntime", now_monotonic: float) -> bool:
@@ -64,6 +70,59 @@ def _parse_cookie(value: str) -> dict[str, str]:
 def _generate_device_id(user_id: str) -> str:
     # 与源程序的设备 ID 结构保持一致：UUID + 闲鱼用户标识。
     return f"{uuid.uuid4()}-{str(user_id or 'unknown').strip()}"
+
+
+def _account_platform_id(account: Account) -> str:
+    """从账号记录的 Cookie 里取出闲鱼用户标识，用于拼设备指纹。"""
+    cookies = _parse_cookie(str(account.cookie or ""))
+    return str(
+        cookies.get("unb")
+        or cookies.get("munb")
+        or account.goofish_id
+        or account.id
+        or "unknown"
+    ).strip()
+
+
+def _stable_device_id(account: Account) -> tuple[str, bool]:
+    """返回 (设备指纹, 是否为本次新生成)。
+
+    设备指纹必须在账号生命周期内保持稳定：每次请求随机生成新指纹会被平台
+    视为不可信环境，进而拒绝下发长登录凭据。已有值直接复用，缺失时才生成
+    一个新值并由调用方落库。
+    """
+    existing = str(account.im_device_id or "").strip()
+    if existing:
+        return existing, False
+    return _generate_device_id(_account_platform_id(account)), True
+
+
+def _merge_response_cookies(cookie_value: str, headers: list[str]) -> str:
+    """把响应的 Set-Cookie 合并进当前 Cookie 串。"""
+    if not headers:
+        return cookie_value
+    merged = _parse_cookie(cookie_value)
+    for header in headers:
+        pair = str(header).split(";", 1)[0].strip()
+        name, separator, value = pair.partition("=")
+        if separator and name.strip() and value.strip():
+            merged[name.strip()] = value.strip()
+    return serialize_cookies(merged)
+
+
+def _response_set_cookies(response: httpx.Response) -> list[str]:
+    return list(response.headers.get_list("set-cookie"))
+
+
+def _result_detail(payload: Any) -> str:
+    if isinstance(payload, dict):
+        ret = payload.get("ret")
+        if isinstance(ret, list) and ret:
+            return str(ret[0])
+        for key in ("message", "msg", "titleMsg", "retMsg"):
+            if payload.get(key):
+                return str(payload[key])
+    return "接口未返回有效结果"
 
 
 def _generate_mid() -> str:
@@ -105,6 +164,63 @@ async def _load_token_settings() -> tuple[str, str, str]:
     values = {str(key): str(value or "").strip() for key, value in rows}
     mode = values.get("token.api_mode", "web").lower()
     return mode if mode in {"web", "remote"} else "web", values.get("token.remote_url", ""), values.get("token.remote_secret_key", "")
+
+
+async def _request_web_keepalive(cookie_value: str) -> tuple[bool, str, str]:
+    """调用 IM 会话保活接口，返回 (是否成功, 说明, 可能刷新的 Cookie)。
+
+    与 ``_request_web_token`` 的区别：保活**不**建立 WS 连接，只向平台确认
+    当前会话仍然有效并顺带刷新 ``_m_h5_tk`` 等票据。这是延长长登录态的
+    关键——只在失效后补救（renew）远不如在有效期内定期保活。
+    """
+    current_cookie = str(cookie_value or "").strip()
+    cookies = _parse_cookie(current_cookie)
+    if not cookies.get("unb"):
+        return False, "Cookie 缺少 unb，无法保活", current_cookie
+    data_value = "{}"
+    api_url = f"{settings.goofish_mtop_host}/h5/{IM_KEEPALIVE_API}/1.0/"
+    async with httpx.AsyncClient(
+        timeout=httpx.Timeout(connect=15, read=30, write=15, pool=30),
+        follow_redirects=True,
+        proxy=settings.goofish_proxy or None,
+    ) as client:
+        timestamp = str(int(time.time() * 1000))
+        token_cookie = cookies.get("_m_h5_tk") or cookies.get("m_h5_tk") or ""
+        signing_token = token_cookie.split("_", 1)[0] if token_cookie else ""
+        params = {
+            "jsv": "2.7.2",
+            "appKey": IM_APP_KEY,
+            "t": timestamp,
+            "sign": _sign(timestamp, signing_token, data_value),
+            "v": "1.0",
+            "type": "originaljson",
+            "accountSite": "xianyu",
+            "dataType": "json",
+            "timeout": "20000",
+            "api": IM_KEEPALIVE_API,
+            "sessionOption": "AutoLoginOnly",
+            "spm_cnt": "a21ybx.im.0.0",
+        }
+        try:
+            response = await client.post(
+                api_url,
+                params=params,
+                data={"data": data_value},
+                headers=_headers(current_cookie),
+                cookies=cookies,
+            )
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            return False, f"保活请求失败：{str(exc)[:300]}", current_cookie
+        refreshed_cookie = _merge_response_cookies(current_cookie, _response_set_cookies(response))
+        try:
+            payload = response.json()
+        except ValueError:
+            return False, "保活接口返回内容不是 JSON", refreshed_cookie
+        ret = payload.get("ret") if isinstance(payload, dict) else None
+        if isinstance(ret, list) and any("SUCCESS" in str(item) for item in ret):
+            return True, "会话保活成功", refreshed_cookie
+        return False, _result_detail(payload), refreshed_cookie
 
 
 async def _request_web_token(cookie_value: str, device_id: str) -> tuple[str, str, str]:
@@ -189,15 +305,17 @@ async def _request_web_token(cookie_value: str, device_id: str) -> tuple[str, st
     raise RuntimeError(last_detail[:500])
 
 
-async def _request_token(cookie_value: str, user_id: int | None) -> tuple[str, str, str, str]:
+async def _request_token(cookie_value: str, user_id: int | None, device_id: str = "") -> tuple[str, str, str, str]:
     cookies = _parse_cookie(cookie_value)
     platform_user_id = cookies.get("unb") or cookies.get("munb") or str(user_id or "unknown")
-    device_id = _generate_device_id(platform_user_id)
+    # 设备指纹优先使用调用方传入的稳定值；只有确实没有时才临时生成，
+    # 避免在重连或多次取 Token 时不断更换设备指纹。
+    resolved_device_id = str(device_id or "").strip() or _generate_device_id(platform_user_id)
     mode, remote_url, remote_secret = await _load_token_settings()
     local_error: Exception | None = None
     try:
-        token, resolved_device_id, refreshed_cookie = await _request_web_token(cookie_value, device_id)
-        return token, resolved_device_id, "web", refreshed_cookie
+        token, verified_device_id, refreshed_cookie = await _request_web_token(cookie_value, resolved_device_id)
+        return token, verified_device_id, "web", refreshed_cookie
     except Exception as exc:
         local_error = exc
         logger.warning("账号 %s 网页接口获取 Token 失败：%s", platform_user_id, str(exc)[:300])
@@ -227,7 +345,7 @@ async def _request_token(cookie_value: str, user_id: int | None) -> tuple[str, s
                 "或检查远程 Token 配置"
             )
         raise RuntimeError(detail)
-    return remote.token, remote.device_id or device_id, "remote", cookie_value
+    return remote.token, remote.device_id or resolved_device_id, "remote", cookie_value
 
 
 def _headers_kwarg() -> str:
@@ -250,6 +368,13 @@ class AccountRuntime:
     pending: dict[str, asyncio.Future] = field(default_factory=dict)
     updated_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     last_renewal_attempt_monotonic: float = 0.0
+    #: 稳定设备指纹；为空时会在首次取 Token 前解析并落库。
+    device_id: str = ""
+    #: 最近一次保活成功/失败时间，供后台确认保活是否真的在跑。
+    last_keepalive_at: str = ""
+    last_keepalive_error: str = ""
+    #: 串行化续期，避免保活与重连链路同时续期同一账号。
+    renew_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     @property
     def is_connected(self) -> bool:
@@ -270,6 +395,9 @@ class AccountRuntime:
             "is_connected": self.is_connected,
             "cookie_loaded": bool(self.cookie_value.strip()),
             "token_mode": self.token_mode,
+            "device_id": self.device_id,
+            "last_keepalive_at": self.last_keepalive_at,
+            "last_keepalive_error": self.last_keepalive_error,
             "last_error": self.last_error,
             "updated_at": self.updated_at,
         }
@@ -569,26 +697,107 @@ class AccountRuntimeManager:
         except Exception:
             logger.exception("启动已启用账号运行时失败")
 
+    async def _persist_runtime_cookie(self, runtime: AccountRuntime, cookie: str) -> None:
+        """把刷新的 Cookie 写回账号表；写库失败不阻断运行时。"""
+        if not str(cookie or "").strip():
+            return
+        try:
+            async with async_session_maker() as session:
+                account = (
+                    await session.execute(select(Account).where(Account.id == int(runtime.account_id)))
+                ).scalar_one_or_none()
+                if account is not None and account.cookie != cookie:
+                    account.cookie = cookie
+                    await session.commit()
+        except Exception:
+            logger.warning("账号 %s Cookie 写库失败", runtime.account_id)
+
+    async def _resolve_runtime_device_id(self, runtime: AccountRuntime) -> str:
+        """取得并缓存账号的稳定设备指纹，必要时落库。"""
+        if runtime.device_id:
+            return runtime.device_id
+        try:
+            async with async_session_maker() as session:
+                account = (
+                    await session.execute(select(Account).where(Account.id == int(runtime.account_id)))
+                ).scalar_one_or_none()
+                if account is None:
+                    return ""
+                device_id, created = _stable_device_id(account)
+                if created:
+                    account.im_device_id = device_id
+                    await session.commit()
+                    logger.info("账号 %s 生成并固化设备指纹", runtime.account_id)
+        except Exception:
+            logger.warning("账号 %s 设备指纹读写失败，本次临时生成", runtime.account_id, exc_info=False)
+            return ""
+        runtime.device_id = device_id
+        return device_id
+
+    async def _keepalive_loop(self, runtime: AccountRuntime) -> None:
+        """在会话仍有效时定期保活，避免长登录态枯死。
+
+        这是与"等失效后再续期"互补的一环：``login.token`` 只在建连时换取 WS
+        凭据，不具备续命能力；上限取决于平台对长登录会话的有效期。定期调用
+        ``loginuser.get`` 可以在会话失效前完成一次确认并顺带刷新 mtop 票据，
+        显著降低"会话过期 → 必须人工扫码"的概率。
+
+        失败不会直接断开长连接：确认会话已失效时才交给续期链路处理。
+        """
+        try:
+            while True:
+                await asyncio.sleep(IM_KEEPALIVE_INTERVAL_SECONDS)
+                cookie = str(runtime.cookie_value or "").strip()
+                if not cookie:
+                    continue
+                try:
+                    ok, message, refreshed = await _request_web_keepalive(cookie)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    runtime.last_keepalive_error = str(exc)[:300]
+                    logger.warning("账号 %s IM 保活异常：%s", runtime.account_id, str(exc)[:300])
+                    continue
+                if refreshed and refreshed != runtime.cookie_value:
+                    runtime.cookie_value = refreshed
+                    await self._persist_runtime_cookie(runtime, refreshed)
+                if ok:
+                    runtime.last_keepalive_at = datetime.now(timezone.utc).isoformat()
+                    runtime.last_keepalive_error = ""
+                    logger.info("账号 %s IM 会话保活成功", runtime.account_id)
+                    continue
+                runtime.last_keepalive_error = str(message)[:300]
+                logger.warning("账号 %s IM 会话保活失败：%s", runtime.account_id, str(message)[:300])
+                if not is_session_expired_message(message):
+                    continue
+                # 会话确认失效：立即续期，不必等长连接自己断开。
+                now_monotonic = time.monotonic()
+                if _runtime_renewal_due(runtime, now_monotonic):
+                    runtime.last_renewal_attempt_monotonic = now_monotonic
+                    await self._renew_runtime_account(runtime, message)
+        except asyncio.CancelledError:
+            return
+
     async def _run(self, runtime: AccountRuntime) -> None:
         retry_delay = 5.0
+        keepalive_task = asyncio.create_task(
+            self._keepalive_loop(runtime),
+            name=f"xianyu-keepalive-{runtime.account_id}",
+        )
         try:
             while True:
                 try:
-                    token, device_id, token_mode, refreshed_cookie = await _request_token(runtime.cookie_value, runtime.user_id)
+                    device_id = await self._resolve_runtime_device_id(runtime)
+                    token, device_id, token_mode, refreshed_cookie = await _request_token(
+                        runtime.cookie_value, runtime.user_id, device_id
+                    )
+                    if not runtime.device_id and device_id:
+                        # 落库失败时兜底生成的指纹也要在进程内固定下来，
+                        # 否则每次重连都会换一个新指纹，稳定性无从谈起。
+                        runtime.device_id = device_id
                     if refreshed_cookie and refreshed_cookie != runtime.cookie_value:
                         runtime.cookie_value = refreshed_cookie
-                        try:
-                            async with async_session_maker() as session:
-                                account = (
-                                    await session.execute(select(Account).where(Account.id == int(runtime.account_id)))
-                                ).scalar_one_or_none()
-                                if account is not None and account.cookie != refreshed_cookie:
-                                    account.cookie = refreshed_cookie
-                                    await session.commit()
-                        except Exception:
-                            # Token 已经拿到，Cookie 写库失败不应阻断本次连接；下次
-                            # 运行时仍会继续使用内存中的最新 Cookie。
-                            logger.warning("账号 %s Token响应Cookie写库失败", runtime.account_id)
+                        await self._persist_runtime_cookie(runtime, refreshed_cookie)
                     runtime.token_mode = token_mode
                     runtime.update("connecting")
                     headers = {
@@ -687,9 +896,23 @@ class AccountRuntimeManager:
             runtime.websocket = None
             runtime.update("failed", str(exc))
             logger.exception("账号 %s 运行时退出", runtime.account_id)
+        finally:
+            keepalive_task.cancel()
+            try:
+                await keepalive_task
+            except (asyncio.CancelledError, Exception):
+                pass
 
     async def _renew_runtime_account(self, runtime: AccountRuntime, reason: str) -> bool:
-        """长连接拿到 Session 过期时，在线程内直接执行一次续期。"""
+        """长连接拿到 Session 过期时，在线程内直接执行一次续期。
+
+        用账号级锁串行化：保活链路与重连链路都可能触发续期，并发续期会让
+        同一账号同时打两次 Passport，既浪费配额也更容易触发风控。
+        """
+        async with runtime.renew_lock:
+            return await self._renew_runtime_account_locked(runtime, reason)
+
+    async def _renew_runtime_account_locked(self, runtime: AccountRuntime, reason: str) -> bool:
         try:
             async with async_session_maker() as session:
                 account = (
@@ -698,6 +921,12 @@ class AccountRuntimeManager:
                 if account is None:
                     runtime.update("expired", "账号记录不存在，无法自动续期")
                     return False
+                # 续期时一并固化设备指纹，保证后续取 Token 始终使用同一个指纹。
+                device_id, device_created = _stable_device_id(account)
+                if device_created:
+                    account.im_device_id = device_id
+                    await session.commit()
+                runtime.device_id = device_id
                 result = await renew_account_session(
                     session,
                     account,
@@ -716,6 +945,7 @@ class AccountRuntimeManager:
                         _, _, token_mode, verified_cookie = await _request_token(
                             renewed_cookie,
                             int(account.user_id),
+                            device_id,
                         )
                     except Exception as verify_exc:
                         account.status = "expired"

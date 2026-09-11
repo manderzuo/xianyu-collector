@@ -64,6 +64,34 @@ BROWSER_RECOVERY_MARKERS = (
     "WUA_IS_MACHINE",
 )
 
+#: Baxia 风控在 Set-Cookie 里回写的风险标记。
+#:
+#: 这些不是登录凭据，而是"该会话已被风控标记"的记号。带着它们重试续期会被
+#: 再次判定为高风险，形成"刷新 → 带风险标记 → 再被 punish → 再刷新"的死循环，
+#: 长登录 Cookie 永远拿不到。每次续期前先清掉，让请求回到干净状态。
+RISK_COOKIE_NAMES = (
+    "x5secdata",
+    "x5sec",
+    "x5sectag",
+    "x5pref",
+    "bx-cookie-test",
+    "tfstk",
+    "cbc",
+    "sca",
+    "isg",
+)
+
+
+def strip_risk_cookies(cookie_value: str) -> tuple[str, list[str]]:
+    """剔除风控风险标记，返回 (清理后的 Cookie, 被清理的字段名)。"""
+    cookies = parse_cookie_string(cookie_value)
+    removed = [name for name in RISK_COOKIE_NAMES if name in cookies]
+    if not removed:
+        return cookie_value, []
+    for name in removed:
+        cookies.pop(name, None)
+    return serialize_cookies(cookies), removed
+
 
 @dataclass(slots=True)
 class CookieRenewalResult:
@@ -297,6 +325,11 @@ class CookieRenewalService:
         response_text = ""
         all_headers: list[str] = []
         long_headers: list[str] = []
+        # 先清掉上一轮被风控回写的风险标记，避免带着它们再次撞 punish。
+        current, stripped = strip_risk_cookies(current)
+        if stripped:
+            steps.append(f"已清除风控风险标记：{','.join(stripped)}")
+            logger.info("%s 续期前清除风险 Cookie：%s", prefix, ",".join(stripped))
         cookies = parse_cookie_string(current)
         if not cookies.get("unb"):
             return {
@@ -401,7 +434,15 @@ class CookieRenewalService:
             except (httpx.HTTPError, ValueError) as exc:
                 steps.append(f"setLoginSettings.do失败：{str(exc)[:180]}")
 
-        new_cookie, updated_names = _merge_set_cookies(cookie_value, all_headers)
+        # 以清理过风险标记的 current 为基准合并，避免把已剔除的风险 Cookie
+        # 从原始串里又带回来。
+        new_cookie, updated_names = _merge_set_cookies(current, all_headers)
+        # 平台本轮可能再次回写风险标记；不把它们写进后续重试和数据库，
+        # 否则下一次续期又会带着标记撞 punish。
+        new_cookie, re_stripped = strip_risk_cookies(new_cookie)
+        if re_stripped:
+            steps.append(f"本轮平台回写风险标记，已剔除：{','.join(re_stripped)}")
+            updated_names = [name for name in updated_names if name not in re_stripped]
         # 只有 setLoginSettings 实际返回长登录 Set-Cookie 才算 API 续期成功，
         # 这与旧版一致，避免把只刷新短期 Cookie 当作完整登录恢复。
         success = bool(long_headers and parse_cookie_string(new_cookie).get("unb"))

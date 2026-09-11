@@ -23,6 +23,10 @@ class Account(Base):
     proxy: Mapped[str | None] = mapped_column(String(256))
     status: Mapped[str] = mapped_column(String(16), default="inactive", nullable=False)
     cookie_expire_at: Mapped[datetime | None] = mapped_column(DateTime)
+    # 取 IM Token 与建立长连接时使用的设备指纹（IM 侧的 did）。
+    # 必须跨请求、跨重连保持稳定：每次随机生成新设备指纹会被平台判定为
+    # 不可信环境，进而拒绝下发长登录凭据。首次使用时生成并落库，此后复用。
+    im_device_id: Mapped[str | None] = mapped_column(String(128))
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False
     )

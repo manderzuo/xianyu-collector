@@ -60,6 +60,7 @@ async def init_db() -> None:
     async with async_engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
         await connection.run_sync(_migrate_user_columns)
+        await connection.run_sync(_migrate_account_columns)
         await connection.run_sync(_migrate_order_columns)
         await connection.run_sync(_migrate_scheduled_task_columns)
         await connection.run_sync(_migrate_registration_invite_columns)
@@ -112,6 +113,20 @@ def _migrate_entitlements_v1(connection) -> None:
             text("INSERT INTO xr_schema_migrations(version) VALUES (:version)"),
             {"version": "20260904_entitlements_v1"},
         )
+
+
+def _migrate_account_columns(connection) -> None:
+    """给旧闲鱼账号表补齐设备指纹字段。
+
+    ``im_device_id`` 用于把 IM 设备指纹固定下来；旧库可能没有该列，
+    缺失时补一列可空字段，由运行时首次取 Token 时写入。
+    """
+    inspector = sqlalchemy_inspect(connection)
+    if "xr_accounts" not in inspector.get_table_names():
+        return
+    existing = {column["name"] for column in inspector.get_columns("xr_accounts")}
+    if "im_device_id" not in existing:
+        connection.execute(text("ALTER TABLE xr_accounts ADD COLUMN im_device_id VARCHAR(128) NULL"))
 
 
 def _migrate_order_columns(connection) -> None:
