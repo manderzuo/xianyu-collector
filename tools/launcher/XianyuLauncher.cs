@@ -1359,6 +1359,7 @@ internal sealed class UpdaterWindow : LauncherWindow
     private string updateReason = "";
     private string notes = "";
     private bool pendingRestartClient;
+    private bool autoUpdateAfterCheck;
     private readonly Timer latestAutoCloseTimer = new Timer();
 
     internal UpdaterWindow() : base(LauncherText.Updater, true)
@@ -1567,6 +1568,7 @@ internal sealed class UpdaterWindow : LauncherWindow
             ShowNotInstalled();
             return;
         }
+        autoUpdateAfterCheck = false;
         SetState(OperationState.Checking);
         ScriptRunner.RunAsync(packageRoot, "update.ps1", "-Headless -CheckOnly", OnLine).ContinueWith(t =>
         {
@@ -1732,7 +1734,13 @@ internal sealed class UpdaterWindow : LauncherWindow
             {
                 case "available":
                     SetState(OperationState.Ready);
-                    ShowBanner(StageStatus.Running, ReasonText(), "");
+                    autoUpdateAfterCheck = true;
+                    nowButton.Enabled = false;
+                    nowButton.SetLoading(true);
+                    nowButton.Text = "正在准备更新";
+                    laterButton.Enabled = true;
+                    laterButton.Text = "取消";
+                    ShowBanner(StageStatus.Running, ReasonText() + " 即将自动开始。", "");
                     break;
                 case "latest":
                     ShowBanner(StageStatus.Success, string.IsNullOrEmpty(evt.Detail) ? "当前已是最新版本" : evt.Detail, "");
@@ -1890,6 +1898,7 @@ internal sealed class UpdaterWindow : LauncherWindow
     private void ShowFailure(string mode, GuiEvent evt)
     {
         AppOps.Trace("showfailure enter mode=" + mode);
+        autoUpdateAfterCheck = false;
         state = OperationState.Failed;
         nowButton.Enabled = true;
         nowButton.SetLoading(false);
@@ -1992,7 +2001,16 @@ internal sealed class UpdaterWindow : LauncherWindow
         AppOps.Trace("updater script finished exit=" + exitCode + " check=" + wasCheck + " state=" + state);
         if (wasCheck)
         {
-            if (state == OperationState.Ready) return;
+            if (state == OperationState.Ready)
+            {
+                if (autoUpdateAfterCheck)
+                {
+                    autoUpdateAfterCheck = false;
+                    AppOps.Trace("auto_update_trigger");
+                    StartUpdate();
+                }
+                return;
+            }
             if (state == OperationState.Checking)
             {
                 // no usable result reached the GUI (script crashed early)
