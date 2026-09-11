@@ -371,7 +371,7 @@ class VerificationClassificationTests(unittest.TestCase):
 
 
 class AccountMigrationTests(unittest.TestCase):
-    """旧库补列必须幂等，且覆盖 1.3.8/1.3.9 的全部新列。"""
+    """旧库补列必须幂等，且覆盖 1.3.8 与 1.4.0 的全部新列。"""
 
     def _run_migration(self, existing_columns):
         from common.db import session as session_module
