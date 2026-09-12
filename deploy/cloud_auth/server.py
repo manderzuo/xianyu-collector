@@ -186,6 +186,16 @@ class Handler(BaseHTTPRequestHandler):
             if action == 'logout':
                 store.revoke_session(token)
                 return self.reply(200, {'ok': True})
+            if action == 'change_password':
+                # 自助修改密码：只允许改自己的账号，且必须验证旧密码。
+                # 云端是密码权威，改完必须作废该账号既有会话，避免旧会话继续可用。
+                updated = store.change_password(
+                    int(user['id']),
+                    body.get('old_password'),
+                    body.get('new_password'),
+                )
+                store.revoke_user_sessions(int(user['id']))
+                return self.reply(200, {'ok': True, 'user': updated, 'message': '密码已更新，请重新登录'})
             if action == 'get_entitlements':
                 requested = int(body.get('user_id') or user['id'])
                 if requested != user['id'] and user['role'] != 'admin':

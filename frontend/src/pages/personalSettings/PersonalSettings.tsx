@@ -478,7 +478,9 @@ export function PersonalSettings() {
       setChangingPassword(true)
       const result = await changePassword({ current_password: currentPassword, new_password: newPassword })
       if (result.success) {
-        addToast({ type: 'success', message: '密码修改成功，即将退出登录' })
+        // 云端模式下后端会明确回传“云端密码已更新”，直接把真实结果展示给用户，
+        // 避免旧文案让人以为只是本机生效。
+        addToast({ type: 'success', message: result.message || '密码修改成功，即将退出登录' })
         setCurrentPassword('')
         setNewPassword('')
         setConfirmPassword('')

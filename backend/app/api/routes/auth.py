@@ -467,11 +467,36 @@ async def check_default_password(user=Depends(get_current_user), session: AsyncS
 
 @router.post("/change-password")
 async def change_password(payload: PasswordRequest, user=Depends(get_current_user), session: AsyncSession = Depends(get_session)):
+    """修改当前用户密码。
+
+    云端模式下**必须**转发到统一认证服务：自 1.3.5 起登录的密码权威是云端，
+    只改本机 ``xr_users`` 不会影响登录，用户会看到「改了密码却登不上」。
+    """
     record = (await session.execute(select(User).where(User.id == int(user.get("sub", 1))))).scalar_one_or_none()
     if record is None: raise HTTPException(404, "用户不存在")
+    if cloud_auth_url():
+        old_password = str(payload.old_password or "")
+        if not old_password:
+            raise HTTPException(status_code=422, detail="请输入当前密码")
+        token = str(user.get("cloud_session_token") or "").strip()
+        if not token:
+            raise HTTPException(status_code=401, detail="云端登录状态已失效，请重新登录后再修改密码")
+        try:
+            await cloud_auth_request(
+                "change_password",
+                {"old_password": old_password, "new_password": payload.new_password},
+                token,
+            )
+        except CloudAuthError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+        # 云端已改成功，同步本机镜像，保持与云端一致；下次登录输入新密码时
+        # 也会用同一个值覆盖这里，不会互相打架。
+        record.password_hash = hash_password(payload.new_password)
+        await session.commit()
+        return ok({"changed": True, "cloud": True}, "云端密码已更新，请重新登录")
     if payload.old_password is not None and not verify_password(payload.old_password, record.password_hash): raise HTTPException(401, "原密码不正确")
     record.password_hash = hash_password(payload.new_password); await session.commit()
-    return ok({"changed": True}, "密码已更新")
+    return ok({"changed": True, "cloud": False}, "密码已更新")
 
 
 @router.post("/reset-password")

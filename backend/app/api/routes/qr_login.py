@@ -74,6 +74,25 @@ async def _get_owned_session(session_id: str, owner_id: int, db: AsyncSession) -
     return item
 
 
+def _runtime_failure_message(payload: Any, fallback: str) -> str:
+    """从连接服务的错误响应里取出真实原因。
+
+    FastAPI 的 HTTPException 把消息放在 ``detail``，而业务接口放在 ``message``。
+    原实现只读 ``message``，于是连接服务返回 401 ``{"detail":"内部调用凭证无效"}``
+    时被替换成含糊的「连接服务拒绝请求」，把真正的故障原因整个吞掉。
+    """
+    if isinstance(payload, dict):
+        for key in ("message", "detail", "error"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()[:500]
+            if isinstance(value, dict):
+                nested = value.get("message") or value.get("detail")
+                if isinstance(nested, str) and nested.strip():
+                    return nested.strip()[:500]
+    return fallback
+
+
 async def _notify_account_runtime(account: Account, cookie_value: str, user_id: int, is_new: bool) -> dict:
     """通知连接服务加载新登录态，并等待首次 Token/连接验证结果。"""
     action = "start" if is_new else "restart"
@@ -82,10 +101,21 @@ async def _notify_account_runtime(account: Account, cookie_value: str, user_id: 
             response = await client.post(
                 f"{settings.websocket_service_url.rstrip('/')}/internal/accounts/{account.id}/{action}",
                 json={"cookie_value": cookie_value, "user_id": user_id},
+                # 连接服务对全部 /internal/ 接口做令牌校验；漏发会被 401 拒绝
+                # 并导致扫码登录在“Cookie 已保存”之后被判失败。
+                headers={"X-Internal-Token": settings.jwt_secret},
             )
-        payload = response.json()
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = {}
         if not response.is_success or not payload.get("success"):
-            return {"status": "failed", "action": action, "detail": payload.get("message", "连接服务拒绝请求")}
+            return {
+                "status": "failed",
+                "action": action,
+                "http_status": response.status_code,
+                "detail": _runtime_failure_message(payload, "连接服务拒绝请求"),
+            }
         return {
             "status": "pending",
             "action": action,
@@ -101,12 +131,20 @@ async def _get_runtime_status(account_id: int) -> dict:
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(connect=5, read=8, write=5, pool=8)) as client:
             response = await client.get(
-                f"{settings.websocket_service_url.rstrip('/')}/internal/accounts/{account_id}/status"
+                f"{settings.websocket_service_url.rstrip('/')}/internal/accounts/{account_id}/status",
+                headers={"X-Internal-Token": settings.jwt_secret},
             )
-        payload = response.json()
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = {}
         if response.is_success and payload.get("success"):
             return {"status": "ok", "detail": payload.get("data") or {}}
-        return {"status": "failed", "detail": payload.get("message", "连接服务状态查询失败")}
+        return {
+            "status": "failed",
+            "http_status": response.status_code,
+            "detail": _runtime_failure_message(payload, "连接服务状态查询失败"),
+        }
     except (httpx.HTTPError, ValueError) as exc:
         return {"status": "unavailable", "detail": str(exc)}
 

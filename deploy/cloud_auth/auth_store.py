@@ -764,6 +764,22 @@ class AuthStore:
         finally:
             conn.close()
 
+    def revoke_user_sessions(self, user_id: int) -> int:
+        """作废某账号的全部未失效会话，返回作废数量。
+
+        改密码后必须调用：否则旧会话仍然有效，改密码就失去意义。
+        """
+        conn = self._connect()
+        try:
+            cursor = conn.execute(
+                "UPDATE app_sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL",
+                (self._now(), int(user_id)),
+            )
+            conn.commit()
+            return int(cursor.rowcount or 0)
+        finally:
+            conn.close()
+
     @staticmethod
     def _session_public(row: sqlite3.Row) -> dict[str, Any]:
         return {
@@ -970,6 +986,33 @@ class AuthStore:
 
     def disable(self, user_id: int) -> dict[str, Any]:
         return self._set_status(user_id, "disabled")
+
+    def change_password(self, user_id: int, old_password: Any, new_password: Any) -> dict[str, Any]:
+        """用户自助修改密码：必须先验证旧密码。
+
+        与 ``reset_password``（管理员重置，不校验旧密码）分开：
+        自助入口必须证明持有旧密码，否则任何拿到会话的人都能改密码。
+        """
+        new_value = self._password(new_password)
+        conn = self._connect()
+        try:
+            row = conn.execute("SELECT * FROM app_users WHERE id = ?", (int(user_id),)).fetchone()
+            if row is None:
+                raise AuthError("not_found", "账号不存在")
+            if not self.verify_password(str(old_password or ""), str(row["password_hash"])):
+                raise AuthError("invalid_credentials", "原密码不正确")
+            if self.verify_password(new_value, str(row["password_hash"])):
+                raise AuthError("invalid_input", "新密码不能与原密码相同")
+            conn.execute(
+                "UPDATE app_users SET password_hash = ?, updated_at = ? WHERE id = ?",
+                (self.hash_password(new_value), self._now(), int(user_id)),
+            )
+            conn.commit()
+            return self._public_user(
+                conn.execute("SELECT * FROM app_users WHERE id = ?", (int(user_id),)).fetchone()
+            )
+        finally:
+            conn.close()
 
     def reset_password(self, user_id: int, password: Any) -> dict[str, Any]:
         password = self._password(password)

@@ -272,6 +272,10 @@ class QRLoginManager:
             if not face_match:
                 raise RuntimeError("人脸验证页面未返回二维码")
             session.face_qr_url = self._render_qr(face_match.group(1))
+            # 二维码就绪后才对外暴露 verification_required：若在拿到二维码之前
+            # 就把状态设成 verification_required，前端会读到“需要人脸验证”却
+            # 拿不到图，界面表现为什么都不显示。
+            session.status = "verification_required"
             check_headers = {
                 **self.headers,
                 "Accept": "application/json, text/javascript, */*; q=0.01",
@@ -342,10 +346,21 @@ class QRLoginManager:
                 qr_status = data.get("qrCodeStatus")
                 if qr_status == "CONFIRMED":
                     if data.get("iframeRedirect") is True:
-                        session.status = "verification_required"
                         session.verification_url = data.get("iframeRedirectUrl")
                         session.created_at = time.time()
-                        await self._run_face_verification(session)
+                        # 中间态：已确认登录但人脸二维码还没抓取完成。直接置
+                        # verification_required 会让前端在二维码就绪前读到该状态。
+                        session.status = "face_verifying"
+                        try:
+                            await self._run_face_verification(session)
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception as exc:
+                            # 人脸分支失败必须落到明确的 failed，否则状态会永久停在
+                            # face_verifying/verification_required，界面既不报错也不出码。
+                            session.error = f"人脸验证失败：{str(exc)[:300]}"
+                            session.status = "failed"
+                            break
                         session.status = "success"
                     else:
                         await self._finalize_login(session, data)
@@ -375,11 +390,19 @@ class QRLoginManager:
         session = self.sessions.get(session_id)
         if session is None:
             return {"status": "not_found", "session_id": session_id}
-        if session.is_expired() and session.status not in {"success", "verification_required"}:
+        if session.is_expired() and session.status not in {"success", "verification_required", "face_verifying"}:
             session.status = "expired"
         data: dict[str, Any] = {"status": session.status, "session_id": session.session_id}
+        # 只要拿到过就回传，不再与状态强绑定：前端轮询有间隔，绑定状态会让
+        # “二维码刚就绪”与“状态已推进”之间的窗口内取不到图。
+        if session.verification_url:
+            data["verification_url"] = session.verification_url
+        if session.face_qr_url:
+            data["face_qr_url"] = session.face_qr_url
         if session.status == "verification_required":
-            data.update({"verification_url": session.verification_url, "face_qr_url": session.face_qr_url, "message": "需要人脸验证，请按提示完成验证"})
+            data["message"] = "需要人脸验证，请按提示完成验证"
+        elif session.status == "face_verifying":
+            data["message"] = "正在获取人脸验证二维码，请稍候"
         if session.error:
             data["error"] = session.error
         return data

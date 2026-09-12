@@ -1,14 +1,17 @@
-# 闲鱼管理系统 1.3.9 发布说明
+# 闲鱼管理系统 1.4.0 发布说明
 
-- 版本：`1.3.9`
-- 构建 ID（本地标记）：`20260911-1.3.9-status-separation`
+- 版本：`1.4.0`
+- 构建 ID（本地标记）：`20260911-1.4.0-status-separation`
 - 基线：`v1.3.8`
 - 前置批次：`docs/RELEASE_1.3.8.md`（IM 保活 + 设备指纹 + 风控标记清理）
 
-1.3.9 修复 1.3.8 诊断中列出但**尚未处理**的 4 类遗留缺陷，核心是把
+1.4.0 修复 1.3.8 诊断中列出但**尚未处理**的 4 类遗留缺陷，核心是把
 「登录态失效」与「IM 链路故障」彻底分开，并让自愈路径重新可达。
 
-> **本版未推送、未发布。** 交付物为本地提交，等待明确发布指令。
+> **版本号说明**：本次按**次版本号**发布（1.3.8 → 1.4.0）而非修订号。
+> 改动包含账号状态语义调整（新增 `im_status`，与登录态 `status` 分离）、
+> 数据库新增 5 列、以及任务状态语义修正，行为变更幅度超出修订号范围。
+> 升级兼容：客户端可无感升级，后端启动时自动补列，无需手工迁移。
 
 ## 1. 修复的缺陷
 
@@ -225,11 +228,11 @@ drone-scp error: dial tcp ***:22: i/o timeout
 
 版本文件：`VERSION.txt`、`BUILD_ID.txt`、`frontend/package.json`、`frontend/package-lock.json`
 
-## 7. 发布（等待指令，尚未执行）
+## 7. 发布
 
 ```powershell
 npm ci --prefix frontend
-$env:APP_VERSION='1.3.9'
+$env:APP_VERSION='1.4.0'
 npm run build --prefix frontend
 python -m compileall -q backend common websocket scheduler deploy
 python -m unittest discover -s backend/tests -t .
