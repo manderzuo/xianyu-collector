@@ -204,16 +204,88 @@ item.face_qr_url = state.get("face_qr_url")
 1. **先部署 `deploy/cloud_auth/` 到云端**（这是本次修复真正生效的前提，见第 5 节）
 2. 或在本地另起一个云端实例并把本地部署指向它（需要临时调整 `.env`，涉及账号播种）
 
-## 5. 部署依赖
+## 5. 部署依赖（问题 1 的前置条件，**尚未执行**）
 
 **`deploy/cloud_auth/` 必须部署到云端，问题 1 才会真正修复。**
-按交接文档 §5.2，该服务可能不由主流水线自动部署：
+已核实主流水线（`.github/workflows/build-and-publish.yml`）**不包含任何
+`cloud_auth` / `xianyu-auth` 部署步骤**，必须手工执行。
+
+### 5.1 当前生产云端状态（已实测，2026-09-12）
+
+```
+service:              active
+health:               {"ok": true, "service": "xianyu-auth"}
+change_password:      auth_store=0  server=0   ← 本次新增，未部署
+revoke_user_sessions: auth_store=0  server=0   ← 本次新增，未部署
+reset_password:       auth_store=1  server=0   （数据层有，未暴露）
+```
+
+**结论：在云端部署完成之前，客户端升级到 1.4.1 也修不好问题 1**
+（点「修改密码」会返回「接口不存在」）。问题 2 不受此影响，升级即生效。
+
+### 5.2 部署路径（已探明）
+
+| 项目 | 路径 |
+| --- | --- |
+| 云端代码 | `/opt/gemstory/xianyu-auth/`（`server.py`、`auth_store.py`、`admin.html`、`diagnostic_store.py`） |
+| 数据库 | `/var/lib/gemstory/xianyu-auth/server.db` |
+| 环境文件 | `/var/lib/gemstory/xianyu-auth/session.env` |
+| systemd | `xianyu-auth`（User=xianyu-auth，WorkingDirectory=/opt/gemstory/xianyu-auth） |
+
+### 5.3 部署步骤
 
 ```bash
-sudo python3 deploy/cloud_auth/install.py
+# 1) 备份数据库与将被覆盖的文件（务必先做）
+STAMP=$(date +%Y%m%d%H%M%S)
+sudo cp /var/lib/gemstory/xianyu-auth/server.db /var/lib/gemstory/xianyu-auth/server.db.bak-$STAMP
+sudo cp /opt/gemstory/xianyu-auth/auth_store.py /opt/gemstory/xianyu-auth/auth_store.py.bak-$STAMP
+sudo cp /opt/gemstory/xianyu-auth/server.py     /opt/gemstory/xianyu-auth/server.py.bak-$STAMP
+
+# 2) 上传两个文件（整目录上传，避免只传部分文件导致新旧混用）
+scp -i ~/.ssh/Third.pem auth_store.py server.py \
+    ubuntu@49.232.128.118:/tmp/xianyu-auth-141/
+sudo cp /tmp/xianyu-auth-141/*.py /opt/gemstory/xianyu-auth/
+
+# 3) 重启并验证
+sudo systemctl restart xianyu-auth
+sleep 2
+systemctl is-active xianyu-auth
+curl -s https://www.gemstory.cn/api/xianyu/auth/health
+grep -c change_password /opt/gemstory/xianyu-auth/auth_store.py   # 期望 1
+grep -c change_password /opt/gemstory/xianyu-auth/server.py       # 期望 1
+```
+
+> **历史陷阱**：曾出现「只上传部分文件」导致目录里混入陈旧 `admin.html`
+> （3174 字节）的情况。整目录上传可避免。
+
+### 5.4 部署后验证（8 项，与 3.2 节同口径）
+
+用真实账号在**应用界面**点「修改密码」，逐项确认：
+
+| # | 场景 | 期望 |
+| --- | --- | --- |
+| 1 | 原密码填错 | 提示「原密码不正确」，密码未变 |
+| 2 | 新密码与原密码相同 | 提示「新密码不能与原密码相同」 |
+| 3 | 正确修改 | 提示「云端密码已更新，请重新登录」并退出登录 |
+| 4 | 用**新**密码登录 | 成功 |
+| 5 | 用**旧**密码登录 | 失败 |
+| 6 | 改密码前的其他设备 | 会话失效，需重新登录 |
+| 7 | 重新登录后检查账号列表是否可添加账号 | 正常（门禁已移除） |
+| 8 | 云端用户数未变化 | 与部署前一致（本次不涉及用户表结构） |
+
+### 5.5 回滚
+
+```bash
+STAMP=<部署时的 STAMP>
+sudo cp /opt/gemstory/xianyu-auth/auth_store.py.bak-$STAMP /opt/gemstory/xianyu-auth/auth_store.py
+sudo cp /opt/gemstory/xianyu-auth/server.py.bak-$STAMP     /opt/gemstory/xianyu-auth/server.py
 sudo systemctl restart xianyu-auth
 curl -s https://www.gemstory.cn/api/xianyu/auth/health
 ```
+
+本次改动**不涉及数据库表结构变更**（`change_password` 只更新既有的
+`password_hash` 列，`revoke_user_sessions` 只更新既有的 `revoked_at` 列），
+因此回滚只需还原文件，**数据库备份仅为保险**。
 
 ## 6. 涉及文件
 
@@ -230,9 +302,41 @@ curl -s https://www.gemstory.cn/api/xianyu/auth/health
 
 版本文件：`VERSION.txt`、`BUILD_ID.txt`、`frontend/package.json`、`frontend/package-lock.json`
 
-## 7. 尚未处理
+## 7. 发布结果与遗留事项
 
-- **1.4.0 的线上撤销**：CI 有降级守卫（`refusing release downgrade: base=1.4.0, target=1.3.7`，
-  `build-and-publish.yml:143-144`），**无法回滚到 1.3.7**；服务器无签名私钥也无历史清单留档，
-  无法手工造旧清单。线上 `latest.json` 目前仍为 1.4.0，等待决定（撤回 latest.json
-  会让所有客户端更新检查报 404）。1.4.1 发布时会自动覆盖，且因 1.4.1 > 1.4.0 可通过守卫。
+### 7.1 发布结果（已完成）
+
+流水线 run `34670465801` **success**，线上产物已验证：
+
+| 项目 | 结果 |
+| --- | --- |
+| `latest.json` | `version 1.4.1`，`build_id 0b382b89961a-1.4.1` |
+| 四个镜像 | `xianyu-{backend,websocket,scheduler,frontend}:1.4.1` 全部 HTTP 200 |
+| 签名 | `latest.json.sig` HTTP 200 |
+| 客户端包 | SHA-256 `2c684785…bc25` 与实际下载**逐字节一致**（8.96 MB） |
+| 提交 / 标签 | `0b382b8` / `v1.4.1` |
+
+### 7.2 1.4.0 撤销问题已随本次发布解决
+
+原计划单独撤销 1.4.0，但两条路都走不通：
+
+- **CI 降级守卫**：`refusing release downgrade: base=1.4.0, target=1.3.7`
+  （`build-and-publish.yml:143-144`），重跑 v1.3.7 流水线在 `release_base` 步骤**失败**
+- **无法手工造旧清单**：服务器无签名私钥，发布目录只保留当前 `latest.json`、无历史留档，
+  手改会让签名校验失败被客户端拒绝（`update-xianyu-gui.ps1` 会抛
+  「更新清单签名校验失败，已拒绝本次更新」）
+
+**1.4.1 发布后 `latest.json` 已指向 1.4.1，1.4.0 不再提供给任何客户端**，
+效果等同于撤销，且因 `1.4.1 > 1.4.0` 可通过降级守卫。
+
+### 7.3 唯一遗留：云端尚未部署（见第 5 节）
+
+问题 1 的云端动作**尚未部署到生产**，因此该问题当前仍未真正修复。
+步骤与回滚见 5.3 / 5.5，部署后按 5.4 的 8 项验证。
+
+> **已登记为遗留问题，推迟到下一次版本更新处理**：
+> 见 `docs/KNOWN_ISSUES.md` 的 **KI-001**（云端未部署 → 改密码不可用）
+> 与 **KI-002**（发布顺序缺约定 → 客户端可能先于云端上线）。
+>
+> 修复代码已包含在 v1.4.1 中并通过验证，**缺的只是部署这一步**，
+> 下次发版时按 KI-001「修复方案 A」部署即可，无需再改代码。
